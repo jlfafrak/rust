@@ -2,15 +2,30 @@ cmake_minimum_required(VERSION 3.20)
 
 project(eos_rust_abi VERSION 1.0.0 LANGUAGES C)
 
-include(CTest)
-
 set(EOS_RUST_PORT "host" CACHE STRING "EOS Rust ABI native port")
 set_property(CACHE EOS_RUST_PORT PROPERTY STRINGS host martos_14_0_39)
+option(EOS_RUST_DEBUG_ERRORS
+    "Record unknown native statuses in a private debug diagnostic" OFF)
+
+if(NOT DEFINED BUILD_TESTING)
+    if(EOS_RUST_PORT STREQUAL "host")
+        set(BUILD_TESTING ON CACHE BOOL "Build the EOS Rust ABI tests")
+    else()
+        set(BUILD_TESTING OFF CACHE BOOL "Build the EOS Rust ABI tests")
+    endif()
+endif()
+
+include(CTest)
 
 if(EOS_RUST_PORT STREQUAL "host")
     set(EOS_RUST_PORT_SOURCE
         "${CMAKE_CURRENT_SOURCE_DIR}/ports/host/eos_port_host.c")
 elseif(EOS_RUST_PORT STREQUAL "martos_14_0_39")
+    if(BUILD_TESTING)
+        message(FATAL_ERROR
+            "BUILD_TESTING=ON is not supported for EOS_RUST_PORT=martos_14_0_39; "
+            "configure the host port to run native tests")
+    endif()
     set(EOS_RUST_PORT_SOURCE
         "${CMAKE_CURRENT_SOURCE_DIR}/ports/martos_14_0_39/eos_port_martos.c")
 else()
@@ -40,15 +55,30 @@ target_include_directories(eos_rust_abi
 target_compile_definitions(eos_rust_abi PRIVATE
     EOS_RUST_PORT_SOURCE="${EOS_RUST_PORT_SOURCE}"
 )
+if(EOS_RUST_DEBUG_ERRORS)
+    target_compile_definitions(eos_rust_abi PRIVATE EOS_RUST_DEBUG_ERRORS=1)
+endif()
 
 if(EOS_RUST_PORT STREQUAL "martos_14_0_39")
-    set(MARTOS_INCLUDE_DIR "" CACHE PATH
-        "Directory containing the MARTOS-SMP 14.0.39 martos_smp.h header")
-    if(NOT MARTOS_INCLUDE_DIR)
+    set(EOS_SDK_ROOT "" CACHE PATH "MARTOS-SMP 14.0.39 EOS SDK root")
+    set(EOS_MARTOS_INCLUDE_DIR "${EOS_SDK_ROOT}/martos/inc")
+    set(EOS_LIBC_INCLUDE_DIR "${EOS_SDK_ROOT}/libc/include")
+    if(NOT EOS_SDK_ROOT)
         message(FATAL_ERROR
-            "MARTOS_INCLUDE_DIR is required for EOS_RUST_PORT=martos_14_0_39")
+            "EOS_SDK_ROOT is required for EOS_RUST_PORT=martos_14_0_39")
+    elseif(NOT EXISTS "${EOS_MARTOS_INCLUDE_DIR}/martos_smp.h")
+        message(FATAL_ERROR
+            "EOS_SDK_ROOT does not contain martos/inc/martos_smp.h")
+    elseif(NOT EXISTS "${EOS_LIBC_INCLUDE_DIR}/errno.h")
+        message(FATAL_ERROR
+            "EOS_SDK_ROOT does not contain libc/include/errno.h")
     endif()
-    target_include_directories(eos_rust_abi PRIVATE "${MARTOS_INCLUDE_DIR}")
+    target_include_directories(eos_rust_abi PRIVATE
+        "${EOS_MARTOS_INCLUDE_DIR}"
+    )
+    target_compile_definitions(eos_rust_abi PRIVATE
+        EOS_LIBC_ERRNO_HEADER="${EOS_LIBC_INCLUDE_DIR}/errno.h"
+    )
 endif()
 
 if(BUILD_TESTING)
@@ -77,11 +107,22 @@ if(BUILD_TESTING)
         CXX_STANDARD_REQUIRED YES
         CXX_EXTENSIONS NO
     )
-    target_compile_definitions(error_map_test PRIVATE EOS_RUST_TESTING=1)
+    target_compile_definitions(error_map_test PRIVATE
+        EOS_RUST_TESTING=1
+        EOS_RUST_DEBUG_ERRORS=1
+    )
     target_include_directories(error_map_test PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
     )
     add_test(NAME error_map COMMAND error_map_test)
+
+    add_test(
+        NAME port_config
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/port_config_test.py"
+            --cmake "${CMAKE_COMMAND}"
+            --source "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
 
     add_test(
         NAME exports
@@ -90,5 +131,13 @@ if(BUILD_TESTING)
             --nm "${CMAKE_NM}"
             --archive "$<TARGET_FILE:eos_rust_abi>"
             --expected "${CMAKE_CURRENT_SOURCE_DIR}/tests/expected-exports-v1.txt"
+    )
+
+    add_test(
+        NAME exports_checker_contract
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_exports_test.py"
+            --python "${Python3_EXECUTABLE}"
+            --checker "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_exports.py"
     )
 endif()

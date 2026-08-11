@@ -1,6 +1,27 @@
 #include "martos_smp.h"
 
+#ifndef EOS_LIBC_ERRNO_HEADER
+#error "EOS_LIBC_ERRNO_HEADER must identify the pinned EOS libc errno.h"
+#endif
+
+#include EOS_LIBC_ERRNO_HEADER
 #include <stdint.h>
+
+/* Guard the stable errno ABI against drift in the pinned EOS libc. */
+_Static_assert(ENOENT == EOS_ERRNO_NO_ENTRY, "unexpected EOS ENOENT value");
+_Static_assert(EIO == EOS_ERRNO_IO, "unexpected EOS EIO value");
+_Static_assert(ENOMEM == EOS_ERRNO_NO_MEMORY, "unexpected EOS ENOMEM value");
+_Static_assert(EACCES == EOS_ERRNO_ACCESS, "unexpected EOS EACCES value");
+_Static_assert(EBUSY == EOS_ERRNO_BUSY, "unexpected EOS EBUSY value");
+_Static_assert(EEXIST == EOS_ERRNO_EXISTS, "unexpected EOS EEXIST value");
+_Static_assert(EINVAL == EOS_ERRNO_INVALID, "unexpected EOS EINVAL value");
+_Static_assert(EROFS == EOS_ERRNO_READ_ONLY_FS, "unexpected EOS EROFS value");
+_Static_assert(EWOULDBLOCK == EOS_ERRNO_WOULD_BLOCK,
+               "unexpected EOS EWOULDBLOCK value");
+_Static_assert(EPROTONOSUPPORT == EOS_ERRNO_PROTOCOL_NOT_SUPPORTED,
+               "unexpected EOS EPROTONOSUPPORT value");
+_Static_assert(ENOTSUP == EOS_ERRNO_NOT_SUPPORTED, "unexpected EOS ENOTSUP value");
+_Static_assert(ETIMEDOUT == EOS_ERRNO_TIMED_OUT, "unexpected EOS ETIMEDOUT value");
 
 /* Guard the numeric translation table against drift in the pinned SDK. */
 _Static_assert(OS_STS_OK == 0, "unexpected OS_STS_OK value");
@@ -58,7 +79,7 @@ _Static_assert(OS_STS_COUNT == 35, "unexpected OS_STS_COUNT value");
 
 /*
  * This bootstrap cell keeps the MARTOS-native dependency inside this port.
- * The TLS task replaces it with the reserved EOS user-TLS slot 7 adapter.
+ * Task 7 replaces it with the reserved EOS user-TLS slot 7 adapter.
  */
 static int32_t eos_martos_bootstrap_errno;
 

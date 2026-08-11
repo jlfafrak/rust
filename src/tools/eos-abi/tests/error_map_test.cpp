@@ -1,8 +1,8 @@
 #include "eos_error.h"
 
-#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 
 namespace {
@@ -27,40 +27,40 @@ void test_every_martos_14_0_39_status() {
     // test protects the private port boundary.
     const ErrorCase cases[] = {
         {0, EOS_ERROR_NONE, 0, "ok"},
-        {1, EOS_ERROR_ERRNO, EINVAL, "invalid parameter 1"},
-        {2, EOS_ERROR_ERRNO, EINVAL, "invalid parameter 2"},
-        {3, EOS_ERROR_ERRNO, EINVAL, "invalid parameter 3"},
-        {4, EOS_ERROR_ERRNO, EINVAL, "invalid parameter 4"},
-        {5, EOS_ERROR_ERRNO, EINVAL, "invalid parameter 5"},
-        {6, EOS_ERROR_ERRNO, EINVAL, "invalid parameter 6"},
-        {7, EOS_ERROR_ERRNO, EINVAL, "invalid parameter 7"},
-        {8, EOS_ERROR_ERRNO, EINVAL, "invalid parameter 8"},
-        {9, EOS_ERROR_ERRNO, EINVAL, "invalid parameter 9"},
-        {10, EOS_ERROR_ERRNO, EINVAL, "invalid parameter 10"},
-        {11, EOS_ERROR_ERRNO, EINVAL, "invalid object type"},
-        {12, EOS_ERROR_ERRNO, ENOENT, "object not found"},
-        {13, EOS_ERROR_ERRNO, EEXIST, "object exists"},
-        {14, EOS_ERROR_ERRNO, ENOTSUP, "not callable from ISR"},
-        {15, EOS_ERROR_ERRNO, ENOMEM, "allocation error"},
-        {16, EOS_ERROR_ERRNO, EACCES, "insufficient ACL"},
-        {17, EOS_ERROR_ERRNO, EBUSY, "object in use"},
-        {18, EOS_ERROR_ERRNO, EROFS, "object is read-only"},
-        {19, EOS_ERROR_ERRNO, ETIMEDOUT, "timeout expired"},
-        {20, EOS_ERROR_ERRNO, EINVAL, "mutex was not locked"},
-        {21, EOS_ERROR_ERRNO, EWOULDBLOCK, "would block from ISR"},
-        {22, EOS_ERROR_ERRNO, EINVAL, "object was not taken"},
-        {23, EOS_ERROR_ERRNO, EINVAL, "memory misalignment"},
-        {24, EOS_ERROR_ERRNO, EIO, "system not initialized"},
-        {25, EOS_ERROR_ERRNO, EIO, "device error"},
-        {26, EOS_ERROR_ERRNO, EIO, "device read error"},
-        {27, EOS_ERROR_ERRNO, EIO, "device write error"},
-        {28, EOS_ERROR_ERRNO, EIO, "device erase error"},
-        {29, EOS_ERROR_ERRNO, EIO, "partition error"},
-        {30, EOS_ERROR_ERRNO, EACCES, "invalid authentication hash"},
-        {31, EOS_ERROR_ERRNO, EIO, "thread not started"},
+        {1, EOS_ERROR_ERRNO, 22, "invalid parameter 1"},
+        {2, EOS_ERROR_ERRNO, 22, "invalid parameter 2"},
+        {3, EOS_ERROR_ERRNO, 22, "invalid parameter 3"},
+        {4, EOS_ERROR_ERRNO, 22, "invalid parameter 4"},
+        {5, EOS_ERROR_ERRNO, 22, "invalid parameter 5"},
+        {6, EOS_ERROR_ERRNO, 22, "invalid parameter 6"},
+        {7, EOS_ERROR_ERRNO, 22, "invalid parameter 7"},
+        {8, EOS_ERROR_ERRNO, 22, "invalid parameter 8"},
+        {9, EOS_ERROR_ERRNO, 22, "invalid parameter 9"},
+        {10, EOS_ERROR_ERRNO, 22, "invalid parameter 10"},
+        {11, EOS_ERROR_ERRNO, 22, "invalid object type"},
+        {12, EOS_ERROR_ERRNO, 2, "object not found"},
+        {13, EOS_ERROR_ERRNO, 17, "object exists"},
+        {14, EOS_ERROR_ERRNO, 45, "not callable from ISR"},
+        {15, EOS_ERROR_ERRNO, 12, "allocation error"},
+        {16, EOS_ERROR_ERRNO, 13, "insufficient ACL"},
+        {17, EOS_ERROR_ERRNO, 16, "object in use"},
+        {18, EOS_ERROR_ERRNO, 30, "object is read-only"},
+        {19, EOS_ERROR_ERRNO, 60, "timeout expired"},
+        {20, EOS_ERROR_ERRNO, 22, "mutex was not locked"},
+        {21, EOS_ERROR_ERRNO, 35, "would block from ISR"},
+        {22, EOS_ERROR_ERRNO, 22, "object was not taken"},
+        {23, EOS_ERROR_ERRNO, 22, "memory misalignment"},
+        {24, EOS_ERROR_ERRNO, 5, "system not initialized"},
+        {25, EOS_ERROR_ERRNO, 5, "device error"},
+        {26, EOS_ERROR_ERRNO, 5, "device read error"},
+        {27, EOS_ERROR_ERRNO, 5, "device write error"},
+        {28, EOS_ERROR_ERRNO, 5, "device erase error"},
+        {29, EOS_ERROR_ERRNO, 5, "partition error"},
+        {30, EOS_ERROR_ERRNO, 13, "invalid authentication hash"},
+        {31, EOS_ERROR_ERRNO, 5, "thread not started"},
         {32, EOS_ERROR_END_OF_OBJECT, 0, "end of object"},
-        {33, EOS_ERROR_ERRNO, EIO, "symbol error"},
-        {34, EOS_ERROR_ERRNO, EINVAL, "parse error"},
+        {33, EOS_ERROR_ERRNO, 5, "symbol error"},
+        {34, EOS_ERROR_ERRNO, 22, "parse error"},
     };
 
     for (const ErrorCase &test_case : cases) {
@@ -77,11 +77,35 @@ void test_count_and_unknown_values_map_to_eio() {
 
     for (int32_t value : invalid_values) {
         const eos_error_result actual = eos_error_from_port_status(value);
-        if (actual.kind != EOS_ERROR_ERRNO || actual.error_number != EIO) {
-            const ErrorCase test_case{value, EOS_ERROR_ERRNO, EIO,
+        if (actual.kind != EOS_ERROR_ERRNO || actual.error_number != 5) {
+            const ErrorCase test_case{value, EOS_ERROR_ERRNO, 5,
                                       "count or unknown status"};
             fail(test_case, actual);
         }
+    }
+}
+
+void test_debug_record_preserves_unknown_status_and_operation() {
+    eos_error_debug_clear();
+    (void)eos_error_from_port_status_for_operation(0, "known.operation");
+    eos_error_debug_record record = eos_error_debug_last_record();
+    if (record.valid != 0) {
+        std::cerr << "known status unexpectedly created a debug record\n";
+        std::exit(EXIT_FAILURE);
+    }
+
+    const eos_error_result actual =
+        eos_error_from_port_status_for_operation(-77, "filesystem.read");
+    if (actual.kind != EOS_ERROR_ERRNO || actual.error_number != 5) {
+        std::cerr << "debug mapping changed release unknown-status behavior\n";
+        std::exit(EXIT_FAILURE);
+    }
+
+    record = eos_error_debug_last_record();
+    if (record.valid != 1 || record.status != -77 ||
+        std::strcmp(record.operation, "filesystem.read") != 0) {
+        std::cerr << "debug record did not preserve status and operation\n";
+        std::exit(EXIT_FAILURE);
     }
 }
 
@@ -90,5 +114,6 @@ void test_count_and_unknown_values_map_to_eio() {
 int main() {
     test_every_martos_14_0_39_status();
     test_count_and_unknown_values_map_to_eio();
+    test_debug_record_preserves_unknown_status_and_operation();
     return EXIT_SUCCESS;
 }

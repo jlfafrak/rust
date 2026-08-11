@@ -1,7 +1,6 @@
 #include "eos_rust_abi.h"
 
 #include <atomic>
-#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -32,13 +31,13 @@ void test_version_negotiation() {
 
     expect(eos_rust_abi_require(UINT32_C(1), UINT32_C(1)) == -1,
            "ABI 1.0 must reject a newer required minor");
-    expect(*eos_rust_errno_location() == ENOTSUP,
-           "an unavailable ABI minor must report ENOTSUP");
+    expect(*eos_rust_errno_location() == 45,
+           "an unavailable ABI minor must report EOS ENOTSUP (45)");
 
     expect(eos_rust_abi_require(UINT32_C(2), UINT32_C(0)) == -1,
            "ABI 1.x must reject required major 2");
-    expect(*eos_rust_errno_location() == EPROTONOSUPPORT,
-           "an incompatible ABI major must report EPROTONOSUPPORT");
+    expect(*eos_rust_errno_location() == 43,
+           "an incompatible ABI major must report EOS EPROTONOSUPPORT (43)");
 }
 
 void test_errno_is_thread_local() {

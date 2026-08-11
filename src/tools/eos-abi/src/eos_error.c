@@ -1,6 +1,6 @@
 #include "eos_error.h"
 
-#include <errno.h>
+#include <stddef.h>
 
 #if defined(__GNUC__) || defined(__clang__)
 #define EOS_RUST_MAYBE_UNUSED __attribute__((unused))
@@ -53,8 +53,33 @@ static eos_error_result eos_error_result_make(eos_error_kind kind,
     return result;
 }
 
+#ifdef EOS_RUST_DEBUG_ERRORS
+static eos_error_debug_record eos_error_last_debug_record;
+
+static void eos_error_debug_record_unknown(int32_t status,
+                                           const char *operation) {
+    size_t index = 0;
+    eos_error_last_debug_record.status = status;
+    eos_error_last_debug_record.valid = 1;
+    if (operation != NULL) {
+        while (operation[index] != '\0' &&
+               index + 1 < EOS_ERROR_OPERATION_CAPACITY) {
+            eos_error_last_debug_record.operation[index] = operation[index];
+            ++index;
+        }
+    }
+    eos_error_last_debug_record.operation[index] = '\0';
+}
+#else
+static void eos_error_debug_record_unknown(int32_t status,
+                                           const char *operation) {
+    (void)status;
+    (void)operation;
+}
+#endif
+
 static EOS_RUST_MAYBE_UNUSED eos_error_result
-eos_error_from_port_status_impl(int32_t status) {
+eos_error_from_port_status_impl(int32_t status, const char *operation) {
     switch (status) {
     case EOS_PORT_STATUS_OK:
         return eos_error_result_make(EOS_ERROR_NONE, 0);
@@ -74,27 +99,27 @@ eos_error_from_port_status_impl(int32_t status) {
     case EOS_PORT_STATUS_OBJECT_WAS_NOT_TAKEN:
     case EOS_PORT_STATUS_MEM_MISALIGNMENT:
     case EOS_PORT_STATUS_PARSE_ERROR:
-        return eos_error_result_make(EOS_ERROR_ERRNO, EINVAL);
+        return eos_error_result_make(EOS_ERROR_ERRNO, EOS_ERRNO_INVALID);
 
     case EOS_PORT_STATUS_OBJECT_NOT_FOUND:
-        return eos_error_result_make(EOS_ERROR_ERRNO, ENOENT);
+        return eos_error_result_make(EOS_ERROR_ERRNO, EOS_ERRNO_NO_ENTRY);
     case EOS_PORT_STATUS_OBJECT_EXISTS:
-        return eos_error_result_make(EOS_ERROR_ERRNO, EEXIST);
+        return eos_error_result_make(EOS_ERROR_ERRNO, EOS_ERRNO_EXISTS);
     case EOS_PORT_STATUS_NOT_CALLABLE_FROM_ISR:
-        return eos_error_result_make(EOS_ERROR_ERRNO, ENOTSUP);
+        return eos_error_result_make(EOS_ERROR_ERRNO, EOS_ERRNO_NOT_SUPPORTED);
     case EOS_PORT_STATUS_ALLOC_ERROR:
-        return eos_error_result_make(EOS_ERROR_ERRNO, ENOMEM);
+        return eos_error_result_make(EOS_ERROR_ERRNO, EOS_ERRNO_NO_MEMORY);
     case EOS_PORT_STATUS_INSUFFICIENT_ACL:
     case EOS_PORT_STATUS_INVALID_HASH:
-        return eos_error_result_make(EOS_ERROR_ERRNO, EACCES);
+        return eos_error_result_make(EOS_ERROR_ERRNO, EOS_ERRNO_ACCESS);
     case EOS_PORT_STATUS_OBJECT_IN_USE:
-        return eos_error_result_make(EOS_ERROR_ERRNO, EBUSY);
+        return eos_error_result_make(EOS_ERROR_ERRNO, EOS_ERRNO_BUSY);
     case EOS_PORT_STATUS_OBJECT_IS_READ_ONLY:
-        return eos_error_result_make(EOS_ERROR_ERRNO, EROFS);
+        return eos_error_result_make(EOS_ERROR_ERRNO, EOS_ERRNO_READ_ONLY_FS);
     case EOS_PORT_STATUS_TIMEOUT_EXPIRED:
-        return eos_error_result_make(EOS_ERROR_ERRNO, ETIMEDOUT);
+        return eos_error_result_make(EOS_ERROR_ERRNO, EOS_ERRNO_TIMED_OUT);
     case EOS_PORT_STATUS_WOULD_BLOCK_FROM_ISR:
-        return eos_error_result_make(EOS_ERROR_ERRNO, EWOULDBLOCK);
+        return eos_error_result_make(EOS_ERROR_ERRNO, EOS_ERRNO_WOULD_BLOCK);
 
     case EOS_PORT_STATUS_SYSTEM_NOT_INITIALIZED:
     case EOS_PORT_STATUS_DEVICE_ERROR:
@@ -104,19 +129,37 @@ eos_error_from_port_status_impl(int32_t status) {
     case EOS_PORT_STATUS_PARTITION_ERROR:
     case EOS_PORT_STATUS_THREAD_NOT_STARTED:
     case EOS_PORT_STATUS_SYMBOL_ERROR:
-        return eos_error_result_make(EOS_ERROR_ERRNO, EIO);
+        return eos_error_result_make(EOS_ERROR_ERRNO, EOS_ERRNO_IO);
 
     case EOS_PORT_STATUS_END_OF_OBJECT:
         return eos_error_result_make(EOS_ERROR_END_OF_OBJECT, 0);
 
     case EOS_PORT_STATUS_COUNT:
     default:
-        return eos_error_result_make(EOS_ERROR_ERRNO, EIO);
+        eos_error_debug_record_unknown(status, operation);
+        return eos_error_result_make(EOS_ERROR_ERRNO, EOS_ERRNO_IO);
     }
 }
 
 #ifdef EOS_RUST_TESTING
 eos_error_result eos_error_from_port_status(int32_t status) {
-    return eos_error_from_port_status_impl(status);
+    return eos_error_from_port_status_impl(status, NULL);
 }
+
+#ifdef EOS_RUST_DEBUG_ERRORS
+eos_error_result eos_error_from_port_status_for_operation(
+    int32_t status, const char *operation) {
+    return eos_error_from_port_status_impl(status, operation);
+}
+
+void eos_error_debug_clear(void) {
+    eos_error_last_debug_record.status = 0;
+    eos_error_last_debug_record.valid = 0;
+    eos_error_last_debug_record.operation[0] = '\0';
+}
+
+eos_error_debug_record eos_error_debug_last_record(void) {
+    return eos_error_last_debug_record;
+}
+#endif
 #endif
