@@ -1,0 +1,17 @@
+[rust]
+version = "1.97.1"
+upstream_commit = "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
+
+[libc]
+version = "0.2.185"
+upstream_commit = "71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8"
+
+[arm_gnu]
+release = "14.3.Rel1"
+
+[eos_sdk]
+baseline = "MARTOS-SMP-14.0.39"
+
+[eos_rust_abi]
+major = 1
+minor = 0
