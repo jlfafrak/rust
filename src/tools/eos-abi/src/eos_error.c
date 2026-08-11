@@ -1,6 +1,7 @@
 #include "eos_error.h"
 
 #include <stddef.h>
+#include <stdatomic.h>
 
 #if defined(__GNUC__) || defined(__clang__)
 #define EOS_RUST_MAYBE_UNUSED __attribute__((unused))
@@ -55,12 +56,32 @@ static eos_error_result eos_error_result_make(eos_error_kind kind,
 
 #ifdef EOS_RUST_DEBUG_ERRORS
 static eos_error_debug_record eos_error_last_debug_record;
+static atomic_flag eos_error_debug_lock = ATOMIC_FLAG_INIT;
+
+#ifdef EOS_RUST_TESTING
+static eos_error_debug_interleave_hook eos_error_interleave_hook;
+static void *eos_error_interleave_context;
+#endif
 
 static void eos_error_debug_record_unknown(int32_t status,
                                            const char *operation) {
     size_t index = 0;
+
+    /*
+     * Recording is best-effort and may run in ISR context. Never wait for a
+     * preempted writer: drop this diagnostic if another record is in flight.
+     */
+    if (atomic_flag_test_and_set_explicit(&eos_error_debug_lock,
+                                          memory_order_acquire)) {
+        return;
+    }
     eos_error_last_debug_record.status = status;
     eos_error_last_debug_record.valid = 1;
+#ifdef EOS_RUST_TESTING
+    if (eos_error_interleave_hook != NULL) {
+        eos_error_interleave_hook(eos_error_interleave_context);
+    }
+#endif
     if (operation != NULL) {
         while (operation[index] != '\0' &&
                index + 1 < EOS_ERROR_OPERATION_CAPACITY) {
@@ -69,6 +90,7 @@ static void eos_error_debug_record_unknown(int32_t status,
         }
     }
     eos_error_last_debug_record.operation[index] = '\0';
+    atomic_flag_clear_explicit(&eos_error_debug_lock, memory_order_release);
 }
 #else
 static void eos_error_debug_record_unknown(int32_t status,
@@ -153,13 +175,29 @@ eos_error_result eos_error_from_port_status_for_operation(
 }
 
 void eos_error_debug_clear(void) {
+    while (atomic_flag_test_and_set_explicit(&eos_error_debug_lock,
+                                             memory_order_acquire)) {
+    }
     eos_error_last_debug_record.status = 0;
     eos_error_last_debug_record.valid = 0;
     eos_error_last_debug_record.operation[0] = '\0';
+    atomic_flag_clear_explicit(&eos_error_debug_lock, memory_order_release);
 }
 
 eos_error_debug_record eos_error_debug_last_record(void) {
-    return eos_error_last_debug_record;
+    eos_error_debug_record record;
+    while (atomic_flag_test_and_set_explicit(&eos_error_debug_lock,
+                                             memory_order_acquire)) {
+    }
+    record = eos_error_last_debug_record;
+    atomic_flag_clear_explicit(&eos_error_debug_lock, memory_order_release);
+    return record;
+}
+
+void eos_error_debug_set_interleave_hook(eos_error_debug_interleave_hook hook,
+                                         void *context) {
+    eos_error_interleave_hook = hook;
+    eos_error_interleave_context = context;
 }
 #endif
 #endif

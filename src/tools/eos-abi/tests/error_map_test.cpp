@@ -1,9 +1,12 @@
 #include "eos_error.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <thread>
 
 namespace {
 
@@ -109,11 +112,78 @@ void test_debug_record_preserves_unknown_status_and_operation() {
     }
 }
 
+struct InterleaveContext {
+    std::atomic<int> calls{0};
+    std::atomic<bool> first_paused{false};
+    std::atomic<bool> release_first{false};
+};
+
+void pause_first_debug_writer(void *opaque) {
+    auto *context = static_cast<InterleaveContext *>(opaque);
+    if (context->calls.fetch_add(1, std::memory_order_acq_rel) != 0) {
+        return;
+    }
+    context->first_paused.store(true, std::memory_order_release);
+    while (!context->release_first.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+}
+
+void test_concurrent_debug_records_are_coherent_and_nonblocking() {
+    eos_error_debug_clear();
+    InterleaveContext context;
+    eos_error_debug_set_interleave_hook(pause_first_debug_writer, &context);
+
+    std::thread first([] {
+        (void)eos_error_from_port_status_for_operation(-77, "first.operation");
+    });
+    while (!context.first_paused.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+
+    std::atomic<bool> second_done{false};
+    std::thread second([&] {
+        (void)eos_error_from_port_status_for_operation(-88, "second.operation");
+        second_done.store(true, std::memory_order_release);
+    });
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!second_done.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    const bool second_blocked = !second_done.load(std::memory_order_acquire);
+
+    context.release_first.store(true, std::memory_order_release);
+    first.join();
+    second.join();
+    eos_error_debug_set_interleave_hook(nullptr, nullptr);
+
+    if (second_blocked) {
+        std::cerr << "debug recording blocked behind a preempted writer\n";
+        std::exit(EXIT_FAILURE);
+    }
+
+    const eos_error_debug_record record = eos_error_debug_last_record();
+    const bool coherent_first =
+        record.status == -77 &&
+        std::strcmp(record.operation, "first.operation") == 0;
+    const bool coherent_second =
+        record.status == -88 &&
+        std::strcmp(record.operation, "second.operation") == 0;
+    if (!coherent_first && !coherent_second) {
+        std::cerr << "concurrent debug writers produced a torn record: status "
+                  << record.status << ", operation " << record.operation << '\n';
+        std::exit(EXIT_FAILURE);
+    }
+}
+
 } // namespace
 
 int main() {
     test_every_martos_14_0_39_status();
     test_count_and_unknown_values_map_to_eio();
     test_debug_record_preserves_unknown_status_and_operation();
+    test_concurrent_debug_records_are_coherent_and_nonblocking();
     return EXIT_SUCCESS;
 }

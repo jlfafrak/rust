@@ -48,10 +48,14 @@ extern "C" {
 eos_error_result eos_error_from_port_status(int32_t status);
 
 #  ifdef EOS_RUST_DEBUG_ERRORS
+typedef void (*eos_error_debug_interleave_hook)(void *context);
+
 eos_error_result eos_error_from_port_status_for_operation(int32_t status,
                                                           const char *operation);
 void eos_error_debug_clear(void);
 eos_error_debug_record eos_error_debug_last_record(void);
+void eos_error_debug_set_interleave_hook(eos_error_debug_interleave_hook hook,
+                                         void *context);
 #  endif
 
 #  ifdef __cplusplus
