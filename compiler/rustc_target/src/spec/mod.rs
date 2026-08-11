@@ -1676,6 +1676,7 @@ supported_targets! {
     ("thumbv8m.main-none-eabihf", thumbv8m_main_none_eabihf),
 
     ("armv7a-none-eabi", armv7a_none_eabi),
+    ("armv7a-unknown-eos-eabi", armv7a_unknown_eos_eabi),
     ("thumbv7a-none-eabi", thumbv7a_none_eabi),
     ("armv7a-none-eabihf", armv7a_none_eabihf),
     ("thumbv7a-none-eabihf", thumbv7a_none_eabihf),
@@ -1987,6 +1988,7 @@ crate::target_spec_enum! {
         Cygwin = "cygwin",
         Dragonfly = "dragonfly",
         Emscripten = "emscripten",
+        Eos = "eos",
         EspIdf = "espidf",
         FreeBsd = "freebsd",
         Fuchsia = "fuchsia",

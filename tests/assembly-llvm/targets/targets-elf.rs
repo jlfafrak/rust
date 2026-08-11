@@ -208,6 +208,9 @@
 //@ revisions: armv7a_kmc_solid_asp3_eabihf
 //@ [armv7a_kmc_solid_asp3_eabihf] compile-flags: --target armv7a-kmc-solid_asp3-eabihf
 //@ [armv7a_kmc_solid_asp3_eabihf] needs-llvm-components: arm
+//@ revisions: armv7a_unknown_eos_eabi
+//@ [armv7a_unknown_eos_eabi] compile-flags: --target armv7a-unknown-eos-eabi
+//@ [armv7a_unknown_eos_eabi] needs-llvm-components: arm
 //@ revisions: armv7a_none_eabi
 //@ [armv7a_none_eabi] compile-flags: --target armv7a-none-eabi
 //@ [armv7a_none_eabi] needs-llvm-components: arm
