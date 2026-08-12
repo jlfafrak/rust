@@ -91,6 +91,7 @@ endif()
 if(BUILD_TESTING)
     enable_language(CXX)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    include(CheckCXXSourceRuns)
 
     add_executable(abi_contract_test tests/abi_contract_test.cpp)
     set_target_properties(abi_contract_test PROPERTIES
@@ -163,6 +164,76 @@ if(BUILD_TESTING)
         Threads::Threads
     )
     add_test(NAME hash_seed COMMAND hash_seed_test)
+
+    add_executable(fd_table_test tests/fd_table_test.cpp)
+    set_target_properties(fd_table_test PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED YES
+        CXX_EXTENSIONS NO
+    )
+    target_compile_definitions(fd_table_test PRIVATE EOS_RUST_HOST_TEST=1)
+    target_include_directories(fd_table_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    )
+    target_link_libraries(fd_table_test PRIVATE
+        eos_rust_abi_host_test
+        Threads::Threads
+    )
+    add_test(NAME fd_table COMMAND fd_table_test)
+
+    add_executable(fd_race_test tests/fd_race_test.cpp)
+    set_target_properties(fd_race_test PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED YES
+        CXX_EXTENSIONS NO
+    )
+    target_compile_definitions(fd_race_test PRIVATE EOS_RUST_HOST_TEST=1)
+    target_include_directories(fd_race_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    )
+    target_link_libraries(fd_race_test PRIVATE
+        eos_rust_abi_host_test
+        Threads::Threads
+    )
+    add_test(NAME fd_race COMMAND fd_race_test)
+
+    set(CMAKE_REQUIRED_FLAGS "-fsanitize=thread")
+    set(CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=thread")
+    check_cxx_source_runs(
+        "#include <thread>\nint main() { std::thread t([] {}); t.join(); return 0; }"
+        EOS_RUST_TSAN_AVAILABLE
+    )
+    unset(CMAKE_REQUIRED_FLAGS)
+    unset(CMAKE_REQUIRED_LINK_OPTIONS)
+    if(EOS_RUST_TSAN_AVAILABLE)
+        add_library(eos_rust_abi_host_tsan STATIC src/eos_abi.c)
+        set_target_properties(eos_rust_abi_host_tsan PROPERTIES
+            C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO
+            C_VISIBILITY_PRESET hidden POSITION_INDEPENDENT_CODE YES)
+        target_include_directories(eos_rust_abi_host_tsan PUBLIC
+            "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>" PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src")
+        target_compile_definitions(eos_rust_abi_host_tsan PRIVATE
+            EOS_RUST_HOST_TEST=1 EOS_RUST_PORT_SOURCE="${EOS_RUST_PORT_SOURCE}")
+        target_compile_options(eos_rust_abi_host_tsan PRIVATE -fsanitize=thread)
+        target_link_options(eos_rust_abi_host_tsan PRIVATE -fsanitize=thread)
+        target_link_libraries(eos_rust_abi_host_tsan PRIVATE Threads::Threads)
+
+        add_executable(fd_race_tsan tests/fd_race_test.cpp)
+        set_target_properties(fd_race_tsan PROPERTIES
+            CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+        target_compile_definitions(fd_race_tsan PRIVATE EOS_RUST_HOST_TEST=1)
+        target_include_directories(fd_race_tsan PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src")
+        target_compile_options(fd_race_tsan PRIVATE -fsanitize=thread)
+        target_link_options(fd_race_tsan PRIVATE -fsanitize=thread)
+        target_link_libraries(fd_race_tsan PRIVATE
+            eos_rust_abi_host_tsan Threads::Threads)
+        add_test(NAME fd_race_tsan COMMAND fd_race_tsan)
+    else()
+        message(STATUS
+            "ThreadSanitizer compile/runtime probe failed; fd_race remains enabled without TSan")
+    endif()
 
     add_test(
         NAME port_config

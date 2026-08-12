@@ -4,9 +4,12 @@
 #include <string.h>
 #include <time.h>
 #include <pthread.h>
+#include <stdatomic.h>
+#include <unistd.h>
 
 static _Thread_local int32_t eos_host_errno;
 static pthread_mutex_t eos_host_locks[EOS_PORT_LOCK_COUNT] = {
+    PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER,
     PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER};
 
 #ifdef EOS_RUST_HOST_TEST
@@ -20,6 +23,8 @@ static int32_t eos_host_next_environment_unset_status;
 static int eos_host_native_environment_present;
 static char eos_host_native_environment_name[64];
 static char eos_host_native_environment_value[EOS_PORT_ENV_VALUE_CAPACITY];
+static int32_t eos_host_console_failure[3];
+static _Atomic uint32_t eos_host_console_open_count[3];
 
 void eos_host_test_reset(void) {
     eos_host_next_alloc_status = 0;
@@ -30,6 +35,11 @@ void eos_host_test_reset(void) {
     eos_host_next_environment_set_status = 0;
     eos_host_next_environment_unset_status = 0;
     eos_host_native_environment_present = 0;
+    for (uint32_t stream = 0; stream < UINT32_C(3); ++stream) {
+        eos_host_console_failure[stream] = 0;
+        atomic_store_explicit(&eos_host_console_open_count[stream],
+                              UINT32_C(0), memory_order_relaxed);
+    }
 }
 void eos_host_test_fail_next_alloc(int32_t status) { eos_host_next_alloc_status = status; }
 void eos_host_test_fail_next_aligned_alloc(int32_t status) { eos_host_next_aligned_status = status; }
@@ -38,6 +48,14 @@ void eos_host_test_fail_next_lock(int32_t status) { eos_host_next_lock_status = 
 void eos_host_test_fail_next_unlock(int32_t status) { eos_host_next_unlock_status = status; }
 void eos_host_test_fail_next_environment_set(int32_t status) { eos_host_next_environment_set_status = status; }
 void eos_host_test_fail_next_environment_unset(int32_t status) { eos_host_next_environment_unset_status = status; }
+void eos_host_test_fail_console(uint32_t stream, int32_t status) {
+    if (stream < UINT32_C(3)) eos_host_console_failure[stream] = status;
+}
+uint32_t eos_host_test_console_open_count(uint32_t stream) {
+    if (stream >= UINT32_C(3)) return UINT32_C(0);
+    return atomic_load_explicit(&eos_host_console_open_count[stream],
+                                memory_order_relaxed);
+}
 void eos_host_test_native_environment(const char *name, const char *value) {
     (void)strncpy(eos_host_native_environment_name, name,
                   sizeof(eos_host_native_environment_name) - 1U);
@@ -192,6 +210,41 @@ static int32_t eos_port_lock_release(uint32_t lock_id) {
 #endif
     if (lock_id >= EOS_PORT_LOCK_COUNT) return 1;
     return pthread_mutex_unlock(&eos_host_locks[lock_id]) == 0 ? 0 : 20;
+}
+
+static int32_t eos_port_console_establish(uint32_t stream,
+                                          uintptr_t *native_console) {
+    int32_t status;
+    if (stream >= UINT32_C(3) || native_console == NULL) return 1;
+#ifdef EOS_RUST_HOST_TEST
+    status = eos_host_console_failure[stream];
+    if (status != 0) {
+        eos_host_console_failure[stream] = 0;
+        return status;
+    }
+#else
+    status = 0;
+#endif
+    *native_console = (uintptr_t)stream;
+#ifdef EOS_RUST_HOST_TEST
+    (void)atomic_fetch_add_explicit(&eos_host_console_open_count[stream],
+                                    UINT32_C(1), memory_order_relaxed);
+#endif
+    return status;
+}
+
+static void eos_port_console_release(uintptr_t native_console) {
+    (void)native_console;
+}
+
+static void eos_port_direct_diagnostic(const char *message) {
+    size_t length = strlen(message);
+    while (length != 0U) {
+        ssize_t written = write(STDERR_FILENO, message, length);
+        if (written <= 0) return;
+        message += (size_t)written;
+        length -= (size_t)written;
+    }
 }
 
 static uint64_t eos_port_hash_bytes(const char *text) {

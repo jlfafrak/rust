@@ -12,11 +12,14 @@
 /* Guard the stable errno ABI against drift in the pinned EOS libc. */
 _Static_assert(ENOENT == EOS_ERRNO_NO_ENTRY, "unexpected EOS ENOENT value");
 _Static_assert(EIO == EOS_ERRNO_IO, "unexpected EOS EIO value");
+_Static_assert(EBADF == EOS_ERRNO_BAD_DESCRIPTOR, "unexpected EOS EBADF value");
 _Static_assert(ENOMEM == EOS_ERRNO_NO_MEMORY, "unexpected EOS ENOMEM value");
 _Static_assert(EACCES == EOS_ERRNO_ACCESS, "unexpected EOS EACCES value");
 _Static_assert(EBUSY == EOS_ERRNO_BUSY, "unexpected EOS EBUSY value");
 _Static_assert(EEXIST == EOS_ERRNO_EXISTS, "unexpected EOS EEXIST value");
 _Static_assert(EINVAL == EOS_ERRNO_INVALID, "unexpected EOS EINVAL value");
+_Static_assert(EMFILE == EOS_ERRNO_TOO_MANY_OPEN_FILES,
+               "unexpected EOS EMFILE value");
 _Static_assert(EROFS == EOS_ERRNO_READ_ONLY_FS, "unexpected EOS EROFS value");
 _Static_assert(EWOULDBLOCK == EOS_ERRNO_WOULD_BLOCK,
                "unexpected EOS EWOULDBLOCK value");
@@ -121,6 +124,26 @@ static int32_t eos_port_lock_release(uint32_t lock_id) {
                                 memory_order_acquire);
     if (lock == NULL) return OS_STS_INVALID_PARAM1;
     return (int32_t)os_mutex_unlock(lock);
+}
+
+static int32_t eos_port_console_establish(uint32_t stream,
+                                          uintptr_t *native_console) {
+    if (stream >= UINT32_C(3) || native_console == NULL) {
+        return OS_STS_INVALID_PARAM1;
+    }
+    *native_console = (uintptr_t)stream;
+    return OS_STS_OK;
+}
+
+static void eos_port_console_release(uintptr_t native_console) {
+    (void)native_console;
+}
+
+static void eos_port_direct_diagnostic(const char *message) {
+    while (*message != '\0') {
+        (void)os_stdio_isr_output(*message);
+        ++message;
+    }
 }
 
 static int32_t eos_port_memory_alloc(uint32_t byte_count, void **memory) {

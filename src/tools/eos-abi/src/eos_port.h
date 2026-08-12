@@ -19,7 +19,9 @@ typedef struct eos_hash_seed_sources {
 #define EOS_PORT_ENV_VALUE_CAPACITY UINT32_C(128)
 #define EOS_PORT_LOCK_RUNTIME UINT32_C(0)
 #define EOS_PORT_LOCK_HASH_SEED UINT32_C(1)
-#define EOS_PORT_LOCK_COUNT UINT32_C(2)
+#define EOS_PORT_LOCK_FD_TABLE UINT32_C(2)
+#define EOS_PORT_LOCK_RUNTIME_INIT UINT32_C(3)
+#define EOS_PORT_LOCK_COUNT UINT32_C(4)
 
 /* Implemented with internal linkage by the one C source selected by CMake. */
 static int32_t *eos_port_errno_location(void);
@@ -37,5 +39,9 @@ static int32_t eos_port_environment_unset(const char *name);
 static void eos_port_hash_seed_sources(eos_hash_seed_sources *sources);
 static int32_t eos_port_lock_acquire(uint32_t lock_id);
 static int32_t eos_port_lock_release(uint32_t lock_id);
+static int32_t eos_port_console_establish(uint32_t stream,
+                                          uintptr_t *native_console);
+static void eos_port_console_release(uintptr_t native_console);
+static void eos_port_direct_diagnostic(const char *message);
 
 #endif

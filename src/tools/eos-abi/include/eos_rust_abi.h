@@ -33,6 +33,8 @@
 extern "C" {
 #endif
 
+typedef int32_t eos_rust_fd_t;
+
 EOS_RUST_EXPORT uint32_t eos_rust_abi_version(void);
 
 /*
@@ -62,6 +64,14 @@ EOS_RUST_EXPORT void eos_rust_free(void *memory);
 
 EOS_RUST_EXPORT EOS_RUST_NORETURN void eos_rust_abort(void);
 EOS_RUST_EXPORT EOS_RUST_NORETURN void eos_rust_exit(int32_t status);
+
+/*
+ * Initializes process runtime state and console-backed descriptors 0, 1, and
+ * 2. Calls are concurrency-safe and idempotent. Failure emits a native direct
+ * diagnostic and aborts; this operation is not callable from ISR context.
+ */
+EOS_RUST_EXPORT void eos_rust_runtime_init(int32_t argc,
+                                           const char *const *argv);
 
 /*
  * Returned environment strings and vectors are immutable snapshots owned by

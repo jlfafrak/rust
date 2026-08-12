@@ -11,5 +11,6 @@ eos_rust_hash_seed
 eos_rust_malloc
 eos_rust_posix_memalign
 eos_rust_realloc
+eos_rust_runtime_init
 eos_rust_setenv
 eos_rust_unsetenv
