@@ -11,9 +11,12 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/stat.h>
+#include <sched.h>
 
-static _Thread_local int32_t eos_host_errno;
+static pthread_key_t eos_host_tls_slot_keys[8];
+static pthread_once_t eos_host_tls_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t eos_host_locks[EOS_PORT_LOCK_COUNT] = {
+    PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER,
     PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER,
     PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER,
     PTHREAD_MUTEX_INITIALIZER};
@@ -57,6 +60,24 @@ static int32_t eos_host_next_file_close_status;
 static int32_t eos_host_next_sync_wait_status;
 static uint32_t eos_host_seek_successes_before_failure;
 static int32_t eos_host_delayed_seek_status;
+static int32_t eos_host_next_thread_create_status;
+static int32_t eos_host_next_tls_get_status;
+static int32_t eos_host_next_tls_set_status;
+static _Atomic uint32_t eos_host_last_tls_get_slot;
+static _Atomic uint32_t eos_host_last_tls_set_slot;
+static _Atomic uint32_t eos_host_last_thread_stack;
+static _Atomic uint32_t eos_host_last_thread_features;
+static _Atomic uint32_t eos_host_last_thread_priority;
+static _Atomic uint32_t eos_host_native_thread_delete_count;
+static _Atomic uint32_t eos_host_thread_completion_count;
+static int eos_host_finish_thread_before_create_returns;
+static int32_t eos_host_start_thread_then_fail_status;
+static int32_t eos_host_next_sync_destroy_status;
+static int32_t eos_host_next_free_status;
+static uint32_t eos_host_tls_set_successes_before_failure;
+static int32_t eos_host_delayed_tls_set_status;
+static _Atomic uint32_t eos_host_sync_create_count;
+static _Atomic uint32_t eos_host_sync_destroy_count;
 
 void eos_host_test_reset(void) {
     eos_host_next_alloc_status = 0;
@@ -89,6 +110,24 @@ void eos_host_test_reset(void) {
     eos_host_next_sync_wait_status = 0;
     eos_host_seek_successes_before_failure = UINT32_MAX;
     eos_host_delayed_seek_status = 0;
+    eos_host_next_thread_create_status = 0;
+    eos_host_next_tls_get_status = 0;
+    eos_host_next_tls_set_status = 0;
+    atomic_store(&eos_host_last_tls_get_slot, UINT32_MAX);
+    atomic_store(&eos_host_last_tls_set_slot, UINT32_MAX);
+    atomic_store(&eos_host_last_thread_stack, 0);
+    atomic_store(&eos_host_last_thread_features, UINT32_MAX);
+    atomic_store(&eos_host_last_thread_priority, 0);
+    atomic_store(&eos_host_native_thread_delete_count, 0);
+    atomic_store(&eos_host_thread_completion_count, 0);
+    eos_host_finish_thread_before_create_returns = 0;
+    eos_host_start_thread_then_fail_status = 0;
+    eos_host_next_sync_destroy_status = 0;
+    eos_host_next_free_status = 0;
+    eos_host_tls_set_successes_before_failure = UINT32_MAX;
+    eos_host_delayed_tls_set_status = 0;
+    atomic_store(&eos_host_sync_create_count, 0);
+    atomic_store(&eos_host_sync_destroy_count, 0);
     (void)strcpy(eos_host_hostname, "eos-host");
     (void)pthread_mutex_unlock(&eos_host_console_guard);
     (void)pthread_mutex_lock(&eos_host_closedir_guard);
@@ -143,6 +182,55 @@ void eos_host_test_fail_next_sync_wait(int32_t status) {
 void eos_host_test_fail_seek_after(uint32_t successful_seeks, int32_t status) {
     eos_host_seek_successes_before_failure = successful_seeks;
     eos_host_delayed_seek_status = status;
+}
+void eos_host_test_fail_next_thread_create(int32_t status) {
+    eos_host_next_thread_create_status = status;
+}
+void eos_host_test_fail_next_tls_get(int32_t status) {
+    eos_host_next_tls_get_status = status;
+}
+void eos_host_test_fail_next_tls_set(int32_t status) {
+    eos_host_next_tls_set_status = status;
+}
+void eos_host_test_fail_tls_set_after(uint32_t successful_sets, int32_t status) {
+    eos_host_tls_set_successes_before_failure = successful_sets;
+    eos_host_delayed_tls_set_status = status;
+}
+void eos_host_test_finish_thread_before_create_returns(int enabled) {
+    eos_host_finish_thread_before_create_returns = enabled;
+}
+void eos_host_test_start_thread_then_fail(int32_t status) {
+    eos_host_start_thread_then_fail_status = status;
+}
+void eos_host_test_fail_next_sync_destroy(int32_t status) {
+    eos_host_next_sync_destroy_status = status;
+}
+void eos_host_test_fail_next_free(int32_t status) {
+    eos_host_next_free_status = status;
+}
+uint32_t eos_host_test_sync_create_count(void) {
+    return atomic_load(&eos_host_sync_create_count);
+}
+uint32_t eos_host_test_sync_destroy_count(void) {
+    return atomic_load(&eos_host_sync_destroy_count);
+}
+uint32_t eos_host_test_last_tls_get_slot(void) {
+    return atomic_load(&eos_host_last_tls_get_slot);
+}
+uint32_t eos_host_test_last_tls_set_slot(void) {
+    return atomic_load(&eos_host_last_tls_set_slot);
+}
+uint32_t eos_host_test_last_thread_stack(void) {
+    return atomic_load(&eos_host_last_thread_stack);
+}
+uint32_t eos_host_test_last_thread_features(void) {
+    return atomic_load(&eos_host_last_thread_features);
+}
+uint32_t eos_host_test_last_thread_priority(void) {
+    return atomic_load(&eos_host_last_thread_priority);
+}
+uint32_t eos_host_test_native_thread_delete_count(void) {
+    return atomic_load(&eos_host_native_thread_delete_count);
 }
 void eos_host_test_console_input(const char *text) {
     size_t length = strlen(text);
@@ -216,8 +304,123 @@ static void eos_host_test_closedir_validation_point(void) {
 }
 #endif
 
-static int32_t *eos_port_errno_location(void) {
-    return &eos_host_errno;
+static void eos_host_tls_init(void) {
+    uint32_t slot;
+    for (slot = 0; slot < UINT32_C(8); ++slot) {
+        if (pthread_key_create(&eos_host_tls_slot_keys[slot], NULL) != 0) abort();
+    }
+}
+
+static int32_t eos_port_thread_tls_get(uint32_t slot, uintptr_t *value) {
+#ifdef EOS_RUST_HOST_TEST
+    atomic_store(&eos_host_last_tls_get_slot, slot);
+    if (eos_host_next_tls_get_status != 0) {
+        int32_t status = eos_host_next_tls_get_status;
+        eos_host_next_tls_get_status = 0;
+        return status;
+    }
+#endif
+    if (slot >= UINT32_C(8) || value == NULL) return 1;
+    if (pthread_once(&eos_host_tls_once, eos_host_tls_init) != 0) return 25;
+    *value = (uintptr_t)pthread_getspecific(eos_host_tls_slot_keys[slot]);
+    return 0;
+}
+
+static int32_t eos_port_thread_tls_set(uint32_t slot, uintptr_t value) {
+#ifdef EOS_RUST_HOST_TEST
+    atomic_store(&eos_host_last_tls_set_slot, slot);
+    if (eos_host_next_tls_set_status != 0) {
+        int32_t status = eos_host_next_tls_set_status;
+        eos_host_next_tls_set_status = 0;
+        return status;
+    }
+    if (eos_host_delayed_tls_set_status != 0) {
+        if (eos_host_tls_set_successes_before_failure == 0) {
+            int32_t status = eos_host_delayed_tls_set_status;
+            eos_host_delayed_tls_set_status = 0;
+            eos_host_tls_set_successes_before_failure = UINT32_MAX;
+            return status;
+        }
+        --eos_host_tls_set_successes_before_failure;
+    }
+#endif
+    if (slot >= UINT32_C(8)) return 1;
+    if (pthread_once(&eos_host_tls_once, eos_host_tls_init) != 0) return 25;
+    return pthread_setspecific(eos_host_tls_slot_keys[slot], (void *)value) == 0
+               ? 0 : 25;
+}
+
+typedef struct eos_host_thread_start {
+    eos_port_thread_start start;
+    void *argument;
+} eos_host_thread_start;
+
+static void *eos_host_thread_entry(void *opaque) {
+    eos_host_thread_start start = *(eos_host_thread_start *)opaque;
+    free(opaque);
+    start.start(start.argument);
+#ifdef EOS_RUST_HOST_TEST
+    (void)atomic_fetch_add(&eos_host_thread_completion_count, UINT32_C(1));
+#endif
+    return NULL;
+}
+
+static int32_t eos_port_thread_create(const char *name,
+                                      eos_port_thread_start start,
+                                      void *argument,
+                                      uint32_t stack_size) {
+    pthread_t thread;
+    pthread_attr_t attribute;
+    eos_host_thread_start *context;
+    int rc;
+#ifdef EOS_RUST_HOST_TEST
+    uint32_t completion_before;
+#endif
+    (void)name;
+#ifdef EOS_RUST_HOST_TEST
+    atomic_store(&eos_host_last_thread_stack, stack_size);
+    atomic_store(&eos_host_last_thread_features, UINT32_C(0));
+    atomic_store(&eos_host_last_thread_priority, UINT32_C(200));
+    if (eos_host_next_thread_create_status != 0) {
+        int32_t status = eos_host_next_thread_create_status;
+        eos_host_next_thread_create_status = 0;
+        return status;
+    }
+#endif
+    context = (eos_host_thread_start *)malloc(sizeof(*context));
+    if (context == NULL) return 15;
+    context->start = start;
+    context->argument = argument;
+#ifdef EOS_RUST_HOST_TEST
+    completion_before = atomic_load(&eos_host_thread_completion_count);
+#endif
+    if (pthread_attr_init(&attribute) != 0) {
+        free(context);
+        return 25;
+    }
+    (void)stack_size; /* Host PTHREAD_STACK_MIN may exceed the target minimum. */
+    rc = pthread_create(&thread, &attribute, eos_host_thread_entry, context);
+    (void)pthread_attr_destroy(&attribute);
+    if (rc != 0) {
+        free(context);
+        return rc == ENOMEM || rc == EAGAIN ? 15 : 25;
+    }
+    if (pthread_detach(thread) != 0) abort();
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_finish_thread_before_create_returns ||
+        eos_host_start_thread_then_fail_status != 0) {
+        while (atomic_load(&eos_host_thread_completion_count) ==
+               completion_before) {
+            (void)sched_yield();
+        }
+    }
+    if (eos_host_start_thread_then_fail_status != 0) {
+        int32_t status = eos_host_start_thread_then_fail_status;
+        eos_host_start_thread_then_fail_status = 0;
+        return status;
+    }
+#endif
+    return 0;
 }
 
 static int32_t eos_port_memory_alloc(uint32_t byte_count, void **memory) {
@@ -283,6 +486,13 @@ static int32_t eos_port_memory_realloc(uint32_t byte_count, void **memory) {
 }
 
 static int32_t eos_port_memory_free(void *memory) {
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_next_free_status != 0) {
+        int32_t status = eos_host_next_free_status;
+        eos_host_next_free_status = 0;
+        return status;
+    }
+#endif
     free(memory);
     return 0;
 }
@@ -429,6 +639,9 @@ static int32_t eos_port_sync_create(eos_port_sync *sync) {
         return 17;
     }
     *sync = (eos_port_sync)(uintptr_t)created;
+#ifdef EOS_RUST_HOST_TEST
+    (void)atomic_fetch_add(&eos_host_sync_create_count, UINT32_C(1));
+#endif
     return 0;
 }
 
@@ -469,9 +682,19 @@ static int32_t eos_port_sync_broadcast(eos_port_sync sync, uint32_t events) {
 static int32_t eos_port_sync_destroy(eos_port_sync sync) {
     eos_host_sync *value = (eos_host_sync *)(uintptr_t)sync;
     if (value == NULL) return 1;
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_next_sync_destroy_status != 0) {
+        int32_t status = eos_host_next_sync_destroy_status;
+        eos_host_next_sync_destroy_status = 0;
+        return status;
+    }
+#endif
     if (pthread_cond_destroy(&value->condition) != 0) return 17;
     if (pthread_mutex_destroy(&value->mutex) != 0) return 17;
     free(value);
+#ifdef EOS_RUST_HOST_TEST
+    (void)atomic_fetch_add(&eos_host_sync_destroy_count, UINT32_C(1));
+#endif
     return 0;
 }
 

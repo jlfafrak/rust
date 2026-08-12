@@ -50,7 +50,7 @@ static uint32_t eos_fd_next_generation(uint32_t generation) {
 }
 
 static int32_t eos_fd_fail_errno(int32_t error_number) {
-    *eos_port_errno_location() = error_number;
+    *eos_tls_errno_location() = error_number;
     return -1;
 }
 

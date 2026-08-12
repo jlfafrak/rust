@@ -6,6 +6,15 @@
 #include <stdint.h>
 
 typedef int32_t eos_rust_fd_t;
+typedef uint32_t eos_rust_thread_t;
+typedef uint32_t eos_rust_tls_key_t;
+
+typedef struct eos_rust_pthread_attr {
+    uint32_t words[4];
+} eos_rust_pthread_attr;
+
+#define EOS_RUST_PTHREAD_STACK_MIN UINT32_C(4096)
+#define EOS_RUST_PTHREAD_NAME_MAX UINT32_C(63)
 
 typedef struct eos_rust_stat {
     uint64_t st_dev;
@@ -213,6 +222,65 @@ EOS_RUST_EXPORT int32_t eos_rust_fchown(eos_rust_fd_t descriptor,
 EOS_RUST_EXPORT int32_t eos_rust_chmod(const char *path, uint32_t mode);
 EOS_RUST_EXPORT int32_t eos_rust_fchmod(eos_rust_fd_t descriptor,
                                         uint32_t mode);
+
+/*
+ * Thread and TLS calls use copyable, monotonic nonzero 32-bit identities.
+ * Native thread pointers never cross this ABI. Pthread-shaped failures are
+ * returned directly as positive EOS errno values and do not change
+ * compatibility errno. An all-zero attribute is the valid default (4096-byte
+ * stack); destroyed attributes and stack sizes below 4096 are EINVAL.
+ *
+ * Thread names are compatibility-visible names of at most 63 bytes plus null.
+ * MARTOS 14.0.39 cannot rename an existing native diagnostic thread. getname
+ * always terminates a nonzero-capacity buffer; truncation returns ERANGE.
+ * Invalid/stale handles return ESRCH, self-join returns EDEADLK, and a second
+ * join/detach claim on a still-live record returns EINVAL.
+ */
+EOS_RUST_EXPORT int32_t eos_rust_pthread_create(
+    eos_rust_thread_t *thread,
+    const eos_rust_pthread_attr *attribute,
+    void *(*start_routine)(void *),
+    void *argument);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_join(eos_rust_thread_t thread,
+                                              void **result);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_detach(eos_rust_thread_t thread);
+EOS_RUST_EXPORT eos_rust_thread_t eos_rust_pthread_self(void);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_equal(eos_rust_thread_t left,
+                                               eos_rust_thread_t right);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_attr_init(
+    eos_rust_pthread_attr *attribute);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_attr_destroy(
+    eos_rust_pthread_attr *attribute);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_attr_getstacksize(
+    const eos_rust_pthread_attr *attribute,
+    uint32_t *stack_size);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_attr_setstacksize(
+    eos_rust_pthread_attr *attribute,
+    uint32_t stack_size);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_yield(void);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_getname_np(eos_rust_thread_t thread,
+                                                    char *name,
+                                                    uint32_t capacity);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_setname_np(eos_rust_thread_t thread,
+                                                    const char *name);
+
+/*
+ * TLS keys are monotonic and never reused. Deleted keys return EINVAL and
+ * never invoke their destructor. Destructors run in ascending key order for
+ * at most four passes; POSIX itself does not promise this ordering.
+ * Invalid getspecific returns null and sets compatibility errno to EINVAL;
+ * valid null values do not change it. Other calls return errors directly.
+ * TLS roots for threads not created by eos_rust_pthread_create (including the
+ * main thread) cannot be reclaimed automatically on MARTOS 14.0.39 because
+ * EOS exposes no safe external-thread termination interception hook.
+ */
+EOS_RUST_EXPORT int32_t eos_rust_pthread_key_create(
+    eos_rust_tls_key_t *key,
+    void (*destructor)(void *));
+EOS_RUST_EXPORT int32_t eos_rust_pthread_key_delete(eos_rust_tls_key_t key);
+EOS_RUST_EXPORT void *eos_rust_pthread_getspecific(eos_rust_tls_key_t key);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_setspecific(eos_rust_tls_key_t key,
+                                                     const void *value);
 
 /*
  * Returned environment strings and vectors are immutable snapshots owned by

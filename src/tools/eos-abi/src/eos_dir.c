@@ -134,9 +134,9 @@ int32_t eos_rust_closedir(eos_rust_fd_t descriptor) {
 #endif
     result = eos_fd_close_reference(&reference, EOS_FD_KIND_DIRECTORY);
     if (result != 0 && reference.active != UINT32_C(0)) {
-        int32_t saved_errno = *eos_port_errno_location();
+        int32_t saved_errno = *eos_tls_errno_location();
         eos_fd_release_or_abort(&reference);
-        *eos_port_errno_location() = saved_errno;
+        *eos_tls_errno_location() = saved_errno;
     }
     return result;
 }

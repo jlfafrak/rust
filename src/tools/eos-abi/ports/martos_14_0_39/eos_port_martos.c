@@ -49,8 +49,11 @@ _Static_assert(ENOTEMPTY == EOS_ERRNO_NOT_EMPTY,
                "unexpected EOS ENOTEMPTY value");
 _Static_assert(EOVERFLOW == EOS_ERRNO_OVERFLOW,
                "unexpected EOS EOVERFLOW value");
+_Static_assert(ESRCH == EOS_ERRNO_NO_PROCESS, "unexpected EOS ESRCH value");
+_Static_assert(EDEADLK == EOS_ERRNO_DEADLOCK, "unexpected EOS EDEADLK value");
 
 #include "eos_port_martos_fs_contract.h"
+#include "eos_port_martos_thread_contract.h"
 
 /* Guard the numeric translation table against drift in the pinned SDK. */
 _Static_assert(OS_STS_OK == 0, "unexpected OS_STS_OK value");
@@ -106,14 +109,26 @@ _Static_assert(OS_STS_SYMBOL_ERROR == 33, "unexpected OS_STS_SYMBOL_ERROR value"
 _Static_assert(OS_STS_PARSE_ERROR == 34, "unexpected OS_STS_PARSE_ERROR value");
 _Static_assert(OS_STS_COUNT == 35, "unexpected OS_STS_COUNT value");
 
-/*
- * This bootstrap cell keeps the MARTOS-native dependency inside this port.
- * Task 7 replaces it with the reserved EOS user-TLS slot 7 adapter.
- */
-static int32_t eos_martos_bootstrap_errno;
+_Static_assert(OS_THREAD_USER_TLS_CNT > EOS_RUST_TLS_SLOT,
+               "reserved EOS Rust TLS slot is unavailable");
+_Static_assert(OS_THREAD_STACK_DEFAULT_BYTE_CNT == EOS_RUST_PTHREAD_STACK_MIN,
+               "MARTOS minimum thread stack changed");
+_Static_assert(OS_NAME_LEN == EOS_RUST_PTHREAD_NAME_MAX + 1,
+               "MARTOS thread name capacity changed");
 
-static int32_t *eos_port_errno_location(void) {
-    return &eos_martos_bootstrap_errno;
+static int32_t eos_port_thread_tls_get(uint32_t slot, uintptr_t *value) {
+    return eos_martos_thread_tls_get_native(slot, value);
+}
+
+static int32_t eos_port_thread_tls_set(uint32_t slot, uintptr_t value) {
+    return eos_martos_thread_tls_set_native(slot, value);
+}
+
+static int32_t eos_port_thread_create(const char *name,
+                                      eos_port_thread_start start,
+                                      void *argument,
+                                      uint32_t stack_size) {
+    return eos_martos_thread_create_native(name, start, argument, stack_size);
 }
 
 static _Atomic(os_mutex *) eos_martos_locks[EOS_PORT_LOCK_COUNT];

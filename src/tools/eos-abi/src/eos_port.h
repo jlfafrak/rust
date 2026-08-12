@@ -22,7 +22,9 @@ typedef struct eos_hash_seed_sources {
 #define EOS_PORT_LOCK_FD_TABLE UINT32_C(2)
 #define EOS_PORT_LOCK_RUNTIME_INIT UINT32_C(3)
 #define EOS_PORT_LOCK_CWD UINT32_C(4)
-#define EOS_PORT_LOCK_COUNT UINT32_C(5)
+#define EOS_PORT_LOCK_THREAD_REGISTRY UINT32_C(5)
+#define EOS_PORT_LOCK_TLS_KEYS UINT32_C(6)
+#define EOS_PORT_LOCK_COUNT UINT32_C(7)
 
 #define EOS_PORT_FILE_TYPE_NONE UINT32_C(0)
 #define EOS_PORT_FILE_TYPE_REGULAR UINT32_C(1)
@@ -53,9 +55,15 @@ typedef struct eos_port_result {
 } eos_port_result;
 
 typedef uintptr_t eos_port_sync;
+typedef void (*eos_port_thread_start)(void *argument);
 
 /* Implemented with internal linkage by the one C source selected by CMake. */
-static int32_t *eos_port_errno_location(void);
+static int32_t eos_port_thread_tls_get(uint32_t slot, uintptr_t *value);
+static int32_t eos_port_thread_tls_set(uint32_t slot, uintptr_t value);
+static int32_t eos_port_thread_create(const char *name,
+                                      eos_port_thread_start start,
+                                      void *argument,
+                                      uint32_t stack_size);
 static int32_t eos_port_memory_alloc(uint32_t byte_count, void **memory);
 static int32_t eos_port_memory_alloc_aligned(uint32_t byte_count,
                                              uint32_t alignment,

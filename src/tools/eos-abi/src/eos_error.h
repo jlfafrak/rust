@@ -6,9 +6,11 @@
 /* Stable errno values from the EOS v1 libc ABI, independent of the build host. */
 typedef enum eos_errno_value {
     EOS_ERRNO_NO_ENTRY = 2,
+    EOS_ERRNO_NO_PROCESS = 3,
     EOS_ERRNO_INTERRUPTED = 4,
     EOS_ERRNO_IO = 5,
     EOS_ERRNO_BAD_DESCRIPTOR = 9,
+    EOS_ERRNO_DEADLOCK = 11,
     EOS_ERRNO_NO_MEMORY = 12,
     EOS_ERRNO_ACCESS = 13,
     EOS_ERRNO_FAULT = 14,

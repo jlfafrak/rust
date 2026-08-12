@@ -127,7 +127,7 @@ static int32_t eos_runtime_fail_status(int32_t status,
                                        const char *operation) {
     const eos_error_result error =
         eos_error_from_port_status_impl(status, operation);
-    *eos_port_errno_location() =
+    *eos_tls_errno_location() =
         error.kind == EOS_ERROR_ERRNO ? error.error_number : EOS_ERRNO_IO;
     return -1;
 }
@@ -148,7 +148,7 @@ char *eos_rust_getenv(const char *name) {
     char *result = NULL;
 
     if (!eos_environment_name_valid(name)) {
-        *eos_port_errno_location() = EOS_ERRNO_INVALID;
+        *eos_tls_errno_location() = EOS_ERRNO_INVALID;
         return NULL;
     }
     status = eos_runtime_lock_acquire();
@@ -195,7 +195,7 @@ int32_t eos_rust_setenv(const char *name,
 
     if (!eos_environment_name_valid(name) || value == NULL ||
         strlen(value) >= EOS_PORT_ENV_VALUE_CAPACITY) {
-        *eos_port_errno_location() = EOS_ERRNO_INVALID;
+        *eos_tls_errno_location() = EOS_ERRNO_INVALID;
         return -1;
     }
     status = eos_runtime_lock_acquire();
@@ -258,7 +258,7 @@ int32_t eos_rust_unsetenv(const char *name) {
     eos_environment_snapshot *snapshot = NULL;
 
     if (!eos_environment_name_valid(name)) {
-        *eos_port_errno_location() = EOS_ERRNO_INVALID;
+        *eos_tls_errno_location() = EOS_ERRNO_INVALID;
         return -1;
     }
     status = eos_runtime_lock_acquire();

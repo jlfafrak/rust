@@ -13,7 +13,7 @@ static void eos_allocation_record_failure(int32_t status,
                                           const char *operation) {
     const eos_error_result error =
         eos_error_from_port_status_impl(status, operation);
-    *eos_port_errno_location() =
+    *eos_tls_errno_location() =
         error.kind == EOS_ERROR_ERRNO ? error.error_number : EOS_ERRNO_IO;
 }
 
@@ -34,7 +34,7 @@ void *eos_rust_calloc(uint32_t element_count, uint32_t element_size) {
 
     if (element_count != 0 &&
         element_size > UINT32_MAX / element_count) {
-        *eos_port_errno_location() = EOS_ERRNO_NO_MEMORY;
+        *eos_tls_errno_location() = EOS_ERRNO_NO_MEMORY;
         return NULL;
     }
     byte_count = element_count * element_size;
