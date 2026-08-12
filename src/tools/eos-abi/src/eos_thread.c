@@ -35,6 +35,8 @@ static _Atomic uint32_t eos_thread_test_completion_pause;
 static _Atomic uint32_t eos_thread_test_completion_entered;
 static _Atomic uint32_t eos_thread_test_completion_release;
 static _Atomic uint32_t eos_thread_test_completion_cleanup_done;
+static _Atomic uint32_t eos_thread_test_native_create_active;
+static _Atomic uint32_t eos_thread_test_destroyed_during_native_create;
 
 void eos_thread_test_pause_after_completion(int enabled) {
     atomic_store(&eos_thread_test_completion_entered, UINT32_C(0));
@@ -56,6 +58,15 @@ void eos_thread_test_resume_after_completion(void) {
 
 uint32_t eos_thread_test_completion_cleanup_finished(void) {
     return atomic_load(&eos_thread_test_completion_cleanup_done);
+}
+
+void eos_thread_test_reset_publication_audit(void) {
+    atomic_store(&eos_thread_test_destroyed_during_native_create,
+                 UINT32_C(0));
+}
+
+uint32_t eos_thread_test_destroyed_before_create_return(void) {
+    return atomic_load(&eos_thread_test_destroyed_during_native_create);
 }
 #endif
 
@@ -113,6 +124,12 @@ static int eos_thread_unref_locked(eos_thread_record *record) {
 }
 
 static void eos_thread_destroy_record(eos_thread_record *record) {
+#ifdef EOS_RUST_HOST_TEST
+    if (atomic_load(&eos_thread_test_native_create_active) != 0) {
+        atomic_store(&eos_thread_test_destroyed_during_native_create,
+                     UINT32_C(1));
+    }
+#endif
     if (eos_port_sync_destroy(record->completion) != 0) eos_rust_abort();
     if (eos_port_memory_free(record) != 0) eos_rust_abort();
 }
@@ -204,13 +221,22 @@ static void eos_thread_trampoline(void *opaque) {
 static int32_t eos_thread_stack_from_attr(const eos_rust_pthread_attr *attribute,
                                           uint32_t *stack_size) {
     if (stack_size == NULL) return EOS_ERRNO_INVALID;
-    if (attribute == NULL || attribute->words[0] == 0) {
+    if (attribute == NULL) {
+        *stack_size = EOS_RUST_PTHREAD_STACK_MIN;
+        return 0;
+    }
+    if (attribute->words[0] == 0) {
+        if (attribute->words[1] != 0 || attribute->words[2] != 0 ||
+            attribute->words[3] != 0) {
+            return EOS_ERRNO_INVALID;
+        }
         *stack_size = EOS_RUST_PTHREAD_STACK_MIN;
         return 0;
     }
     if (attribute->words[0] != EOS_THREAD_ATTR_MAGIC ||
         attribute->words[1] < EOS_RUST_PTHREAD_STACK_MIN ||
-        (attribute->words[1] & UINT32_C(7)) != 0) {
+        (attribute->words[1] & UINT32_C(7)) != 0 ||
+        attribute->words[2] != 0 || attribute->words[3] != 0) {
         return EOS_ERRNO_INVALID;
     }
     *stack_size = attribute->words[1];
@@ -226,8 +252,9 @@ int32_t eos_rust_pthread_attr_init(eos_rust_pthread_attr *attribute) {
 }
 
 int32_t eos_rust_pthread_attr_destroy(eos_rust_pthread_attr *attribute) {
-    if (attribute == NULL || attribute->words[0] == EOS_THREAD_ATTR_DEAD ||
-        (attribute->words[0] != 0 && attribute->words[0] != EOS_THREAD_ATTR_MAGIC)) {
+    uint32_t ignored_stack;
+    if (attribute == NULL ||
+        eos_thread_stack_from_attr(attribute, &ignored_stack) != 0) {
         return EOS_ERRNO_INVALID;
     }
     (void)memset(attribute, 0, sizeof(*attribute));
@@ -243,8 +270,9 @@ int32_t eos_rust_pthread_attr_getstacksize(
 
 int32_t eos_rust_pthread_attr_setstacksize(eos_rust_pthread_attr *attribute,
                                            uint32_t stack_size) {
-    if (attribute == NULL || attribute->words[0] == EOS_THREAD_ATTR_DEAD ||
-        (attribute->words[0] != 0 && attribute->words[0] != EOS_THREAD_ATTR_MAGIC) ||
+    uint32_t ignored_stack;
+    if (attribute == NULL ||
+        eos_thread_stack_from_attr(attribute, &ignored_stack) != 0 ||
         stack_size < EOS_RUST_PTHREAD_STACK_MIN ||
         (stack_size & UINT32_C(7)) != 0) {
         return EOS_ERRNO_INVALID;
@@ -269,14 +297,21 @@ int32_t eos_rust_pthread_create(eos_rust_thread_t *thread,
     *thread = 0;
     status = eos_thread_stack_from_attr(attribute, &stack_size);
     if (status != 0) return status;
-    status = eos_thread_allocate_record(&record, UINT32_C(1));
+    /* Registry + child + creator-call ownership until native create returns. */
+    status = eos_thread_allocate_record(&record, UINT32_C(2));
     if (status != 0) return status;
     record->start_routine = start_routine;
     record->argument = argument;
     (void)memcpy(record->name, "eos.rust", sizeof("eos.rust"));
 
+#ifdef EOS_RUST_HOST_TEST
+    (void)atomic_fetch_add(&eos_thread_test_native_create_active, UINT32_C(1));
+#endif
     status = eos_port_thread_create("eos.rust", eos_thread_trampoline, record,
                                     stack_size);
+#ifdef EOS_RUST_HOST_TEST
+    (void)atomic_fetch_sub(&eos_thread_test_native_create_active, UINT32_C(1));
+#endif
     if (status != 0) {
         if (eos_thread_lock_direct() != 0) eos_rust_abort();
         if (atomic_load_explicit(&record->completed, memory_order_acquire) != 0) {
@@ -286,12 +321,17 @@ int32_t eos_rust_pthread_create(eos_rust_thread_t *thread,
             eos_rust_abort();
         }
         (void)eos_thread_drop_registry_locked(record);
-        destroy = eos_thread_unref_locked(record);
+        (void)eos_thread_unref_locked(record); /* child: native did not start */
+        destroy = eos_thread_unref_locked(record); /* creator */
         eos_thread_unlock();
         if (destroy) eos_thread_destroy_record(record);
         return eos_thread_status_error(status);
     }
+    if (eos_thread_lock_direct() != 0) eos_rust_abort();
     *thread = record->identity;
+    destroy = eos_thread_unref_locked(record); /* creator publication complete */
+    eos_thread_unlock();
+    if (destroy) eos_thread_destroy_record(record);
     return 0;
 }
 

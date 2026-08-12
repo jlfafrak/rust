@@ -33,6 +33,8 @@ void eos_thread_test_pause_after_completion(int enabled);
 uint32_t eos_thread_test_completion_pause_entered(void);
 void eos_thread_test_resume_after_completion(void);
 uint32_t eos_thread_test_completion_cleanup_finished(void);
+void eos_thread_test_reset_publication_audit(void);
+uint32_t eos_thread_test_destroyed_before_create_return(void);
 }
 
 namespace {
@@ -94,6 +96,12 @@ void *self_join(void *) {
     const eos_rust_thread_t self = eos_rust_pthread_self();
     return reinterpret_cast<void *>(
         static_cast<uintptr_t>(eos_rust_pthread_join(self, nullptr)));
+}
+
+void *self_detach(void *) {
+    const eos_rust_thread_t self = eos_rust_pthread_self();
+    return reinterpret_cast<void *>(
+        static_cast<uintptr_t>(eos_rust_pthread_detach(self)));
 }
 
 void *set_own_name(void *) {
@@ -161,6 +169,35 @@ void test_attributes_and_forwarding() {
     expect(eos_rust_pthread_attr_setstacksize(&zero, 1) == kInvalid &&
                *eos_rust_errno_location() == 777,
            "pthread-shaped failures must preserve compatibility errno");
+
+    const eos_rust_pthread_attr malformed[] = {
+        {{0, 4096, 0, 0}},
+        {{0, 0, 1, 0}},
+        {{0, 0, 0, 1}},
+        {{UINT32_C(0x45504131), 0, 0, 0}},
+        {{UINT32_C(0x45504131), 4097, 0, 0}},
+        {{UINT32_C(0x45504131), 4096, 1, 0}},
+        {{UINT32_C(0x45504131), 4096, 0, 1}},
+        {{UINT32_C(0x45504431), 0, 0, 0}},
+        {{UINT32_C(0x10203040), 4096, 0, 0}},
+    };
+    for (const auto &representation : malformed) {
+        eos_rust_pthread_attr candidate = representation;
+        eos_rust_thread_t rejected = UINT32_MAX;
+        expect(eos_rust_pthread_attr_getstacksize(&candidate, &stack) ==
+                   kInvalid,
+               "malformed attr getstacksize must fail");
+        candidate = representation;
+        expect(eos_rust_pthread_attr_setstacksize(&candidate, 8192) == kInvalid,
+               "malformed attr setstacksize must fail");
+        candidate = representation;
+        expect(eos_rust_pthread_attr_destroy(&candidate) == kInvalid,
+               "malformed attr destroy must fail");
+        expect(eos_rust_pthread_create(&rejected, &representation,
+                                       return_argument, nullptr) == kInvalid &&
+                   rejected == 0,
+               "malformed attr create must fail before native publication");
+    }
 }
 
 void test_identity_join_detach_and_failures() {
@@ -235,6 +272,28 @@ void test_auto_start_publication_and_claims() {
                eos_host_test_sync_create_count() == sync_created_before + 1 &&
                eos_host_test_sync_destroy_count() == sync_destroyed_before + 1,
            "completed publication must release its compatibility resources once");
+
+    eos_rust_thread_t self_detached = 0;
+    eos_thread_test_reset_publication_audit();
+    eos_host_test_finish_thread_before_create_returns(1);
+    expect(eos_rust_pthread_create(&self_detached, nullptr, self_detach,
+                                   nullptr) == 0,
+           "self-detach-before-create-return setup failed");
+    eos_host_test_finish_thread_before_create_returns(0);
+    expect(eos_thread_test_destroyed_before_create_return() == 0,
+           "auto-start self-detach destroyed the record before create returned");
+    wait_until_stale(self_detached,
+                     "auto-start self-detached handle did not become stale");
+
+    eos_rust_thread_t self_joined = 0;
+    eos_host_test_finish_thread_before_create_returns(1);
+    expect(eos_rust_pthread_create(&self_joined, nullptr, self_join, nullptr) == 0,
+           "self-join-before-create-return setup failed");
+    eos_host_test_finish_thread_before_create_returns(0);
+    expect(eos_rust_pthread_join(self_joined, &result) == 0 &&
+               static_cast<int32_t>(reinterpret_cast<uintptr_t>(result)) ==
+                   kDeadlock,
+           "auto-start self-join did not remain safely joinable");
 
     Gate gate;
     eos_rust_thread_t joinable = 0;

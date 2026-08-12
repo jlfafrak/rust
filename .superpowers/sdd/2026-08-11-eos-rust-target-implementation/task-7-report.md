@@ -172,3 +172,48 @@ metadata is retained to guarantee nonreuse; and deployment to hardware remains m
 containing this report is the single `runtime: add EOS threads and library TLS` Task 7 commit; its
 hash is recorded in the controller handoff because a committed file cannot contain its own stable
 cryptographic commit hash.
+
+## Fix Round 1: auto-start publication ownership and strict attributes
+
+Independent review of `c4ddbe8347231270caa8902b4a3ca352ab0cc2ff` found two issues and
+returned a not-ready verdict. Both received deterministic RED tests before production changes:
+
+- an auto-started child calling `detach(self)` and completing before native create returned
+  produced `auto-start self-detach destroyed the record before create returned`; the child could
+  drop both the registry and child references, free the record, and leave the creator reading
+  `record->identity` after free;
+- a table of partially zero, reserved-word, destroyed, invalid-magic, zero-stack, and misaligned
+  attribute representations produced `malformed attr getstacksize must fail` because any
+  `words[0] == 0` had been treated as the default while ignoring the remaining words.
+
+Creation now publishes records with three explicit owners: registry, child, and creator call. The
+creator owner remains held across the entire native auto-start call and until the status/output
+decision is complete under the registry lock. A child may therefore detach itself, drop the
+registry reference, complete, and drop the child reference without freeing the record before
+create returns. On success the creator copies the identity while locked, drops its reference, and
+destroys only if self-detach already left it as the final owner. On a conforming create failure,
+the rollback drops registry, never-started child, and creator ownership exactly once. The existing
+fail-fast policy for a malformed native implementation that starts then returns failure remains.
+An adjacent auto-start `join(self)` test confirms `EDEADLK` is returned safely and the record stays
+joinable for its creator.
+
+Attributes now have exactly two accepted representations: all four words zero, or the internal
+live magic plus a minimum/aligned stack and zero reserved words. Get, set, destroy, and create all
+use the same validator. Every partially zero representation, nonzero reserved word, destroyed
+magic, invalid magic, zero/subminimum/misaligned live stack, and malformed create is rejected with
+`EINVAL`; rejected create outputs remain zero.
+
+Fresh post-fix verification:
+
+- focused thread/TLS/destructor, MARTOS contract, and fully instrumented TSan set: 7/7;
+- normal Release host suite: 28/28;
+- strict `-O0 -Wall -Wextra -Werror -pedantic` C/C++ suite: 28/28;
+- strict Release `-O3 -Wall -Wextra -Werror -pedantic` C/C++ suite: 28/28;
+- actual MARTOS 14.0.39 strict SDK build, exact 66-symbol host/MARTOS exports, forbidden native
+  undefined audit, direct consumer, and ARM EABI5 relocatable layout probe: passed.
+
+Self-review re-traced every reference count for ordinary completion, join, detach-before/after
+completion, self-detach during create, self-join during create, normal create failure, and
+start-then-fail abort. It also checked every public attribute operation against the shared exact
+representation validator. Fix Round 1 is committed separately as
+`runtime: close EOS thread publication races`; its hash is recorded in the controller handoff.
