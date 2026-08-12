@@ -13,6 +13,14 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+extern "C" {
+void eos_host_test_reset(void);
+void eos_host_test_native_environment(const char *name, const char *value);
+void eos_host_test_fail_next_environment_set(int32_t status);
+void eos_host_test_fail_next_environment_unset(int32_t status);
+void eos_host_test_fail_next_lock(int32_t status);
+}
+
 namespace {
 
 constexpr const char *test_name = "EOS_RUST_TASK4_ENV";
@@ -133,6 +141,64 @@ void test_environment_snapshots_have_process_lifetime() {
            "an old snapshot must remain valid after unsetenv");
 }
 
+void test_native_environment_import_and_failed_update_rollback() {
+    constexpr const char *native_name = "EOS_RUST_TASK4_NATIVE";
+    constexpr const char *rollback_name = "EOS_RUST_TASK4_ROLLBACK";
+    eos_host_test_reset();
+    eos_host_test_native_environment(native_name, "native-value");
+    expect(std::strcmp(eos_rust_getenv(native_name), "native-value") == 0,
+           "getenv must lazily import a native environment value");
+    expect(std::strcmp(find_snapshot_value(eos_rust_environ(), native_name),
+                       "native-value") == 0,
+           "lazy native import must publish a compatibility snapshot");
+
+    eos_host_test_native_environment(rollback_name, "native-original");
+    expect(eos_rust_setenv(rollback_name, "ignored", 0) == 0,
+           "overwrite=false must import an existing native value");
+    expect(std::strcmp(eos_rust_getenv(rollback_name), "native-original") == 0,
+           "overwrite=false must preserve native state");
+
+    char **before = eos_rust_environ();
+    char *before_value = eos_rust_getenv(rollback_name);
+    eos_host_test_fail_next_environment_set(INT32_C(15));
+    expect(eos_rust_setenv(rollback_name, "replacement", 1) == -1,
+           "failed native set must fail the public update");
+    expect(*eos_rust_errno_location() == 12,
+           "failed native set must report EOS ENOMEM (12)");
+    expect(eos_rust_environ() == before &&
+               eos_rust_getenv(rollback_name) == before_value &&
+               std::strcmp(before_value, "native-original") == 0,
+           "failed native set must not publish a candidate snapshot");
+
+    eos_host_test_fail_next_environment_unset(INT32_C(17));
+    expect(eos_rust_unsetenv(rollback_name) == -1,
+           "failed native unset must fail the public update");
+    expect(*eos_rust_errno_location() == 16,
+           "failed native unset must report EOS EBUSY (16)");
+    expect(eos_rust_environ() == before &&
+               std::strcmp(eos_rust_getenv(rollback_name),
+                           "native-original") == 0,
+           "failed native unset must retain the published snapshot");
+
+    eos_host_test_fail_next_lock(INT32_C(17));
+    expect(eos_rust_setenv("EOS_RUST_TASK4_LOCK_FAIL", "x", 1) == -1,
+           "runtime lock failure must be reported");
+    expect(*eos_rust_errno_location() == 16,
+           "runtime lock failure must report EOS EBUSY (16)");
+}
+
+void test_identical_overwrite_preserves_snapshot_identity() {
+    constexpr const char *name = "EOS_RUST_TASK4_IDENTICAL";
+    expect(eos_rust_setenv(name, "same", 1) == 0,
+           "identical-overwrite fixture set failed");
+    char **vector = eos_rust_environ();
+    char *value = eos_rust_getenv(name);
+    expect(eos_rust_setenv(name, "same", 1) == 0,
+           "identical overwrite must succeed");
+    expect(eos_rust_environ() == vector && eos_rust_getenv(name) == value,
+           "identical overwrite must not publish a redundant snapshot");
+}
+
 void test_concurrent_environment_updates_publish_complete_snapshots() {
     constexpr int reader_count = 6;
     constexpr int iterations = 3000;
@@ -159,7 +225,7 @@ void test_concurrent_environment_updates_publish_complete_snapshots() {
 
                 char **snapshot = eos_rust_environ();
                 std::size_t entries = 0;
-                while (snapshot[entries] != nullptr && entries < 64) {
+                while (entries < 64 && snapshot[entries] != nullptr) {
                     if (std::strchr(snapshot[entries], '=') == nullptr) {
                         failures.fetch_add(1, std::memory_order_relaxed);
                         break;
@@ -206,6 +272,8 @@ int main() {
     test_abort_and_exit_terminate_only_the_child();
     test_environment_validation_and_overwrite();
     test_environment_snapshots_have_process_lifetime();
+    test_native_environment_import_and_failed_update_rollback();
+    test_identical_overwrite_preserves_snapshot_identity();
     test_concurrent_environment_updates_publish_complete_snapshots();
     return EXIT_SUCCESS;
 }

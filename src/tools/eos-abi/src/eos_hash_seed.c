@@ -1,9 +1,6 @@
 #include "eos_splitmix64.h"
 
 #include <stdint.h>
-#include <stdatomic.h>
-
-static atomic_flag eos_hash_seed_lock = ATOMIC_FLAG_INIT;
 static uint64_t eos_hash_seed_state0;
 static uint64_t eos_hash_seed_state1;
 static uint64_t eos_hash_seed_counter;
@@ -14,14 +11,11 @@ static eos_hash_seed_sources eos_hash_seed_injected_sources;
 static int eos_hash_seed_sources_injected;
 #endif
 
-static void eos_hash_seed_lock_acquire(void) {
-    while (atomic_flag_test_and_set_explicit(&eos_hash_seed_lock,
-                                             memory_order_acquire)) {
-    }
+static int32_t eos_hash_seed_lock_acquire(void) {
+    return eos_port_lock_acquire(EOS_PORT_LOCK_HASH_SEED);
 }
-
 static void eos_hash_seed_lock_release(void) {
-    atomic_flag_clear_explicit(&eos_hash_seed_lock, memory_order_release);
+    (void)eos_port_lock_release(EOS_PORT_LOCK_HASH_SEED);
 }
 
 static void eos_hash_seed_initialize(const eos_hash_seed_sources *sources) {
@@ -63,7 +57,11 @@ void eos_rust_hash_seed(uint64_t *key0, uint64_t *key1) {
     uint64_t output0;
     uint64_t output1;
 
-    eos_hash_seed_lock_acquire();
+    int32_t lock_status = eos_hash_seed_lock_acquire();
+    if (lock_status != EOS_PORT_STATUS_OK) {
+        eos_allocation_record_failure(lock_status, "hash_seed.lock");
+        return;
+    }
     if (!eos_hash_seed_initialized) {
 #ifdef EOS_RUST_HOST_TEST
         if (eos_hash_seed_sources_injected) {
@@ -99,7 +97,8 @@ void eos_rust_hash_seed(uint64_t *key0, uint64_t *key1) {
 
 #ifdef EOS_RUST_HOST_TEST
 void eos_hash_seed_test_reset(const eos_hash_seed_sources *sources) {
-    eos_hash_seed_lock_acquire();
+    int32_t lock_status = eos_hash_seed_lock_acquire();
+    if (lock_status != EOS_PORT_STATUS_OK) return;
     eos_hash_seed_injected_sources = *sources;
     eos_hash_seed_sources_injected = 1;
     eos_hash_seed_initialized = 0;

@@ -6,6 +6,13 @@
 #include <iostream>
 #include <limits>
 
+extern "C" {
+void eos_host_test_reset(void);
+void eos_host_test_fail_next_alloc(int32_t status);
+void eos_host_test_fail_next_aligned_alloc(int32_t status);
+void eos_host_test_fail_next_realloc(int32_t status);
+}
+
 namespace {
 
 [[noreturn]] void fail(const char *message) {
@@ -123,6 +130,51 @@ void test_successful_operations_preserve_errno() {
            "successful free must preserve errno");
 }
 
+void test_native_allocation_failures_preserve_contracts() {
+    eos_host_test_reset();
+    eos_host_test_fail_next_alloc(INT32_C(15));
+    expect(eos_rust_malloc(UINT32_C(8)) == nullptr,
+           "native malloc failure must return null");
+    expect(*eos_rust_errno_location() == 12,
+           "native malloc failure must report EOS ENOMEM (12)");
+
+    eos_host_test_fail_next_alloc(INT32_C(15));
+    expect(eos_rust_calloc(UINT32_C(2), UINT32_C(8)) == nullptr,
+           "native calloc allocation failure must return null");
+    expect(*eos_rust_errno_location() == 12,
+           "native calloc failure must report EOS ENOMEM (12)");
+
+    void *aligned = reinterpret_cast<void *>(static_cast<uintptr_t>(1));
+    eos_host_test_fail_next_aligned_alloc(INT32_C(15));
+    expect(eos_rust_posix_memalign(&aligned, UINT32_C(64), UINT32_C(8)) == 12,
+           "native aligned allocation failure must return EOS ENOMEM (12)");
+    expect(aligned == nullptr, "failed aligned allocation must clear output");
+
+    auto *original = static_cast<unsigned char *>(eos_rust_malloc(UINT32_C(16)));
+    expect(original != nullptr, "failed-realloc fixture allocation failed");
+    std::memset(original, 0x6d, 16);
+    eos_host_test_fail_next_realloc(INT32_C(15));
+    expect(eos_rust_realloc(original, UINT32_C(64)) == nullptr,
+           "native realloc failure must return null");
+    expect(*eos_rust_errno_location() == 12,
+           "native realloc failure must report EOS ENOMEM (12)");
+    for (uint32_t index = 0; index < UINT32_C(16); ++index) {
+        expect(original[index] == 0x6d,
+               "failed realloc must preserve usable original storage");
+    }
+    eos_rust_free(original);
+
+    original = static_cast<unsigned char *>(eos_rust_malloc(UINT32_C(4)));
+    expect(original != nullptr, "zero-realloc fixture allocation failed");
+    original[0] = 0x31;
+    auto *zero_resized =
+        static_cast<unsigned char *>(eos_rust_realloc(original, UINT32_C(0)));
+    expect(zero_resized != nullptr,
+           "realloc(nonnull, 0) must return one owned byte");
+    zero_resized[0] = 0x42;
+    eos_rust_free(zero_resized);
+}
+
 } // namespace
 
 int main() {
@@ -131,5 +183,6 @@ int main() {
     test_supported_alignments_are_honored();
     test_realloc_preserves_the_existing_prefix();
     test_successful_operations_preserve_errno();
+    test_native_allocation_failures_preserve_contracts();
     return EXIT_SUCCESS;
 }

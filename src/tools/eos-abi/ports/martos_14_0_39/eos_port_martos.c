@@ -88,6 +88,32 @@ static int32_t *eos_port_errno_location(void) {
     return &eos_martos_bootstrap_errno;
 }
 
+static os_mutex eos_martos_locks[EOS_PORT_LOCK_COUNT];
+static uint8_t eos_martos_lock_initialized[EOS_PORT_LOCK_COUNT];
+static int32_t eos_martos_lock_init_status[EOS_PORT_LOCK_COUNT];
+
+static int32_t eos_port_lock_acquire(uint32_t lock_id) {
+    uint32 critical_state;
+    if (lock_id >= EOS_PORT_LOCK_COUNT) return OS_STS_INVALID_PARAM1;
+    critical_state = os_critical_section_enter();
+    if (!eos_martos_lock_initialized[lock_id]) {
+        eos_martos_lock_init_status[lock_id] =
+            (int32_t)os_mutex_init(&eos_martos_locks[lock_id]);
+        eos_martos_lock_initialized[lock_id] = 1;
+    }
+    (void)os_critical_section_exit(critical_state);
+    if (eos_martos_lock_init_status[lock_id] != OS_STS_OK) {
+        return eos_martos_lock_init_status[lock_id];
+    }
+    return (int32_t)os_mutex_lock(&eos_martos_locks[lock_id], OS_WAIT_FOREVER);
+}
+
+static int32_t eos_port_lock_release(uint32_t lock_id) {
+    if (lock_id >= EOS_PORT_LOCK_COUNT || !eos_martos_lock_initialized[lock_id])
+        return OS_STS_INVALID_PARAM1;
+    return (int32_t)os_mutex_unlock(&eos_martos_locks[lock_id]);
+}
+
 static int32_t eos_port_memory_alloc(uint32_t byte_count, void **memory) {
     return (int32_t)os_mem_alloc(OS_MEM_NORMAL_CACHEABLE_DATA,
                                  (uint32)byte_count,

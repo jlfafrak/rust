@@ -116,13 +116,24 @@ if(BUILD_TESTING)
     )
     add_test(NAME error_map COMMAND error_map_test)
 
+    add_library(eos_rust_abi_host_test STATIC src/eos_abi.c)
+    set_target_properties(eos_rust_abi_host_test PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO
+        C_VISIBILITY_PRESET hidden POSITION_INDEPENDENT_CODE YES)
+    target_include_directories(eos_rust_abi_host_test PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>" PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_compile_definitions(eos_rust_abi_host_test PRIVATE
+        EOS_RUST_HOST_TEST=1 EOS_RUST_PORT_SOURCE="${EOS_RUST_PORT_SOURCE}")
+    target_link_libraries(eos_rust_abi_host_test PRIVATE Threads::Threads)
+
     add_executable(alloc_test tests/alloc_test.cpp)
     set_target_properties(alloc_test PROPERTIES
         CXX_STANDARD 17
         CXX_STANDARD_REQUIRED YES
         CXX_EXTENSIONS NO
     )
-    target_link_libraries(alloc_test PRIVATE EOS::RustABI)
+    target_link_libraries(alloc_test PRIVATE eos_rust_abi_host_test)
     add_test(NAME alloc COMMAND alloc_test)
 
     add_executable(runtime_env_test tests/runtime_env_test.cpp)
@@ -131,7 +142,7 @@ if(BUILD_TESTING)
         CXX_STANDARD_REQUIRED YES
         CXX_EXTENSIONS NO
     )
-    target_link_libraries(runtime_env_test PRIVATE EOS::RustABI Threads::Threads)
+    target_link_libraries(runtime_env_test PRIVATE eos_rust_abi_host_test Threads::Threads)
     add_test(NAME runtime_env COMMAND runtime_env_test)
 
     add_executable(hash_seed_test tests/hash_seed_test.cpp)
@@ -139,24 +150,6 @@ if(BUILD_TESTING)
         CXX_STANDARD 17
         CXX_STANDARD_REQUIRED YES
         CXX_EXTENSIONS NO
-    )
-    add_library(eos_rust_abi_host_test STATIC src/eos_abi.c)
-    set_target_properties(eos_rust_abi_host_test PROPERTIES
-        C_STANDARD 11
-        C_STANDARD_REQUIRED YES
-        C_EXTENSIONS NO
-        C_VISIBILITY_PRESET hidden
-        POSITION_INDEPENDENT_CODE YES
-    )
-    target_include_directories(eos_rust_abi_host_test
-        PUBLIC
-            "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-        PRIVATE
-            "${CMAKE_CURRENT_SOURCE_DIR}/src"
-    )
-    target_compile_definitions(eos_rust_abi_host_test PRIVATE
-        EOS_RUST_HOST_TEST=1
-        EOS_RUST_PORT_SOURCE="${EOS_RUST_PORT_SOURCE}"
     )
     target_compile_definitions(hash_seed_test PRIVATE EOS_RUST_HOST_TEST=1)
     target_link_libraries(hash_seed_test PRIVATE

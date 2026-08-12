@@ -26,6 +26,7 @@ typedef struct eos_hash_seed_test_sources {
 } eos_hash_seed_test_sources;
 
 void eos_hash_seed_test_reset(const eos_hash_seed_test_sources *sources);
+void eos_host_test_fail_next_lock(int32_t status);
 
 }
 
@@ -124,6 +125,23 @@ void test_null_outputs_are_ignored_but_advance_state() {
            "a call with two null outputs must still advance process state");
 }
 
+void test_lock_failure_preserves_outputs_and_sequence() {
+    const eos_hash_seed_test_sources sources = fixed_sources();
+    eos_hash_seed_test_reset(&sources);
+    uint64_t first = UINT64_C(0x1111111111111111);
+    uint64_t second = UINT64_C(0x2222222222222222);
+    eos_host_test_fail_next_lock(INT32_C(17));
+    eos_rust_hash_seed(&first, &second);
+    expect(first == UINT64_C(0x1111111111111111) &&
+               second == UINT64_C(0x2222222222222222),
+           "hash lock failure must preserve caller outputs");
+    expect(*eos_rust_errno_location() == 16,
+           "hash lock failure must report EOS EBUSY (16)");
+    expect(next_seed() == Seed{UINT64_C(0x22e3d9508b0e13d4),
+                               UINT64_C(0x98d46b55b7f3f40f)},
+           "hash lock failure must not advance process state");
+}
+
 void test_concurrent_calls_return_distinct_pairs() {
     constexpr int thread_count = 8;
     constexpr int calls_per_thread = 4000;
@@ -180,6 +198,7 @@ void test_one_hundred_thousand_calls_do_not_repeat() {
 int main() {
     test_injected_sources_have_known_answers();
     test_null_outputs_are_ignored_but_advance_state();
+    test_lock_failure_preserves_outputs_and_sequence();
     test_concurrent_calls_return_distinct_pairs();
     test_one_hundred_thousand_calls_do_not_repeat();
     return EXIT_SUCCESS;

@@ -1,6 +1,5 @@
 #include <stddef.h>
 #include <stdint.h>
-#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,18 +9,14 @@ typedef struct eos_environment_snapshot {
     char *items[];
 } eos_environment_snapshot;
 
-static atomic_flag eos_runtime_lock = ATOMIC_FLAG_INIT;
 static eos_environment_snapshot *eos_environment_current;
 static char *eos_environment_empty[] = {NULL};
 
-static void eos_runtime_lock_acquire(void) {
-    while (atomic_flag_test_and_set_explicit(&eos_runtime_lock,
-                                             memory_order_acquire)) {
-    }
+static int32_t eos_runtime_lock_acquire(void) {
+    return eos_port_lock_acquire(EOS_PORT_LOCK_RUNTIME);
 }
-
 static void eos_runtime_lock_release(void) {
-    atomic_flag_clear_explicit(&eos_runtime_lock, memory_order_release);
+    (void)eos_port_lock_release(EOS_PORT_LOCK_RUNTIME);
 }
 
 static int eos_environment_name_valid(const char *name) {
@@ -154,7 +149,9 @@ char *eos_rust_getenv(const char *name) {
         *eos_port_errno_location() = EOS_ERRNO_INVALID;
         return NULL;
     }
-    eos_runtime_lock_acquire();
+    status = eos_runtime_lock_acquire();
+    if (status != EOS_PORT_STATUS_OK)
+        return (void)eos_runtime_fail_status(status, "runtime.lock"), NULL;
     index = eos_environment_find(name);
     if (index >= 0) {
         result = eos_environment_value_at(index);
@@ -199,8 +196,14 @@ int32_t eos_rust_setenv(const char *name,
         *eos_port_errno_location() = EOS_ERRNO_INVALID;
         return -1;
     }
-    eos_runtime_lock_acquire();
+    status = eos_runtime_lock_acquire();
+    if (status != EOS_PORT_STATUS_OK)
+        return eos_runtime_fail_status(status, "runtime.lock");
     index = eos_environment_find(name);
+    if (index >= 0 && strcmp(eos_environment_value_at(index), value) == 0) {
+        eos_runtime_lock_release();
+        return 0;
+    }
     if (index >= 0 && overwrite == 0) {
         eos_runtime_lock_release();
         return 0;
@@ -256,7 +259,9 @@ int32_t eos_rust_unsetenv(const char *name) {
         *eos_port_errno_location() = EOS_ERRNO_INVALID;
         return -1;
     }
-    eos_runtime_lock_acquire();
+    status = eos_runtime_lock_acquire();
+    if (status != EOS_PORT_STATUS_OK)
+        return eos_runtime_fail_status(status, "runtime.lock");
     index = eos_environment_find(name);
     if (index >= 0) {
         snapshot = eos_environment_build(name, NULL, index, 1, &status);
@@ -283,7 +288,11 @@ int32_t eos_rust_unsetenv(const char *name) {
 
 char **eos_rust_environ(void) {
     char **snapshot;
-    eos_runtime_lock_acquire();
+    int32_t status = eos_runtime_lock_acquire();
+    if (status != EOS_PORT_STATUS_OK) {
+        (void)eos_runtime_fail_status(status, "runtime.lock");
+        return eos_environment_empty;
+    }
     snapshot = eos_environment_items();
     eos_runtime_lock_release();
     return snapshot;
