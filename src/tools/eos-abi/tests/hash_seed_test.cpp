@@ -1,6 +1,7 @@
 #include "eos_rust_abi.h"
 
 #include <atomic>
+#include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -9,6 +10,10 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 extern "C" {
 
@@ -27,6 +32,7 @@ typedef struct eos_hash_seed_test_sources {
 
 void eos_hash_seed_test_reset(const eos_hash_seed_test_sources *sources);
 void eos_host_test_fail_next_lock(int32_t status);
+void eos_host_test_fail_next_unlock(int32_t status);
 
 }
 
@@ -142,6 +148,23 @@ void test_lock_failure_preserves_outputs_and_sequence() {
            "hash lock failure must not advance process state");
 }
 
+void test_hash_lock_release_failure_aborts() {
+    const eos_hash_seed_test_sources sources = fixed_sources();
+    pid_t child = fork();
+    expect(child >= 0, "fork for hash unlock-failure test failed");
+    if (child == 0) {
+        eos_hash_seed_test_reset(&sources);
+        eos_host_test_fail_next_unlock(INT32_C(17));
+        (void)next_seed();
+        _exit(90);
+    }
+    int status = 0;
+    expect(waitpid(child, &status, 0) == child,
+           "waitpid for hash unlock-failure child failed");
+    expect(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT,
+           "hash lock release failure must abort instead of returning keys");
+}
+
 void test_concurrent_calls_return_distinct_pairs() {
     constexpr int thread_count = 8;
     constexpr int calls_per_thread = 4000;
@@ -199,6 +222,7 @@ int main() {
     test_injected_sources_have_known_answers();
     test_null_outputs_are_ignored_but_advance_state();
     test_lock_failure_preserves_outputs_and_sequence();
+    test_hash_lock_release_failure_aborts();
     test_concurrent_calls_return_distinct_pairs();
     test_one_hundred_thousand_calls_do_not_repeat();
     return EXIT_SUCCESS;

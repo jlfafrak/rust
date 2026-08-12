@@ -103,7 +103,7 @@ static int32_t eos_port_lock_acquire(uint32_t lock_id) {
         if (status != OS_STS_OK) return status;
         if (atomic_compare_exchange_strong_explicit(
                 &eos_martos_locks[lock_id], &expected, candidate,
-                memory_order_release, memory_order_acquire)) {
+                memory_order_acq_rel, memory_order_acquire)) {
             lock = candidate;
         } else {
             status = (int32_t)os_mutex_delete(candidate);
