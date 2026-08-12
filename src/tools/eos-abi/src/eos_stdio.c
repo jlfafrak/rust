@@ -14,6 +14,9 @@ int32_t eos_rust_read(eos_rust_fd_t descriptor, void *buffer,
                       uint32_t byte_count) {
     eos_fd_reference reference;
     int32_t result;
+    if (byte_count > (uint32_t)INT32_MAX) {
+        return eos_fd_fail_errno(EOS_ERRNO_INVALID);
+    }
     if (buffer == NULL && byte_count != 0) {
         return eos_fd_fail_errno(EOS_ERRNO_FAULT);
     }
@@ -45,7 +48,8 @@ int32_t eos_rust_read(eos_rust_fd_t descriptor, void *buffer,
         break;
     }
     case EOS_FD_KIND_NULL:
-        result = 0;
+        result = eos_fs_null_read(
+            (eos_null_file *)reference.native.pointer);
         break;
     default:
         result = eos_fd_fail_errno(EOS_ERRNO_BAD_DESCRIPTOR);
@@ -58,6 +62,9 @@ int32_t eos_rust_write(eos_rust_fd_t descriptor, const void *buffer,
                        uint32_t byte_count) {
     eos_fd_reference reference;
     int32_t result;
+    if (byte_count > (uint32_t)INT32_MAX) {
+        return eos_fd_fail_errno(EOS_ERRNO_INVALID);
+    }
     if (buffer == NULL && byte_count != 0) {
         return eos_fd_fail_errno(EOS_ERRNO_FAULT);
     }
@@ -89,7 +96,8 @@ int32_t eos_rust_write(eos_rust_fd_t descriptor, const void *buffer,
         break;
     }
     case EOS_FD_KIND_NULL:
-        result = (int32_t)byte_count;
+        result = eos_fs_null_write(
+            (eos_null_file *)reference.native.pointer, byte_count);
         break;
     default:
         result = eos_fd_fail_errno(EOS_ERRNO_BAD_DESCRIPTOR);
@@ -102,6 +110,9 @@ int32_t eos_rust_pread(eos_rust_fd_t descriptor, void *buffer,
                        uint32_t byte_count, int64_t offset) {
     eos_fd_reference reference;
     int32_t result;
+    if (byte_count > (uint32_t)INT32_MAX) {
+        return eos_fd_fail_errno(EOS_ERRNO_INVALID);
+    }
     if (buffer == NULL && byte_count != 0) {
         return eos_fd_fail_errno(EOS_ERRNO_FAULT);
     }
@@ -118,6 +129,9 @@ int32_t eos_rust_pwrite(eos_rust_fd_t descriptor, const void *buffer,
                         uint32_t byte_count, int64_t offset) {
     eos_fd_reference reference;
     int32_t result;
+    if (byte_count > (uint32_t)INT32_MAX) {
+        return eos_fd_fail_errno(EOS_ERRNO_INVALID);
+    }
     if (buffer == NULL && byte_count != 0) {
         return eos_fd_fail_errno(EOS_ERRNO_FAULT);
     }
@@ -134,13 +148,10 @@ int64_t eos_rust_lseek(eos_rust_fd_t descriptor, int64_t offset,
                        int32_t origin) {
     eos_fd_reference reference;
     int64_t result;
-    if (eos_fd_acquire(descriptor, EOS_FD_KIND_FILE, &reference) != 0) {
-        eos_fd_reference kind_reference;
-        if (eos_fd_acquire(descriptor, EOS_FD_KIND_NONE, &kind_reference) == 0) {
-            eos_fd_release_or_abort(&kind_reference);
-            return (int64_t)eos_fd_fail_errno(EOS_ERRNO_ILLEGAL_SEEK);
-        }
-        return -1;
+    if (eos_fd_acquire(descriptor, EOS_FD_KIND_NONE, &reference) != 0) return -1;
+    if (reference.kind != EOS_FD_KIND_FILE) {
+        eos_fd_release_or_abort(&reference);
+        return (int64_t)eos_fd_fail_errno(EOS_ERRNO_ILLEGAL_SEEK);
     }
     result = eos_fs_file_seek((eos_fs_file *)reference.native.pointer,
                               offset, origin);

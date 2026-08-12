@@ -18,6 +18,13 @@ static pthread_mutex_t eos_host_locks[EOS_PORT_LOCK_COUNT] = {
     PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER,
     PTHREAD_MUTEX_INITIALIZER};
 static pthread_mutex_t eos_host_console_guard = PTHREAD_MUTEX_INITIALIZER;
+#ifdef EOS_RUST_HOST_TEST
+static pthread_mutex_t eos_host_closedir_guard = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t eos_host_closedir_condition = PTHREAD_COND_INITIALIZER;
+static int eos_host_closedir_pause;
+static int eos_host_closedir_entered;
+static int eos_host_closedir_resume;
+#endif
 static char eos_host_console_in[4096];
 static uint32_t eos_host_console_in_length;
 static uint32_t eos_host_console_in_offset;
@@ -84,6 +91,12 @@ void eos_host_test_reset(void) {
     eos_host_delayed_seek_status = 0;
     (void)strcpy(eos_host_hostname, "eos-host");
     (void)pthread_mutex_unlock(&eos_host_console_guard);
+    (void)pthread_mutex_lock(&eos_host_closedir_guard);
+    eos_host_closedir_pause = 0;
+    eos_host_closedir_entered = 0;
+    eos_host_closedir_resume = 1;
+    (void)pthread_cond_broadcast(&eos_host_closedir_condition);
+    (void)pthread_mutex_unlock(&eos_host_closedir_guard);
 }
 void eos_host_test_fail_next_alloc(int32_t status) { eos_host_next_alloc_status = status; }
 void eos_host_test_fail_next_aligned_alloc(int32_t status) { eos_host_next_aligned_status = status; }
@@ -166,6 +179,40 @@ void eos_host_test_hostname(const char *name) {
     (void)strncpy(eos_host_hostname, name, sizeof(eos_host_hostname) - 1U);
     eos_host_hostname[sizeof(eos_host_hostname) - 1U] = '\0';
     (void)pthread_mutex_unlock(&eos_host_console_guard);
+}
+void eos_host_test_pause_closedir_after_validation(void) {
+    (void)pthread_mutex_lock(&eos_host_closedir_guard);
+    eos_host_closedir_pause = 1;
+    eos_host_closedir_entered = 0;
+    eos_host_closedir_resume = 0;
+    (void)pthread_mutex_unlock(&eos_host_closedir_guard);
+}
+void eos_host_test_wait_closedir_validation(void) {
+    (void)pthread_mutex_lock(&eos_host_closedir_guard);
+    while (!eos_host_closedir_entered) {
+        (void)pthread_cond_wait(&eos_host_closedir_condition,
+                                &eos_host_closedir_guard);
+    }
+    (void)pthread_mutex_unlock(&eos_host_closedir_guard);
+}
+void eos_host_test_resume_closedir(void) {
+    (void)pthread_mutex_lock(&eos_host_closedir_guard);
+    eos_host_closedir_resume = 1;
+    (void)pthread_cond_broadcast(&eos_host_closedir_condition);
+    (void)pthread_mutex_unlock(&eos_host_closedir_guard);
+}
+static void eos_host_test_closedir_validation_point(void) {
+    (void)pthread_mutex_lock(&eos_host_closedir_guard);
+    if (eos_host_closedir_pause) {
+        eos_host_closedir_entered = 1;
+        (void)pthread_cond_broadcast(&eos_host_closedir_condition);
+        while (!eos_host_closedir_resume) {
+            (void)pthread_cond_wait(&eos_host_closedir_condition,
+                                    &eos_host_closedir_guard);
+        }
+        eos_host_closedir_pause = 0;
+    }
+    (void)pthread_mutex_unlock(&eos_host_closedir_guard);
 }
 #endif
 
@@ -436,28 +483,63 @@ static int32_t eos_host_status_from_errno(int error_number) {
     }
 }
 
+static int32_t eos_host_compat_errno(int error_number) {
+    switch (error_number) {
+    case ENOENT: return EOS_ERRNO_NO_ENTRY;
+    case EEXIST: return EOS_ERRNO_EXISTS;
+    case EACCES:
+    case EPERM: return EOS_ERRNO_ACCESS;
+    case EBUSY: return EOS_ERRNO_BUSY;
+    case EROFS: return EOS_ERRNO_READ_ONLY_FS;
+    case ENOMEM: return EOS_ERRNO_NO_MEMORY;
+    case ENOTEMPTY: return EOS_ERRNO_NOT_EMPTY;
+    case ENOTDIR: return EOS_ERRNO_NOT_DIRECTORY;
+    case EISDIR: return EOS_ERRNO_IS_DIRECTORY;
+    case EINVAL: return EOS_ERRNO_INVALID;
+    default: return EOS_ERRNO_IO;
+    }
+}
+
+static eos_port_result eos_host_path_result(int result) {
+    eos_port_result translated;
+    if (result == 0) {
+        translated.status = 0;
+        translated.error_number = 0;
+    } else {
+        translated.status = eos_host_status_from_errno(errno);
+        translated.error_number = eos_host_compat_errno(errno);
+    }
+    return translated;
+}
+
 static int eos_host_file_descriptor(eos_port_file file) {
     return (int)file.words[0] - 1;
 }
 
-static int32_t eos_port_file_open(const char *path, uint32_t flags,
-                                  eos_port_file *file) {
+static eos_port_result eos_port_file_open(const char *path, uint32_t flags,
+                                          eos_port_file *file) {
     int native_flags = 0;
     int descriptor;
+    eos_port_result result = {0, 0};
     switch (flags & EOS_RUST_O_ACCMODE) {
     case EOS_RUST_O_RDONLY: native_flags |= O_RDONLY; break;
     case EOS_RUST_O_WRONLY: native_flags |= O_WRONLY; break;
     case EOS_RUST_O_RDWR: native_flags |= O_RDWR; break;
-    default: return 1;
+    default:
+        result.status = 1;
+        return result;
     }
     if ((flags & EOS_RUST_O_CREAT) != 0) native_flags |= O_CREAT;
     if ((flags & EOS_RUST_O_EXCL) != 0) native_flags |= O_EXCL;
     if ((flags & EOS_RUST_O_TRUNC) != 0) native_flags |= O_TRUNC;
     descriptor = open(path, native_flags, (mode_t)0666);
-    if (descriptor < 0) return eos_host_status_from_errno(errno);
+    if (descriptor < 0) {
+        result.status = eos_host_status_from_errno(errno);
+        return result;
+    }
     file->words[0] = (uintptr_t)(descriptor + 1);
     file->words[1] = 0;
-    return 0;
+    return result;
 }
 
 static int32_t eos_port_file_read(eos_port_file file, void *buffer,
@@ -589,13 +671,17 @@ static int32_t eos_port_path_mkdir(const char *path) {
     return mkdir(path, (mode_t)0777) == 0 ? 0 : eos_host_status_from_errno(errno);
 }
 
-static int32_t eos_port_path_remove(const char *path) {
-    return remove(path) == 0 ? 0 : eos_host_status_from_errno(errno);
+static eos_port_result eos_port_path_unlink(const char *path) {
+    return eos_host_path_result(unlink(path));
 }
 
-static int32_t eos_port_path_rename(const char *old_path,
-                                    const char *new_path) {
-    return rename(old_path, new_path) == 0 ? 0 : eos_host_status_from_errno(errno);
+static eos_port_result eos_port_path_rmdir(const char *path) {
+    return eos_host_path_result(rmdir(path));
+}
+
+static eos_port_result eos_port_path_rename(const char *old_path,
+                                             const char *new_path) {
+    return eos_host_path_result(rename(old_path, new_path));
 }
 
 static int32_t eos_port_directory_count(const char *path, uint32_t *count) {

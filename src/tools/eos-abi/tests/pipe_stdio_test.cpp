@@ -280,6 +280,28 @@ void test_pipe_argument_and_kind_validation() {
            "validation fixture cleanup failed");
 }
 
+void test_oversized_console_and_pipe_io_is_rejected_before_dispatch() {
+    constexpr uint32_t oversized =
+        static_cast<uint32_t>(INT32_MAX) + UINT32_C(1);
+    expect(eos_rust_read(0, nullptr, oversized) == -1 &&
+               *eos_rust_errno_location() == 22 &&
+               eos_rust_write(1, nullptr, oversized) == -1 &&
+               *eos_rust_errno_location() == 22,
+           "oversized console I/O must fail EINVAL before buffer access");
+
+    eos_rust_fd_t descriptors[2] = {-1, -1};
+    expect(eos_rust_pipe(descriptors, EOS_RUST_O_NONBLOCK) == 0,
+           "oversized pipe fixture creation failed");
+    expect(eos_rust_read(descriptors[0], nullptr, oversized) == -1 &&
+               *eos_rust_errno_location() == 22 &&
+               eos_rust_write(descriptors[1], nullptr, oversized) == -1 &&
+               *eos_rust_errno_location() == 22,
+           "oversized pipe I/O must fail EINVAL before buffer access");
+    expect(eos_rust_close(descriptors[0]) == 0 &&
+               eos_rust_close(descriptors[1]) == 0,
+           "oversized pipe fixture cleanup failed");
+}
+
 } // namespace
 
 int main() {
@@ -288,5 +310,6 @@ int main() {
     test_nonblocking_pipe_capacity_partial_eof_and_epipe();
     test_blocking_wakeup_status_sharing_and_close_race();
     test_pipe_argument_and_kind_validation();
+    test_oversized_console_and_pipe_io_is_rejected_before_dispatch();
     return EXIT_SUCCESS;
 }

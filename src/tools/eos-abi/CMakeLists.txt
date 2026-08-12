@@ -211,6 +211,23 @@ if(BUILD_TESTING)
         add_test(NAME ${EOS_RUST_IO_TEST} COMMAND ${EOS_RUST_IO_TEST}_test)
     endforeach()
 
+    foreach(EOS_RUST_MARTOS_FS_CASE rmdir trunc rename)
+        add_executable(martos_fs_${EOS_RUST_MARTOS_FS_CASE}_contract_test
+            tests/martos_fs_contract_test.c)
+        set_target_properties(martos_fs_${EOS_RUST_MARTOS_FS_CASE}_contract_test
+            PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO)
+        target_compile_definitions(
+            martos_fs_${EOS_RUST_MARTOS_FS_CASE}_contract_test PRIVATE
+            EOS_RUST_MARTOS_FS_CASE_${EOS_RUST_MARTOS_FS_CASE}=1)
+        target_include_directories(
+            martos_fs_${EOS_RUST_MARTOS_FS_CASE}_contract_test PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/include"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ports/martos_14_0_39")
+        add_test(NAME martos_fs_${EOS_RUST_MARTOS_FS_CASE}_contract
+            COMMAND martos_fs_${EOS_RUST_MARTOS_FS_CASE}_contract_test)
+    endforeach()
+
     set(CMAKE_REQUIRED_FLAGS "-fsanitize=thread")
     set(CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=thread")
     check_cxx_source_runs(
@@ -268,6 +285,18 @@ if(BUILD_TESTING)
         target_link_libraries(fs_tsan PRIVATE
             eos_rust_abi_host_tsan Threads::Threads)
         add_test(NAME fs_tsan COMMAND fs_tsan)
+
+        add_executable(dir_tsan tests/dir_test.cpp)
+        set_target_properties(dir_tsan PROPERTIES
+            CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+        target_compile_definitions(dir_tsan PRIVATE EOS_RUST_HOST_TEST=1)
+        target_include_directories(dir_tsan PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src")
+        target_compile_options(dir_tsan PRIVATE -fsanitize=thread)
+        target_link_options(dir_tsan PRIVATE -fsanitize=thread)
+        target_link_libraries(dir_tsan PRIVATE
+            eos_rust_abi_host_tsan Threads::Threads)
+        add_test(NAME dir_tsan COMMAND dir_tsan)
     else()
         message(STATUS
             "ThreadSanitizer compile/runtime probe failed; fd_race remains enabled without TSan")

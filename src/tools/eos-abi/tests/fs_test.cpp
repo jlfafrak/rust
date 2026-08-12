@@ -23,6 +23,8 @@ void eos_host_test_file_partial_write(uint32_t bytes, int32_t status);
 void eos_host_test_fail_next_file_close(int32_t status);
 void eos_host_test_fail_seek_after(uint32_t successful_seeks, int32_t status);
 void eos_host_test_fail_lock_after(uint32_t successful_locks, int32_t status);
+void eos_host_test_fail_next_lock(int32_t status);
+void eos_host_test_fail_next_alloc(int32_t status);
 }
 
 static_assert(sizeof(eos_rust_stat) == 128, "stable stat size changed");
@@ -194,6 +196,34 @@ void test_null_validation_and_unsupported_contracts(const std::string &base) {
            "/dev/null writes must consume every byte");
     expect(eos_rust_close(null_fd) == 0, "/dev/null close failed");
 
+    eos_rust_fd_t read_null =
+        eos_rust_open("/dev/null", EOS_RUST_O_RDONLY, 0);
+    eos_rust_fd_t write_null =
+        eos_rust_open("/dev/null", EOS_RUST_O_WRONLY, 0);
+    expect(read_null >= 3 && write_null >= 3,
+           "/dev/null access-mode fixtures failed");
+    expect(eos_rust_read(read_null, &byte, 1) == 0,
+           "read-only /dev/null must remain readable");
+    expect(eos_rust_write(read_null, &byte, 1) == -1 &&
+               *eos_rust_errno_location() == 9,
+           "read-only /dev/null must reject writes with EBADF");
+    expect(eos_rust_write(write_null, &byte, 1) == 1,
+           "write-only /dev/null must remain writable");
+    expect(eos_rust_read(write_null, &byte, 1) == -1 &&
+               *eos_rust_errno_location() == 9,
+           "write-only /dev/null must reject reads with EBADF");
+
+    constexpr uint32_t oversized =
+        static_cast<uint32_t>(INT32_MAX) + UINT32_C(1);
+    expect(eos_rust_read(read_null, nullptr, oversized) == -1 &&
+               *eos_rust_errno_location() == 22 &&
+               eos_rust_write(write_null, nullptr, oversized) == -1 &&
+               *eos_rust_errno_location() == 22,
+           "oversized /dev/null I/O must fail EINVAL before buffer access");
+    expect(eos_rust_close(read_null) == 0 &&
+               eos_rust_close(write_null) == 0,
+           "/dev/null access-mode fixture cleanup failed");
+
     expect(eos_rust_open(nullptr, EOS_RUST_O_RDONLY, 0) == -1 &&
                *eos_rust_errno_location() == 14,
            "open must validate a null path");
@@ -219,6 +249,78 @@ void test_null_validation_and_unsupported_contracts(const std::string &base) {
                eos_rust_fchmod(-1, 0777) == -1 &&
                *eos_rust_errno_location() == 45,
            "fd ownership/permission mutation must consistently report ENOTSUP");
+}
+
+void test_canonical_parent_paths(const std::string &base) {
+    expect(eos_rust_mkdir("parent", 0777) == 0 &&
+               eos_rust_mkdir("child", 0777) == 0,
+           "canonical path fixture directories failed");
+    expect(eos_rust_chdir("parent") == 0,
+           "canonical path fixture chdir failed");
+
+    char resolved[EOS_RUST_PATH_MAX]{};
+    expect(eos_rust_realpath("..", resolved, sizeof(resolved)) == 0 &&
+               std::string(resolved) == base,
+           "realpath(..) must not retain a trailing slash");
+    expect(eos_rust_realpath("../child", resolved, sizeof(resolved)) == 0 &&
+               std::string(resolved) == base + "/child",
+           "realpath(../child) must not create a double slash");
+    expect(eos_rust_realpath("../../../../", resolved, sizeof(resolved)) == 0 &&
+               std::string(resolved) == "/",
+           "repeated parents must clamp to the root path");
+    expect(eos_rust_realpath("/../../", resolved, sizeof(resolved)) == 0 &&
+               std::string(resolved) == "/",
+           "absolute parents must clamp to the root path");
+
+    expect(eos_rust_chdir("..") == 0,
+           "canonical parent chdir failed");
+    char cwd[EOS_RUST_PATH_MAX]{};
+    expect(eos_rust_getcwd(cwd, sizeof(cwd)) == 0 &&
+               std::string(cwd) == base,
+           "chdir/getcwd must store the canonical parent without a slash");
+    expect(eos_rust_rmdir("parent") == 0 && eos_rust_rmdir("child") == 0,
+           "canonical path fixture cleanup failed");
+}
+
+void test_oversized_native_io() {
+    static const char path[] = "/tmp/eos-rust-io-limits";
+    constexpr uint32_t oversized =
+        static_cast<uint32_t>(INT32_MAX) + UINT32_C(1);
+    eos_rust_fd_t descriptor = eos_rust_open(
+        path, EOS_RUST_O_CREAT | EOS_RUST_O_TRUNC | EOS_RUST_O_RDWR, 0666);
+    expect(descriptor >= 3, "I/O limit fixture open failed");
+
+    expect(eos_rust_read(descriptor, nullptr, oversized) == -1 &&
+               *eos_rust_errno_location() == 22 &&
+               eos_rust_write(descriptor, nullptr, oversized) == -1 &&
+               *eos_rust_errno_location() == 22 &&
+               eos_rust_pread(descriptor, nullptr, oversized, 0) == -1 &&
+               *eos_rust_errno_location() == 22 &&
+               eos_rust_pwrite(descriptor, nullptr, oversized, 0) == -1 &&
+               *eos_rust_errno_location() == 22,
+           "oversized native and positional I/O must fail EINVAL before dispatch");
+
+    expect(eos_rust_close(descriptor) == 0 && eos_rust_unlink(path) == 0,
+           "I/O limit fixture cleanup failed");
+}
+
+void test_lseek_error_preservation() {
+    static const char path[] = "/tmp/eos-rust-lseek-errors";
+    eos_rust_fd_t descriptor = eos_rust_open(
+        path, EOS_RUST_O_CREAT | EOS_RUST_O_TRUNC | EOS_RUST_O_RDWR, 0666);
+    expect(descriptor >= 3, "lseek error fixture open failed");
+    eos_host_test_fail_next_alloc(15);
+    expect(eos_rust_lseek(descriptor, 0, EOS_RUST_SEEK_CUR) == -1 &&
+               *eos_rust_errno_location() == 12,
+           "lseek must preserve lease ENOMEM instead of replacing it with ESPIPE");
+    eos_host_test_fail_next_lock(17);
+    expect(eos_rust_lseek(descriptor, 0, EOS_RUST_SEEK_CUR) == -1 &&
+               *eos_rust_errno_location() == 16,
+           "lseek must preserve descriptor lock failure instead of ESPIPE");
+    expect(eos_rust_lseek(descriptor, 0, EOS_RUST_SEEK_CUR) == 0,
+           "lseek must remain usable after injected acquisition failures");
+    expect(eos_rust_close(descriptor) == 0 && eos_rust_unlink(path) == 0,
+           "lseek error fixture cleanup failed");
 }
 
 void test_irreversible_close_failure_is_fail_fast() {
@@ -297,13 +399,36 @@ void test_post_io_lease_release_failure_is_fail_fast() {
 
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
     reset_fixture();
     const std::string base = fixture_path();
     std::filesystem::remove_all(base);
+    if (argc == 2 && std::strcmp(argv[1], "canonical") == 0) {
+        expect(eos_rust_mkdir(base.c_str(), UINT32_C(0777)) == 0 &&
+                   eos_rust_chdir(base.c_str()) == 0,
+               "canonical selector setup failed");
+        test_canonical_parent_paths(base);
+        expect(eos_rust_chdir("/") == 0 && eos_rust_rmdir(base.c_str()) == 0,
+               "canonical selector cleanup failed");
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "io-validation") == 0) {
+        expect(eos_rust_mkdir(base.c_str(), UINT32_C(0777)) == 0,
+               "I/O validation selector setup failed");
+        test_null_validation_and_unsupported_contracts(base);
+        test_oversized_native_io();
+        return EXIT_SUCCESS;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "lseek") == 0) {
+        test_lseek_error_preservation();
+        return EXIT_SUCCESS;
+    }
     test_file_io_offsets_duplication_and_metadata(base);
+    test_canonical_parent_paths(base);
     expect(eos_rust_chdir("/") == 0, "fixture cwd reset failed");
     test_null_validation_and_unsupported_contracts(base);
+    test_oversized_native_io();
+    test_lseek_error_preservation();
     test_irreversible_close_failure_is_fail_fast();
     test_positional_restore_failure_is_fail_fast();
     test_post_io_lease_release_failure_is_fail_fast();

@@ -138,8 +138,10 @@ EOS_RUST_EXPORT void eos_rust_runtime_init(int32_t argc,
 
 /*
  * File operations use nonnegative byte counts or offsets for success and -1
- * with compatibility errno for failure. A partial transfer outranks a later
- * native error. realpath/getcwd return zero on success; a short buffer is
+ * with compatibility errno for failure. Byte counts above INT32_MAX are
+ * rejected with EINVAL before descriptor or buffer access, so every transfer
+ * result remains representable. A partial transfer outranks a later native
+ * error. realpath/getcwd return zero on success; a short buffer is
  * terminated, contains the prefix that fits, and reports ERANGE. gethostname
  * follows the same termination rule and reports ENAMETOOLONG on truncation.
  */

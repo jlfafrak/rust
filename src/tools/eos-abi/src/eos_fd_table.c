@@ -230,6 +230,62 @@ static EOS_RUST_MAYBE_UNUSED int32_t eos_fd_close(int32_t descriptor) {
     return 0;
 }
 
+/*
+ * Closes only the slot validated by this exact lease. The lease and slot are
+ * consumed under one table lock so a concurrent close/reuse cannot redirect
+ * a typed close onto the replacement descriptor.
+ */
+static EOS_RUST_MAYBE_UNUSED int32_t eos_fd_close_reference(
+    eos_fd_reference *reference,
+    eos_fd_kind required_kind) {
+    eos_fd_lease *lease;
+    eos_fd_lease **lease_link;
+    eos_fd_object *object;
+    eos_fd_slot *slot;
+    eos_fd_pending_destroy slot_pending;
+    eos_fd_pending_destroy lease_pending;
+    int matches;
+    if (reference == NULL || reference->active == UINT32_C(0) ||
+        reference->lease_id == UINT64_C(0) ||
+        reference->slot_index >= EOS_FD_TABLE_CAPACITY ||
+        reference->kind != required_kind) {
+        return eos_fd_fail_errno(EOS_ERRNO_BAD_DESCRIPTOR);
+    }
+    if (eos_fd_lock() != 0) return -1;
+    lease_link = &eos_fd_active_leases;
+    while (*lease_link != NULL &&
+           (*lease_link)->id != reference->lease_id) {
+        lease_link = &(*lease_link)->next;
+    }
+    if (*lease_link == NULL) {
+        eos_fd_unlock();
+        return eos_fd_fail_errno(EOS_ERRNO_BAD_DESCRIPTOR);
+    }
+    lease = *lease_link;
+    object = lease->object;
+    slot = &eos_fd_slots[reference->slot_index];
+    matches = slot->occupied != UINT32_C(0) &&
+              slot->generation == reference->slot_generation &&
+              slot->kind == required_kind &&
+              slot->object == object;
+    slot_pending.pending = UINT32_C(0);
+    slot_pending.native.word = (uintptr_t)0;
+    slot_pending.destructor = NULL;
+    slot_pending.object = NULL;
+    if (matches) {
+        slot_pending = eos_fd_remove_slot_locked(reference->slot_index);
+        if (slot_pending.pending != UINT32_C(0)) eos_rust_abort();
+    }
+    *lease_link = lease->next;
+    reference->active = UINT32_C(0);
+    reference->lease_id = UINT64_C(0);
+    lease_pending = eos_fd_drop_object_locked(object);
+    eos_fd_unlock();
+    eos_fd_finish_destroy(lease_pending);
+    if (eos_port_memory_free(lease) != EOS_PORT_STATUS_OK) eos_rust_abort();
+    return matches ? 0 : eos_fd_fail_errno(EOS_ERRNO_BAD_DESCRIPTOR);
+}
+
 static int32_t eos_fd_dup_min(int32_t descriptor, int32_t minimum,
                               uint32_t flags) {
     int32_t new_descriptor;

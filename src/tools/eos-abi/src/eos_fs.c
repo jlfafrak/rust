@@ -111,6 +111,7 @@ static int32_t eos_fs_normalize(const char *path, char resolved[EOS_RUST_PATH_MA
             if (output > 1U) {
                 --output;
                 while (output > 1U && resolved[output - 1U] != '/') --output;
+                if (output > 1U) --output;
             }
             continue;
         }
@@ -221,6 +222,7 @@ eos_rust_fd_t eos_rust_open(const char *path, uint32_t flags, uint32_t mode) {
     char resolved[EOS_RUST_PATH_MAX];
     eos_fs_file *file = NULL;
     eos_fd_native native;
+    eos_port_result open_result;
     int32_t status;
     (void)mode;
     if ((flags & ~allowed) != 0 || (flags & EOS_RUST_O_ACCMODE) == 3 ||
@@ -242,11 +244,20 @@ eos_rust_fd_t eos_rust_open(const char *path, uint32_t flags, uint32_t mode) {
         eos_fs_free_or_abort(file);
         return eos_fd_fail_status(status, "file.sync.create");
     }
-    status = eos_port_file_open(resolved, flags, &file->native);
+    open_result = eos_port_file_open(resolved, flags, &file->native);
+    status = open_result.status;
     if (status != EOS_PORT_STATUS_OK) {
         eos_fs_destroy_sync_or_abort(file->sync);
         eos_fs_free_or_abort(file);
+        if (open_result.error_number != 0) {
+            return eos_fd_fail_errno(open_result.error_number);
+        }
         return eos_fd_fail_status(status, "file.open");
+    }
+    if (open_result.error_number != 0) {
+        eos_fs_destroy_sync_or_abort(file->sync);
+        eos_fs_free_or_abort(file);
+        return eos_fd_fail_errno(open_result.error_number);
     }
     file->status_flags = flags &
         (EOS_RUST_O_ACCMODE | EOS_RUST_O_APPEND | EOS_RUST_O_NONBLOCK);
@@ -353,6 +364,27 @@ static int32_t eos_fs_file_write(eos_fs_file *file, const void *buffer,
                             positional ? "file.pwrite" : "file.write", 0);
 }
 
+static int32_t eos_fs_null_read(eos_null_file *file) {
+    int32_t result;
+    if (eos_fs_sync_lock(file->sync, "null.read.lock") != 0) return -1;
+    result = (file->status_flags & EOS_RUST_O_ACCMODE) == EOS_RUST_O_WRONLY
+                 ? eos_fd_fail_errno(EOS_ERRNO_BAD_DESCRIPTOR)
+                 : 0;
+    eos_fs_sync_unlock(file->sync);
+    return result;
+}
+
+static int32_t eos_fs_null_write(eos_null_file *file,
+                                 uint32_t byte_count) {
+    int32_t result;
+    if (eos_fs_sync_lock(file->sync, "null.write.lock") != 0) return -1;
+    result = (file->status_flags & EOS_RUST_O_ACCMODE) == EOS_RUST_O_RDONLY
+                 ? eos_fd_fail_errno(EOS_ERRNO_BAD_DESCRIPTOR)
+                 : (int32_t)byte_count;
+    eos_fs_sync_unlock(file->sync);
+    return result;
+}
+
 static int64_t eos_fs_file_seek(eos_fs_file *file, int64_t offset,
                                 int32_t origin) {
     int64_t result = 0;
@@ -424,23 +456,21 @@ int32_t eos_rust_mkdir(const char *path, uint32_t mode) {
 
 int32_t eos_rust_unlink(const char *path) {
     char resolved[EOS_RUST_PATH_MAX];
-    eos_port_stat metadata;
-    int32_t status;
+    eos_port_result result;
     if (eos_fs_normalize(path, resolved) != 0) return -1;
-    status = eos_port_path_stat(resolved, &metadata);
-    if (status != EOS_PORT_STATUS_OK) return eos_fd_fail_status(status, "unlink.stat");
-    if (metadata.type == EOS_PORT_FILE_TYPE_DIRECTORY) {
-        return eos_fd_fail_errno(EOS_ERRNO_IS_DIRECTORY);
+    result = eos_port_path_unlink(resolved);
+    if (result.error_number != 0) {
+        return eos_fd_fail_errno(result.error_number);
     }
-    status = eos_port_path_remove(resolved);
-    return status == EOS_PORT_STATUS_OK ? 0
-                                       : eos_fd_fail_status(status, "path.unlink");
+    return result.status == EOS_PORT_STATUS_OK
+               ? 0
+               : eos_fd_fail_status(result.status, "path.unlink");
 }
 
 int32_t eos_rust_rmdir(const char *path) {
     char resolved[EOS_RUST_PATH_MAX];
     eos_port_stat metadata;
-    uint32_t count = 0;
+    eos_port_result result;
     int32_t status;
     if (eos_fs_normalize(path, resolved) != 0) return -1;
     status = eos_port_path_stat(resolved, &metadata);
@@ -448,23 +478,28 @@ int32_t eos_rust_rmdir(const char *path) {
     if (metadata.type != EOS_PORT_FILE_TYPE_DIRECTORY) {
         return eos_fd_fail_errno(EOS_ERRNO_NOT_DIRECTORY);
     }
-    status = eos_port_directory_count(resolved, &count);
-    if (status != EOS_PORT_STATUS_OK) return eos_fd_fail_status(status, "rmdir.list");
-    if (count != 0) return eos_fd_fail_errno(EOS_ERRNO_NOT_EMPTY);
-    status = eos_port_path_remove(resolved);
-    return status == EOS_PORT_STATUS_OK ? 0
-                                       : eos_fd_fail_status(status, "path.rmdir");
+    result = eos_port_path_rmdir(resolved);
+    if (result.error_number != 0) {
+        return eos_fd_fail_errno(result.error_number);
+    }
+    return result.status == EOS_PORT_STATUS_OK
+               ? 0
+               : eos_fd_fail_status(result.status, "path.rmdir");
 }
 
 int32_t eos_rust_rename(const char *old_path, const char *new_path) {
     char old_resolved[EOS_RUST_PATH_MAX];
     char new_resolved[EOS_RUST_PATH_MAX];
-    int32_t status;
+    eos_port_result result;
     if (eos_fs_normalize(old_path, old_resolved) != 0 ||
         eos_fs_normalize(new_path, new_resolved) != 0) return -1;
-    status = eos_port_path_rename(old_resolved, new_resolved);
-    return status == EOS_PORT_STATUS_OK ? 0
-                                       : eos_fd_fail_status(status, "path.rename");
+    result = eos_port_path_rename(old_resolved, new_resolved);
+    if (result.error_number != 0) {
+        return eos_fd_fail_errno(result.error_number);
+    }
+    return result.status == EOS_PORT_STATUS_OK
+               ? 0
+               : eos_fd_fail_status(result.status, "path.rename");
 }
 
 int32_t eos_rust_realpath(const char *path, char *resolved,

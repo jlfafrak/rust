@@ -9,8 +9,18 @@
 #include <stdatomic.h>
 #include <string.h>
 
-/* Authoritative EOS libc/include/stdio.h declaration; kept private here. */
+/* Authoritative EOS libc/include/stdio.h declarations; kept private here. */
 extern int rename(const char *old_name, const char *new_name);
+extern int rmdir(const char *filename);
+extern int unlink(const char *filename);
+
+#if defined(__GLIBC__)
+/* Host-side SDK compile contract; the EOS target takes the branch below. */
+extern int *__errno_location(void);
+#define EOS_MARTOS_LIBC_ERRNO_VALUE (*__errno_location())
+#else
+#define EOS_MARTOS_LIBC_ERRNO_VALUE errno
+#endif
 
 /* Guard the stable errno ABI against drift in the pinned EOS libc. */
 _Static_assert(ENOENT == EOS_ERRNO_NO_ENTRY, "unexpected EOS ENOENT value");
@@ -47,6 +57,8 @@ _Static_assert(ENOTEMPTY == EOS_ERRNO_NOT_EMPTY,
                "unexpected EOS ENOTEMPTY value");
 _Static_assert(EOVERFLOW == EOS_ERRNO_OVERFLOW,
                "unexpected EOS EOVERFLOW value");
+
+#include "eos_port_martos_fs_contract.h"
 
 /* Guard the numeric translation table against drift in the pinned SDK. */
 _Static_assert(OS_STS_OK == 0, "unexpected OS_STS_OK value");
@@ -259,36 +271,14 @@ static os_efs_file_id eos_martos_file_decode(eos_port_file file) {
     return native;
 }
 
-static int32_t eos_port_file_open(const char *path, uint32_t flags,
-                                  eos_port_file *file) {
+static eos_port_result eos_port_file_open(const char *path, uint32_t flags,
+                                          eos_port_file *file) {
     os_efs_file_id native;
-    os_efs_access_mode mode;
-    os_status status;
-    switch (flags & EOS_RUST_O_ACCMODE) {
-    case EOS_RUST_O_RDONLY: mode = OS_EFS_READ; break;
-    case EOS_RUST_O_WRONLY: mode = OS_EFS_WRITE; break;
-    case EOS_RUST_O_RDWR: mode = OS_EFS_READ_WRITE; break;
-    default: return OS_STS_INVALID_PARAM2;
-    }
-    if ((flags & EOS_RUST_O_CREAT) != 0 &&
-        (flags & EOS_RUST_O_EXCL) != 0) {
-        os_efs_entry_type type = OS_EFS_NONE;
-        status = os_efs_entry_exists(path, &type, OS_WAIT_FOREVER);
-        if (status != OS_STS_OK) return (int32_t)status;
-        if (type != OS_EFS_NONE) return OS_STS_OBJECT_EXISTS;
-    }
-    if ((flags & EOS_RUST_O_TRUNC) != 0) {
-        status = os_efs_file_init(path, mode, &native, OS_WAIT_FOREVER);
-    } else {
-        status = os_efs_file_open(path, mode, &native, OS_WAIT_FOREVER);
-        if (status == OS_STS_OBJECT_NOT_FOUND &&
-            (flags & EOS_RUST_O_CREAT) != 0) {
-            status = os_efs_file_init(path, mode, &native, OS_WAIT_FOREVER);
-        }
-    }
-    if (status != OS_STS_OK) return (int32_t)status;
+    eos_port_result result =
+        eos_martos_fs_file_open_native(path, flags, &native);
+    if (result.status != OS_STS_OK || result.error_number != 0) return result;
     eos_martos_file_encode(native, file);
-    return OS_STS_OK;
+    return result;
 }
 
 static int32_t eos_port_file_read(eos_port_file file, void *buffer,
@@ -373,13 +363,17 @@ static int32_t eos_port_path_mkdir(const char *path) {
     return (int32_t)os_efs_directory_init(path, OS_WAIT_FOREVER);
 }
 
-static int32_t eos_port_path_remove(const char *path) {
-    return (int32_t)os_efs_entry_remove(path, OS_WAIT_FOREVER);
+static eos_port_result eos_port_path_unlink(const char *path) {
+    return eos_martos_fs_path_unlink(path);
 }
 
-static int32_t eos_port_path_rename(const char *old_path,
-                                    const char *new_path) {
-    return rename(old_path, new_path) == 0 ? OS_STS_OK : OS_STS_DEVICE_ERROR;
+static eos_port_result eos_port_path_rmdir(const char *path) {
+    return eos_martos_fs_path_rmdir(path);
+}
+
+static eos_port_result eos_port_path_rename(const char *old_path,
+                                             const char *new_path) {
+    return eos_martos_fs_path_rename(old_path, new_path);
 }
 
 static int32_t eos_port_directory_count(const char *path, uint32_t *count) {

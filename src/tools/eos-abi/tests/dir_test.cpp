@@ -1,6 +1,7 @@
 #include "eos_fd_table.h"
 #include "eos_rust_abi.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -9,11 +10,15 @@
 #include <iostream>
 #include <set>
 #include <string>
+#include <thread>
 #include <unistd.h>
 
 extern "C" {
 void eos_host_test_reset(void);
 void eos_host_test_fail_next_alloc(int32_t status);
+void eos_host_test_pause_closedir_after_validation(void);
+void eos_host_test_wait_closedir_validation(void);
+void eos_host_test_resume_closedir(void);
 void eos_fs_test_reset(void);
 }
 
@@ -137,6 +142,45 @@ void test_empty_wrong_kind_and_failure_contracts() {
            "rmdir must reject a regular file with ENOTDIR");
 }
 
+void test_closedir_does_not_close_a_reused_descriptor() {
+    expect(eos_rust_mkdir("race-original", 0777) == 0 &&
+               eos_rust_mkdir("race-replacement", 0777) == 0,
+           "closedir race fixture directories failed");
+    eos_rust_fd_t original = eos_rust_opendir("race-original");
+    expect(original >= 3, "closedir race original open failed");
+
+    std::atomic<int32_t> close_result{-99};
+    std::atomic<int32_t> close_errno{-99};
+    eos_host_test_pause_closedir_after_validation();
+    std::thread closer([&] {
+        close_result.store(eos_rust_closedir(original),
+                           std::memory_order_release);
+        close_errno.store(*eos_rust_errno_location(),
+                          std::memory_order_release);
+    });
+    eos_host_test_wait_closedir_validation();
+
+    expect(eos_rust_close(original) == 0,
+           "concurrent integer close of original directory failed");
+    eos_rust_fd_t replacement = eos_rust_opendir("race-replacement");
+    expect(replacement == original,
+           "closedir race must reuse the validated descriptor number");
+    eos_host_test_resume_closedir();
+    closer.join();
+
+    expect(close_result.load(std::memory_order_acquire) == -1 &&
+               close_errno.load(std::memory_order_acquire) == 9,
+           "stale closedir must report EBADF after descriptor reuse");
+    eos_rust_dirent entry{};
+    expect(eos_rust_readdir(replacement, &entry) == 0,
+           "stale closedir must not close the replacement directory");
+    expect(eos_rust_closedir(replacement) == 0,
+           "replacement directory close failed");
+    expect(eos_rust_rmdir("race-original") == 0 &&
+               eos_rust_rmdir("race-replacement") == 0,
+           "closedir race fixture cleanup failed");
+}
+
 void cleanup_fixture(const std::string &base) {
     expect(eos_rust_unlink("alpha") == 0, "alpha cleanup failed");
     expect(eos_rust_unlink("after-snapshot") == 0,
@@ -156,6 +200,7 @@ int main() {
     std::filesystem::remove_all(base);
     test_directory_snapshot_is_stable(base);
     test_empty_wrong_kind_and_failure_contracts();
+    test_closedir_does_not_close_a_reused_descriptor();
     cleanup_fixture(base);
     std::filesystem::remove_all(base);
     return EXIT_SUCCESS;

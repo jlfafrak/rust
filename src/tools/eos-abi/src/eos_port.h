@@ -47,6 +47,11 @@ typedef struct eos_port_dir_entry {
     char name[64];
 } eos_port_dir_entry;
 
+typedef struct eos_port_result {
+    int32_t status;
+    int32_t error_number;
+} eos_port_result;
+
 typedef uintptr_t eos_port_sync;
 
 /* Implemented with internal linkage by the one C source selected by CMake. */
@@ -75,8 +80,8 @@ static int32_t eos_port_sync_unlock(eos_port_sync sync);
 static int32_t eos_port_sync_wait(eos_port_sync sync, uint32_t events);
 static int32_t eos_port_sync_broadcast(eos_port_sync sync, uint32_t events);
 static int32_t eos_port_sync_destroy(eos_port_sync sync);
-static int32_t eos_port_file_open(const char *path, uint32_t flags,
-                                  eos_port_file *file);
+static eos_port_result eos_port_file_open(const char *path, uint32_t flags,
+                                          eos_port_file *file);
 static int32_t eos_port_file_read(eos_port_file file, void *buffer,
                                   uint32_t byte_count, uint32_t *completed);
 static int32_t eos_port_file_write(eos_port_file file, const void *buffer,
@@ -89,9 +94,10 @@ static int32_t eos_port_file_stat(eos_port_file file, eos_port_stat *metadata);
 static int32_t eos_port_file_close(eos_port_file file);
 static int32_t eos_port_path_stat(const char *path, eos_port_stat *metadata);
 static int32_t eos_port_path_mkdir(const char *path);
-static int32_t eos_port_path_remove(const char *path);
-static int32_t eos_port_path_rename(const char *old_path,
-                                    const char *new_path);
+static eos_port_result eos_port_path_unlink(const char *path);
+static eos_port_result eos_port_path_rmdir(const char *path);
+static eos_port_result eos_port_path_rename(const char *old_path,
+                                            const char *new_path);
 static int32_t eos_port_directory_count(const char *path, uint32_t *count);
 static int32_t eos_port_directory_list(const char *path,
                                        eos_port_dir_entry *entries,
