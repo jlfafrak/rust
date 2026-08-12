@@ -6,19 +6,30 @@
 /* Stable errno values from the EOS v1 libc ABI, independent of the build host. */
 typedef enum eos_errno_value {
     EOS_ERRNO_NO_ENTRY = 2,
+    EOS_ERRNO_INTERRUPTED = 4,
     EOS_ERRNO_IO = 5,
     EOS_ERRNO_BAD_DESCRIPTOR = 9,
     EOS_ERRNO_NO_MEMORY = 12,
     EOS_ERRNO_ACCESS = 13,
+    EOS_ERRNO_FAULT = 14,
     EOS_ERRNO_BUSY = 16,
     EOS_ERRNO_EXISTS = 17,
+    EOS_ERRNO_NOT_DIRECTORY = 20,
+    EOS_ERRNO_IS_DIRECTORY = 21,
     EOS_ERRNO_INVALID = 22,
     EOS_ERRNO_TOO_MANY_OPEN_FILES = 24,
+    EOS_ERRNO_NOT_TTY = 25,
+    EOS_ERRNO_ILLEGAL_SEEK = 29,
     EOS_ERRNO_READ_ONLY_FS = 30,
+    EOS_ERRNO_PIPE = 32,
+    EOS_ERRNO_RANGE = 34,
     EOS_ERRNO_WOULD_BLOCK = 35,
     EOS_ERRNO_PROTOCOL_NOT_SUPPORTED = 43,
     EOS_ERRNO_NOT_SUPPORTED = 45,
     EOS_ERRNO_TIMED_OUT = 60,
+    EOS_ERRNO_NAME_TOO_LONG = 63,
+    EOS_ERRNO_NOT_EMPTY = 66,
+    EOS_ERRNO_OVERFLOW = 84,
 } eos_errno_value;
 
 typedef enum eos_error_kind {

@@ -83,7 +83,7 @@ static void eos_runtime_init_unlock(void) {
 }
 
 static int eos_fd_kind_valid(eos_fd_kind kind) {
-    return kind >= EOS_FD_KIND_CONSOLE && kind <= EOS_FD_KIND_SOCKET;
+    return kind >= EOS_FD_KIND_CONSOLE && kind <= EOS_FD_KIND_NULL;
 }
 
 static int32_t eos_fd_find_free_slot_locked(uint32_t first) {
@@ -230,11 +230,13 @@ static EOS_RUST_MAYBE_UNUSED int32_t eos_fd_close(int32_t descriptor) {
     return 0;
 }
 
-static EOS_RUST_MAYBE_UNUSED int32_t eos_fd_dup(int32_t descriptor) {
+static int32_t eos_fd_dup_min(int32_t descriptor, int32_t minimum,
+                              uint32_t flags) {
     int32_t new_descriptor;
     eos_fd_slot *source;
     eos_fd_object *object;
-    if (descriptor < 0 || (uint32_t)descriptor >= EOS_FD_TABLE_CAPACITY) {
+    if (descriptor < 0 || (uint32_t)descriptor >= EOS_FD_TABLE_CAPACITY ||
+        minimum < 0 || (uint32_t)minimum >= EOS_FD_TABLE_CAPACITY) {
         return eos_fd_fail_errno(EOS_ERRNO_BAD_DESCRIPTOR);
     }
     if (eos_fd_lock() != 0) return -1;
@@ -243,7 +245,8 @@ static EOS_RUST_MAYBE_UNUSED int32_t eos_fd_dup(int32_t descriptor) {
         eos_fd_unlock();
         return eos_fd_fail_errno(EOS_ERRNO_BAD_DESCRIPTOR);
     }
-    new_descriptor = eos_fd_find_free_slot_locked(UINT32_C(3));
+    if (minimum < 3) minimum = 3;
+    new_descriptor = eos_fd_find_free_slot_locked((uint32_t)minimum);
     if (new_descriptor < 0) {
         eos_fd_unlock();
         return eos_fd_fail_errno(EOS_ERRNO_TOO_MANY_OPEN_FILES);
@@ -256,9 +259,13 @@ static EOS_RUST_MAYBE_UNUSED int32_t eos_fd_dup(int32_t descriptor) {
     ++object->references;
     eos_fd_fill_slot_locked((uint32_t)new_descriptor,
                             object,
-                            UINT32_C(0));
+                            flags & EOS_FD_FLAG_CLOEXEC);
     eos_fd_unlock();
     return new_descriptor;
+}
+
+static EOS_RUST_MAYBE_UNUSED int32_t eos_fd_dup(int32_t descriptor) {
+    return eos_fd_dup_min(descriptor, 3, UINT32_C(0));
 }
 
 static EOS_RUST_MAYBE_UNUSED int32_t eos_fd_dup2(
@@ -496,6 +503,11 @@ static EOS_RUST_MAYBE_UNUSED int32_t eos_fd_release(
     eos_fd_finish_destroy(pending);
     if (eos_port_memory_free(lease) != EOS_PORT_STATUS_OK) eos_rust_abort();
     return 0;
+}
+
+static EOS_RUST_MAYBE_UNUSED void eos_fd_release_or_abort(
+    eos_fd_reference *reference) {
+    if (eos_fd_release(reference) != 0) eos_rust_abort();
 }
 
 static void eos_fd_console_destroy(eos_fd_native native) {

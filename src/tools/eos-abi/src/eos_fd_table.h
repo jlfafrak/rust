@@ -14,6 +14,7 @@ typedef enum eos_fd_kind {
     EOS_FD_KIND_PIPE_READER = 4,
     EOS_FD_KIND_PIPE_WRITER = 5,
     EOS_FD_KIND_SOCKET = 6,
+    EOS_FD_KIND_NULL = 7,
 } eos_fd_kind;
 
 typedef union eos_fd_native {

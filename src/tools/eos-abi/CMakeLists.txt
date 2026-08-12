@@ -197,6 +197,20 @@ if(BUILD_TESTING)
     )
     add_test(NAME fd_race COMMAND fd_race_test)
 
+    foreach(EOS_RUST_IO_TEST fs dir pipe_stdio)
+        add_executable(${EOS_RUST_IO_TEST}_test
+            tests/${EOS_RUST_IO_TEST}_test.cpp)
+        set_target_properties(${EOS_RUST_IO_TEST}_test PROPERTIES
+            CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+        target_compile_definitions(${EOS_RUST_IO_TEST}_test PRIVATE
+            EOS_RUST_HOST_TEST=1)
+        target_include_directories(${EOS_RUST_IO_TEST}_test PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src")
+        target_link_libraries(${EOS_RUST_IO_TEST}_test PRIVATE
+            eos_rust_abi_host_test Threads::Threads)
+        add_test(NAME ${EOS_RUST_IO_TEST} COMMAND ${EOS_RUST_IO_TEST}_test)
+    endforeach()
+
     set(CMAKE_REQUIRED_FLAGS "-fsanitize=thread")
     set(CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=thread")
     check_cxx_source_runs(
@@ -230,6 +244,30 @@ if(BUILD_TESTING)
         target_link_libraries(fd_race_tsan PRIVATE
             eos_rust_abi_host_tsan Threads::Threads)
         add_test(NAME fd_race_tsan COMMAND fd_race_tsan)
+
+        add_executable(pipe_stdio_tsan tests/pipe_stdio_test.cpp)
+        set_target_properties(pipe_stdio_tsan PROPERTIES
+            CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+        target_compile_definitions(pipe_stdio_tsan PRIVATE EOS_RUST_HOST_TEST=1)
+        target_include_directories(pipe_stdio_tsan PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src")
+        target_compile_options(pipe_stdio_tsan PRIVATE -fsanitize=thread)
+        target_link_options(pipe_stdio_tsan PRIVATE -fsanitize=thread)
+        target_link_libraries(pipe_stdio_tsan PRIVATE
+            eos_rust_abi_host_tsan Threads::Threads)
+        add_test(NAME pipe_stdio_tsan COMMAND pipe_stdio_tsan)
+
+        add_executable(fs_tsan tests/fs_test.cpp)
+        set_target_properties(fs_tsan PROPERTIES
+            CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+        target_compile_definitions(fs_tsan PRIVATE EOS_RUST_HOST_TEST=1)
+        target_include_directories(fs_tsan PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src")
+        target_compile_options(fs_tsan PRIVATE -fsanitize=thread)
+        target_link_options(fs_tsan PRIVATE -fsanitize=thread)
+        target_link_libraries(fs_tsan PRIVATE
+            eos_rust_abi_host_tsan Threads::Threads)
+        add_test(NAME fs_tsan COMMAND fs_tsan)
     else()
         message(STATUS
             "ThreadSanitizer compile/runtime probe failed; fd_race remains enabled without TSan")

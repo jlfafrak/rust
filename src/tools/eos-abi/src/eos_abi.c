@@ -18,6 +18,10 @@
 #include "eos_runtime.c"
 #include "eos_hash_seed.c"
 #include "eos_fd_table.c"
+#include "eos_fs.c"
+#include "eos_dir.c"
+#include "eos_pipe.c"
+#include "eos_stdio.c"
 
 uint32_t eos_rust_abi_version(void) {
     return (EOS_RUST_ABI_MAJOR << 16) | EOS_RUST_ABI_MINOR;
