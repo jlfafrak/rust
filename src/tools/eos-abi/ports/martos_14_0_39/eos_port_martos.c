@@ -6,6 +6,7 @@
 
 #include EOS_LIBC_ERRNO_HEADER
 #include <stdint.h>
+#include <string.h>
 
 /* Guard the stable errno ABI against drift in the pinned EOS libc. */
 _Static_assert(ENOENT == EOS_ERRNO_NO_ENTRY, "unexpected EOS ENOENT value");
@@ -85,4 +86,96 @@ static int32_t eos_martos_bootstrap_errno;
 
 static int32_t *eos_port_errno_location(void) {
     return &eos_martos_bootstrap_errno;
+}
+
+static int32_t eos_port_memory_alloc(uint32_t byte_count, void **memory) {
+    return (int32_t)os_mem_alloc(OS_MEM_NORMAL_CACHEABLE_DATA,
+                                 (uint32)byte_count,
+                                 memory);
+}
+
+static int32_t eos_port_memory_alloc_aligned(uint32_t byte_count,
+                                             uint32_t alignment,
+                                             void **memory) {
+    if (alignment <= OS_MEM_HEAP_MINIMUM_ALIGNMENT) {
+        return (int32_t)os_mem_alloc(OS_MEM_NORMAL_CACHEABLE_DATA,
+                                     (uint32)byte_count,
+                                     memory);
+    }
+    return (int32_t)os_mem_alloc_aligned(OS_MEM_NORMAL_CACHEABLE_DATA,
+                                         (uint32)byte_count,
+                                         (uint32)alignment,
+                                         memory);
+}
+
+static int32_t eos_port_memory_realloc(uint32_t byte_count, void **memory) {
+    return (int32_t)os_mem_realloc((uint32)byte_count, memory);
+}
+
+static int32_t eos_port_memory_free(void *memory) {
+    return (int32_t)os_mem_free(memory);
+}
+
+static int32_t eos_port_environment_get(const char *name,
+                                        char *value,
+                                        uint32_t value_capacity) {
+    return (int32_t)os_system_env_get_string(name,
+                                              value,
+                                              (uint32)value_capacity);
+}
+
+static int32_t eos_port_environment_set(const char *name, const char *value) {
+    return (int32_t)os_system_env_set_string(name, value);
+}
+
+static int32_t eos_port_environment_unset(const char *name) {
+    return (int32_t)os_system_env_unset(name);
+}
+
+static uint64_t eos_port_hash_bytes(const char *text) {
+    uint64_t hash = UINT64_C(0xcbf29ce484222325);
+    while (*text != '\0') {
+        hash ^= (uint8_t)*text;
+        hash *= UINT64_C(0x100000001b3);
+        ++text;
+    }
+    return hash;
+}
+
+static void eos_port_hash_seed_sources(eos_hash_seed_sources *sources) {
+    uint32 app_id = 0;
+    char app_name[OS_NAME_LEN] = {0};
+    char target_name[OS_ENV_VAR_VALUE_LEN] = {0};
+    os_thread *thread = NULL;
+    os_app_info app_info;
+    void *heap_marker = NULL;
+    uint64_t stack_marker = 0;
+
+    (void)memset(&app_info, 0, sizeof(app_info));
+    (void)os_app_get_id(&app_id);
+    (void)os_app_get_name(app_id, app_name, (uint32)sizeof(app_name));
+    (void)os_system_env_get_string(OS_TARGET_NAME_ENV_VAR,
+                                   target_name,
+                                   (uint32)sizeof(target_name));
+    (void)os_thread_get_current(&thread);
+    (void)os_app_get_info(app_id, &app_info);
+    (void)os_mem_alloc(OS_MEM_NORMAL_CACHEABLE_DATA, 1U, &heap_marker);
+
+    sources->timer_usec = (uint64_t)os_timer_get_usec();
+    sources->tick_count = (uint64_t)os_tick_get_count();
+    sources->application_id = (uint64_t)app_id;
+    sources->application_name_hash = eos_port_hash_bytes(app_name);
+    sources->thread_identity = (uint64_t)(uintptr_t)thread;
+    sources->code_address = (uint64_t)app_info.codeBaseAddr;
+    sources->heap_address = (uint64_t)(uintptr_t)heap_marker;
+    sources->stack_address = (uint64_t)(uintptr_t)&stack_marker;
+    sources->device_diversifier =
+        eos_port_hash_bytes(target_name) ^ UINT64_C(0x7a796e712d646576);
+    sources->application_diversifier =
+        eos_port_hash_bytes(app_name) ^ ((uint64_t)app_id << 32) ^
+        UINT64_C(0x656f732d72757374);
+
+    if (heap_marker != NULL) {
+        (void)os_mem_free(heap_marker);
+    }
 }

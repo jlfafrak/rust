@@ -1,3 +1,15 @@
 eos_rust_abi_require
 eos_rust_abi_version
+eos_rust_abort
+eos_rust_calloc
+eos_rust_environ
 eos_rust_errno_location
+eos_rust_exit
+eos_rust_free
+eos_rust_getenv
+eos_rust_hash_seed
+eos_rust_malloc
+eos_rust_posix_memalign
+eos_rust_realloc
+eos_rust_setenv
+eos_rust_unsetenv

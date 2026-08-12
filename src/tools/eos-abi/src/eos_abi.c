@@ -14,6 +14,9 @@
  * helpers have local linkage and cannot expand the static archive's ABI.
  */
 #include "eos_error.c"
+#include "eos_alloc.c"
+#include "eos_runtime.c"
+#include "eos_hash_seed.c"
 
 uint32_t eos_rust_abi_version(void) {
     return (EOS_RUST_ABI_MAJOR << 16) | EOS_RUST_ABI_MINOR;
