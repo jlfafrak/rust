@@ -414,7 +414,7 @@ static int32_t eos_fs_file_flush(eos_fs_file *file) {
 
 static int32_t eos_fs_file_metadata(eos_fs_file *file,
                                     eos_rust_stat *metadata) {
-    eos_port_stat native;
+    eos_port_stat native = {0};
     int32_t status;
     if (eos_fs_sync_lock(file->sync, "file.stat.lock") != 0) return -1;
     status = eos_port_file_stat(file->native, &native);
@@ -428,7 +428,7 @@ static int32_t eos_fs_file_metadata(eos_fs_file *file,
 
 int32_t eos_rust_stat_path(const char *path, eos_rust_stat *metadata) {
     char resolved[EOS_RUST_PATH_MAX];
-    eos_port_stat native;
+    eos_port_stat native = {0};
     int32_t status;
     if (metadata == NULL) return eos_fd_fail_errno(EOS_ERRNO_FAULT);
     if (eos_fs_normalize(path, resolved) != 0) return -1;
@@ -469,15 +469,8 @@ int32_t eos_rust_unlink(const char *path) {
 
 int32_t eos_rust_rmdir(const char *path) {
     char resolved[EOS_RUST_PATH_MAX];
-    eos_port_stat metadata;
     eos_port_result result;
-    int32_t status;
     if (eos_fs_normalize(path, resolved) != 0) return -1;
-    status = eos_port_path_stat(resolved, &metadata);
-    if (status != EOS_PORT_STATUS_OK) return eos_fd_fail_status(status, "rmdir.stat");
-    if (metadata.type != EOS_PORT_FILE_TYPE_DIRECTORY) {
-        return eos_fd_fail_errno(EOS_ERRNO_NOT_DIRECTORY);
-    }
     result = eos_port_path_rmdir(resolved);
     if (result.error_number != 0) {
         return eos_fd_fail_errno(result.error_number);
@@ -505,7 +498,7 @@ int32_t eos_rust_rename(const char *old_path, const char *new_path) {
 int32_t eos_rust_realpath(const char *path, char *resolved,
                           uint32_t capacity) {
     char absolute[EOS_RUST_PATH_MAX];
-    eos_port_stat metadata;
+    eos_port_stat metadata = {0};
     int32_t status;
     if (eos_fs_normalize(path, absolute) != 0) return -1;
     status = eos_port_path_stat(absolute, &metadata);
@@ -523,7 +516,7 @@ int32_t eos_rust_getcwd(char *buffer, uint32_t capacity) {
 
 int32_t eos_rust_chdir(const char *path) {
     char resolved[EOS_RUST_PATH_MAX];
-    eos_port_stat metadata;
+    eos_port_stat metadata = {0};
     int32_t status;
     if (eos_fs_normalize(path, resolved) != 0) return -1;
     status = eos_port_path_stat(resolved, &metadata);

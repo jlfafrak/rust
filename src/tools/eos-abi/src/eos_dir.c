@@ -25,7 +25,7 @@ static void eos_directory_destroy(eos_fd_native native) {
 
 eos_rust_fd_t eos_rust_opendir(const char *path) {
     char resolved[EOS_RUST_PATH_MAX];
-    eos_port_stat metadata;
+    eos_port_stat metadata = {0};
     eos_directory_snapshot *directory = NULL;
     eos_fd_native native;
     uint32_t count = 0;

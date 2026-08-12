@@ -62,58 +62,128 @@ static inline eos_port_result eos_martos_fs_file_open_native(
     }
     status = os_efs_file_open(path, mode, native, OS_WAIT_FOREVER);
     if (status == OS_STS_OBJECT_NOT_FOUND && create) {
-        status = os_efs_file_init(path, mode, native, OS_WAIT_FOREVER);
+        /* A later init could overwrite a file created after this failed open. */
+        result.status = OS_STS_NOT_CALLABLE_FROM_ISR;
+        result.error_number = EOS_ERRNO_NOT_SUPPORTED;
+        return result;
     }
     result.status = (int32_t)status;
     return result;
 }
 
-static inline eos_port_result eos_martos_fs_result_from_errno(
-    int error_number) {
-    eos_port_result result;
-    result.error_number = error_number;
-    switch (error_number) {
-    case ENOENT: result.status = OS_STS_OBJECT_NOT_FOUND; break;
-    case EEXIST: result.status = OS_STS_OBJECT_EXISTS; break;
-    case EACCES: result.status = OS_STS_INSUFFICIENT_ACL; break;
-    case EROFS: result.status = OS_STS_OBJECT_IS_READ_ONLY; break;
-    case ENOTEMPTY: result.status = OS_STS_OBJECT_IN_USE; break;
-    case EBUSY: result.status = OS_STS_OBJECT_IN_USE; break;
-    case ENOMEM: result.status = OS_STS_ALLOC_ERROR; break;
-    case EINVAL: result.status = OS_STS_INVALID_PARAM1; break;
-    case EISDIR: result.status = OS_STS_INVALID_OBJECT_TYPE; break;
-    default:
-        result.status = OS_STS_DEVICE_ERROR;
-        result.error_number = EOS_ERRNO_IO;
-        break;
+static inline eos_port_result eos_martos_fs_known_error(
+    int32_t status,
+    int32_t error_number) {
+    eos_port_result result = {status, error_number};
+    return result;
+}
+
+static inline eos_port_result eos_martos_fs_validate_parent_components(
+    const char *path) {
+    char component[EOS_RUST_PATH_MAX];
+    size_t index;
+    eos_port_result result = {OS_STS_OK, 0};
+
+    for (index = 1; path[index] != '\0'; ++index) {
+        os_efs_entry_type type = OS_EFS_NONE;
+        os_status status;
+        if (path[index] != '/') continue;
+        if (index >= sizeof(component)) {
+            return eos_martos_fs_known_error(OS_STS_INVALID_PARAM1,
+                                             EOS_ERRNO_NAME_TOO_LONG);
+        }
+        (void)memcpy(component, path, index);
+        component[index] = '\0';
+        status = os_efs_entry_exists(component, &type, OS_WAIT_FOREVER);
+        if (status != OS_STS_OK) {
+            result.status = (int32_t)status;
+            return result;
+        }
+        if (type == OS_EFS_NONE) {
+            return eos_martos_fs_known_error(OS_STS_OBJECT_NOT_FOUND,
+                                             EOS_ERRNO_NO_ENTRY);
+        }
+        if (type != OS_EFS_DIRECTORY) {
+            return eos_martos_fs_known_error(OS_STS_INVALID_OBJECT_TYPE,
+                                             EOS_ERRNO_NOT_DIRECTORY);
+        }
+    }
+    return result;
+}
+
+static inline eos_port_result eos_martos_fs_path_type(
+    const char *path,
+    os_efs_entry_type *type) {
+    eos_port_result result = {OS_STS_OK, 0};
+    os_status status;
+
+    result = eos_martos_fs_validate_parent_components(path);
+    if (result.status != OS_STS_OK || result.error_number != 0) return result;
+    status = os_efs_entry_exists(path, type, OS_WAIT_FOREVER);
+    if (status != OS_STS_OK) {
+        result.status = (int32_t)status;
+        return result;
+    }
+    if (*type == OS_EFS_NONE) {
+        return eos_martos_fs_known_error(OS_STS_OBJECT_NOT_FOUND,
+                                         EOS_ERRNO_NO_ENTRY);
     }
     return result;
 }
 
 static inline eos_port_result eos_martos_fs_path_unlink(const char *path) {
-    eos_port_result result = {OS_STS_OK, 0};
-    return unlink(path) == 0
-               ? result
-               : eos_martos_fs_result_from_errno(
-                     EOS_MARTOS_LIBC_ERRNO_VALUE);
+    eos_port_result result;
+    os_efs_entry_type type = OS_EFS_NONE;
+
+    result = eos_martos_fs_path_type(path, &type);
+    if (result.status != OS_STS_OK || result.error_number != 0) return result;
+    if (type == OS_EFS_DIRECTORY) {
+        return eos_martos_fs_known_error(OS_STS_INVALID_OBJECT_TYPE,
+                                         EOS_ERRNO_IS_DIRECTORY);
+    }
+    if (unlink(path) == 0) return result;
+    /* A preflight race or an opaque libc failure cannot be classified safely. */
+    return eos_martos_fs_known_error(OS_STS_DEVICE_ERROR, EOS_ERRNO_IO);
 }
 
 static inline eos_port_result eos_martos_fs_path_rmdir(const char *path) {
-    eos_port_result result = {OS_STS_OK, 0};
-    return rmdir(path) == 0
-               ? result
-               : eos_martos_fs_result_from_errno(
-                     EOS_MARTOS_LIBC_ERRNO_VALUE);
+    eos_port_result result;
+    os_efs_entry_type type = OS_EFS_NONE;
+    uint32 entry_count = 0;
+    os_status status;
+
+    result = eos_martos_fs_path_type(path, &type);
+    if (result.status != OS_STS_OK || result.error_number != 0) return result;
+    if (type != OS_EFS_DIRECTORY) {
+        return eos_martos_fs_known_error(OS_STS_INVALID_OBJECT_TYPE,
+                                         EOS_ERRNO_NOT_DIRECTORY);
+    }
+    status = os_efs_directory_get_listing_count(
+        path, false, &entry_count, OS_WAIT_FOREVER);
+    if (status != OS_STS_OK) {
+        result.status = (int32_t)status;
+        return result;
+    }
+    if (entry_count != 0) {
+        return eos_martos_fs_known_error(OS_STS_OBJECT_IN_USE,
+                                         EOS_ERRNO_NOT_EMPTY);
+    }
+    if (rmdir(path) == 0) return result;
+    return eos_martos_fs_known_error(OS_STS_DEVICE_ERROR, EOS_ERRNO_IO);
 }
 
 static inline eos_port_result eos_martos_fs_path_rename(
     const char *old_path,
     const char *new_path) {
-    eos_port_result result = {OS_STS_OK, 0};
-    return rename(old_path, new_path) == 0
-               ? result
-               : eos_martos_fs_result_from_errno(
-                     EOS_MARTOS_LIBC_ERRNO_VALUE);
+    eos_port_result result;
+    os_efs_entry_type source_type = OS_EFS_NONE;
+
+    result = eos_martos_fs_path_type(old_path, &source_type);
+    if (result.status != OS_STS_OK || result.error_number != 0) return result;
+    result = eos_martos_fs_validate_parent_components(new_path);
+    if (result.status != OS_STS_OK || result.error_number != 0) return result;
+    if (rename(old_path, new_path) == 0) return result;
+    return eos_martos_fs_known_error(OS_STS_DEVICE_ERROR, EOS_ERRNO_IO);
 }
 
 #endif

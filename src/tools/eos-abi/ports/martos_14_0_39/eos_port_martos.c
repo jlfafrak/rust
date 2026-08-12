@@ -14,14 +14,6 @@ extern int rename(const char *old_name, const char *new_name);
 extern int rmdir(const char *filename);
 extern int unlink(const char *filename);
 
-#if defined(__GLIBC__)
-/* Host-side SDK compile contract; the EOS target takes the branch below. */
-extern int *__errno_location(void);
-#define EOS_MARTOS_LIBC_ERRNO_VALUE (*__errno_location())
-#else
-#define EOS_MARTOS_LIBC_ERRNO_VALUE errno
-#endif
-
 /* Guard the stable errno ABI against drift in the pinned EOS libc. */
 _Static_assert(ENOENT == EOS_ERRNO_NO_ENTRY, "unexpected EOS ENOENT value");
 _Static_assert(EINTR == EOS_ERRNO_INTERRUPTED, "unexpected EOS EINTR value");

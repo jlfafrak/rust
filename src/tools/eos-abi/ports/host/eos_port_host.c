@@ -294,9 +294,13 @@ static int32_t eos_port_environment_get(const char *name,
 #ifdef EOS_RUST_HOST_TEST
     if (eos_host_native_environment_present &&
         strcmp(name, eos_host_native_environment_name) == 0) {
-        (void)strncpy(value, eos_host_native_environment_value,
-                      (size_t)value_capacity - 1U);
-        value[value_capacity - UINT32_C(1)] = '\0';
+        size_t length = strlen(eos_host_native_environment_value);
+        if (value_capacity == UINT32_C(0)) return 2;
+        if (length >= (size_t)value_capacity) {
+            length = (size_t)value_capacity - 1U;
+        }
+        (void)memcpy(value, eos_host_native_environment_value, length);
+        value[length] = '\0';
         return 0;
     }
 #else
