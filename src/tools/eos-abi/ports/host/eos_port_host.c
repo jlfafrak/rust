@@ -17,6 +17,8 @@ static int32_t eos_host_next_alloc_status;
 static int32_t eos_host_next_aligned_status;
 static int32_t eos_host_next_realloc_status;
 static int32_t eos_host_next_lock_status;
+static uint32_t eos_host_lock_successes_before_failure;
+static int32_t eos_host_delayed_lock_status;
 static int32_t eos_host_next_unlock_status;
 static int32_t eos_host_next_environment_set_status;
 static int32_t eos_host_next_environment_unset_status;
@@ -31,6 +33,8 @@ void eos_host_test_reset(void) {
     eos_host_next_aligned_status = 0;
     eos_host_next_realloc_status = 0;
     eos_host_next_lock_status = 0;
+    eos_host_lock_successes_before_failure = UINT32_MAX;
+    eos_host_delayed_lock_status = 0;
     eos_host_next_unlock_status = 0;
     eos_host_next_environment_set_status = 0;
     eos_host_next_environment_unset_status = 0;
@@ -45,6 +49,10 @@ void eos_host_test_fail_next_alloc(int32_t status) { eos_host_next_alloc_status 
 void eos_host_test_fail_next_aligned_alloc(int32_t status) { eos_host_next_aligned_status = status; }
 void eos_host_test_fail_next_realloc(int32_t status) { eos_host_next_realloc_status = status; }
 void eos_host_test_fail_next_lock(int32_t status) { eos_host_next_lock_status = status; }
+void eos_host_test_fail_lock_after(uint32_t successful_locks, int32_t status) {
+    eos_host_lock_successes_before_failure = successful_locks;
+    eos_host_delayed_lock_status = status;
+}
 void eos_host_test_fail_next_unlock(int32_t status) { eos_host_next_unlock_status = status; }
 void eos_host_test_fail_next_environment_set(int32_t status) { eos_host_next_environment_set_status = status; }
 void eos_host_test_fail_next_environment_unset(int32_t status) { eos_host_next_environment_unset_status = status; }
@@ -194,6 +202,15 @@ static int32_t eos_port_lock_acquire(uint32_t lock_id) {
         int32_t status = eos_host_next_lock_status;
         eos_host_next_lock_status = 0;
         return status;
+    }
+    if (eos_host_delayed_lock_status != 0) {
+        if (eos_host_lock_successes_before_failure == UINT32_C(0)) {
+            int32_t status = eos_host_delayed_lock_status;
+            eos_host_delayed_lock_status = 0;
+            eos_host_lock_successes_before_failure = UINT32_MAX;
+            return status;
+        }
+        --eos_host_lock_successes_before_failure;
     }
 #endif
     if (lock_id >= EOS_PORT_LOCK_COUNT) return 1;

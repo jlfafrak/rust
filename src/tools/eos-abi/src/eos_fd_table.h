@@ -33,8 +33,7 @@ typedef struct eos_fd_token {
 typedef struct eos_fd_reference {
     uint32_t slot_index;
     uint32_t slot_generation;
-    uint32_t object_index;
-    uint32_t object_generation;
+    uint64_t lease_id;
     uint32_t active;
     eos_fd_kind kind;
     eos_fd_native native;
@@ -67,6 +66,7 @@ int32_t eos_fd_test_reference_identity(const eos_fd_reference *reference,
 int32_t eos_fd_test_release(eos_fd_reference *reference);
 uint32_t eos_fd_test_destructor_count(uint64_t native_identity);
 int32_t eos_fd_test_is_kind(int32_t descriptor, eos_fd_kind kind);
+void eos_fd_test_exhaust_lease_ids_after_next_acquire(void);
 
 #  ifdef __cplusplus
 }

@@ -19,7 +19,9 @@ void eos_host_test_reset(void);
 void eos_host_test_fail_console(uint32_t stream, int32_t status);
 uint32_t eos_host_test_console_open_count(uint32_t stream);
 void eos_host_test_fail_next_lock(int32_t status);
+void eos_host_test_fail_lock_after(uint32_t successful_locks, int32_t status);
 void eos_host_test_fail_next_unlock(int32_t status);
+void eos_host_test_fail_next_alloc(int32_t status);
 }
 
 namespace {
@@ -279,6 +281,127 @@ void test_kind_generation_and_double_release_validation() {
            "replacement object must be destroyed exactly once");
 }
 
+void test_copied_reference_release_is_consumed_once() {
+    reset_fixture();
+    int32_t descriptor =
+        eos_fd_test_allocate(EOS_FD_KIND_FILE, UINT64_C(40), 0);
+    eos_fd_reference original{};
+    expect(eos_fd_test_acquire(descriptor,
+                               EOS_FD_KIND_FILE,
+                               &original) == 0,
+           "copied-reference fixture acquire failed");
+    eos_fd_reference copied = original;
+    expect(eos_fd_test_release(&original) == 0,
+           "first release of an acquired reference failed");
+    expect(eos_fd_test_release(&copied) == -1,
+           "a copied reference must not release one acquisition twice");
+    expect(*eos_rust_errno_location() == 9,
+           "a copied release must report EOS EBADF (9)");
+    expect(identity_of(descriptor, EOS_FD_KIND_FILE) == UINT64_C(40),
+           "a copied release must not invalidate the open descriptor");
+    expect(eos_fd_test_destructor_count(UINT64_C(40)) == 0,
+           "a copied release must not destroy an object owned by a descriptor");
+    uint64_t consumed_identity = 0;
+    expect(eos_fd_test_reference_identity(&copied, &consumed_identity) == -1,
+           "a consumed copied reference must not remain usable");
+
+    eos_fd_reference replacement{};
+    expect(eos_fd_test_acquire(descriptor,
+                               EOS_FD_KIND_FILE,
+                               &replacement) == 0,
+           "lease reuse fixture acquire failed");
+    expect(replacement.lease_id != copied.lease_id,
+           "a later acquisition must receive a distinct lease identity");
+    expect(eos_fd_test_release(&copied) == -1,
+           "a stale lease identity must not release a later acquisition");
+    expect(eos_fd_test_release(&replacement) == 0,
+           "later acquisition release failed after stale-release rejection");
+    expect(eos_fd_test_close(descriptor) == 0,
+           "copied-reference fixture close failed");
+    expect(eos_fd_test_destructor_count(UINT64_C(40)) == 1,
+           "copied-reference object must be destroyed exactly once");
+}
+
+void test_lease_id_exhaustion_never_wraps_or_aliases() {
+    reset_fixture();
+    int32_t descriptor =
+        eos_fd_test_allocate(EOS_FD_KIND_FILE, UINT64_C(41), 0);
+    eos_fd_test_exhaust_lease_ids_after_next_acquire();
+    eos_fd_reference last{};
+    eos_fd_reference rejected{};
+    expect(eos_fd_test_acquire(descriptor, EOS_FD_KIND_FILE, &last) == 0 &&
+               last.lease_id == UINT64_MAX,
+           "the final unique lease identity must remain usable");
+    expect(eos_fd_test_acquire(descriptor, EOS_FD_KIND_FILE, &rejected) == -1,
+           "lease identities must never wrap after UINT64_MAX");
+    expect(*eos_rust_errno_location() == 35,
+           "lease-id exhaustion must report EOS EAGAIN (35)");
+    expect(eos_fd_test_release(&last) == 0,
+           "final unique lease release failed");
+    uint32_t flags = UINT32_MAX;
+    expect(eos_fd_test_get_flags(descriptor, &flags) == 0 && flags == 0,
+           "lease-id exhaustion must not invalidate the open descriptor");
+    expect(eos_fd_test_close(descriptor) == 0,
+           "lease-id exhaustion fixture close failed");
+}
+
+void test_active_leases_are_heap_limited_not_fd_limited() {
+    reset_fixture();
+    constexpr std::size_t lease_count = 2048;
+    int32_t descriptor =
+        eos_fd_test_allocate(EOS_FD_KIND_FILE, UINT64_C(44), 0);
+    std::vector<eos_fd_reference> leases(lease_count);
+    for (eos_fd_reference &lease : leases) {
+        expect(eos_fd_test_acquire(descriptor,
+                                   EOS_FD_KIND_FILE,
+                                   &lease) == 0,
+               "active lease allocation stopped at an fd-derived limit");
+    }
+    expect(eos_fd_test_close(descriptor) == 0,
+           "heap-limited lease fixture close failed");
+    expect(eos_fd_test_destructor_count(UINT64_C(44)) == 0,
+           "active heap leases must retain the closed object");
+    for (eos_fd_reference &lease : leases) {
+        expect(eos_fd_test_release(&lease) == 0,
+               "heap-limited lease release failed");
+    }
+    expect(eos_fd_test_destructor_count(UINT64_C(44)) == 1,
+           "heap-limited lease object must be destroyed exactly once");
+}
+
+void test_lease_allocation_failure_preserves_descriptor_ownership() {
+    reset_fixture();
+    int32_t descriptor =
+        eos_fd_test_allocate(EOS_FD_KIND_FILE, UINT64_C(45), 0);
+    eos_fd_reference rejected{};
+    eos_host_test_fail_next_alloc(INT32_C(15));
+    expect(eos_fd_test_acquire(descriptor,
+                               EOS_FD_KIND_FILE,
+                               &rejected) == -1,
+           "lease allocation failure must reject acquisition");
+    expect(*eos_rust_errno_location() == 12,
+           "lease allocation failure must report EOS ENOMEM (12)");
+    expect(identity_of(descriptor, EOS_FD_KIND_FILE) == UINT64_C(45),
+           "lease allocation failure must preserve descriptor ownership");
+    expect(eos_fd_test_close(descriptor) == 0,
+           "lease allocation failure fixture close failed");
+}
+
+void test_destruction_has_no_fallible_lock_reacquisition() {
+    reset_fixture();
+    int32_t descriptor =
+        eos_fd_test_allocate(EOS_FD_KIND_FILE, UINT64_C(42), 0);
+    eos_host_test_fail_lock_after(UINT32_C(1), INT32_C(17));
+    expect(eos_fd_test_close(descriptor) == 0,
+           "close must finish bookkeeping before irreversible destruction");
+    expect(eos_fd_test_destructor_count(UINT64_C(42)) == 1,
+           "no-reacquire close must destroy the object exactly once");
+    expect(eos_fd_test_allocate(EOS_FD_KIND_FILE, UINT64_C(43), 0) == -1,
+           "the delayed lock fault must remain for the operation after close");
+    expect(*eos_rust_errno_location() == 16,
+           "the delayed lock fault must report EOS EBUSY (16)");
+}
+
 void test_runtime_init_failure_diagnoses_and_aborts() {
     reset_fixture();
     int diagnostic_pipe[2] = {-1, -1};
@@ -348,6 +471,11 @@ int main() {
     test_duplication_shares_ownership_and_not_descriptor_flags();
     test_dup2_replacement_defers_old_object_destruction();
     test_kind_generation_and_double_release_validation();
+    test_copied_reference_release_is_consumed_once();
+    test_lease_id_exhaustion_never_wraps_or_aliases();
+    test_active_leases_are_heap_limited_not_fd_limited();
+    test_lease_allocation_failure_preserves_descriptor_ownership();
+    test_destruction_has_no_fallible_lock_reacquisition();
     test_runtime_init_failure_diagnoses_and_aborts();
     test_descriptor_lock_failures_do_not_report_false_success();
     return EXIT_SUCCESS;

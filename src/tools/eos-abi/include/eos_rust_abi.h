@@ -33,8 +33,6 @@
 extern "C" {
 #endif
 
-typedef int32_t eos_rust_fd_t;
-
 EOS_RUST_EXPORT uint32_t eos_rust_abi_version(void);
 
 /*
