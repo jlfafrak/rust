@@ -33,6 +33,10 @@ else()
         "Unsupported EOS_RUST_PORT '${EOS_RUST_PORT}'; expected host or martos_14_0_39")
 endif()
 
+if(EOS_RUST_PORT STREQUAL "host")
+    find_package(Threads REQUIRED)
+endif()
+
 add_library(eos_rust_abi STATIC
     src/eos_abi.c
 )
@@ -55,6 +59,9 @@ target_include_directories(eos_rust_abi
 target_compile_definitions(eos_rust_abi PRIVATE
     EOS_RUST_PORT_SOURCE="${EOS_RUST_PORT_SOURCE}"
 )
+if(EOS_RUST_PORT STREQUAL "host")
+    target_link_libraries(eos_rust_abi PUBLIC Threads::Threads)
+endif()
 if(EOS_RUST_DEBUG_ERRORS)
     target_compile_definitions(eos_rust_abi PRIVATE EOS_RUST_DEBUG_ERRORS=1)
 endif()
@@ -84,7 +91,6 @@ endif()
 if(BUILD_TESTING)
     enable_language(CXX)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
-    find_package(Threads REQUIRED)
 
     add_executable(abi_contract_test tests/abi_contract_test.cpp)
     set_target_properties(abi_contract_test PROPERTIES
@@ -162,6 +168,14 @@ if(BUILD_TESTING)
         NAME port_config
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tests/port_config_test.py"
+            --cmake "${CMAKE_COMMAND}"
+            --source "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+
+    add_test(
+        NAME host_consumer
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_consumer_test.py"
             --cmake "${CMAKE_COMMAND}"
             --source "${CMAKE_CURRENT_SOURCE_DIR}"
     )

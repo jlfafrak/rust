@@ -15,7 +15,9 @@ static int32_t eos_hash_seed_lock_acquire(void) {
     return eos_port_lock_acquire(EOS_PORT_LOCK_HASH_SEED);
 }
 static void eos_hash_seed_lock_release(void) {
-    (void)eos_port_lock_release(EOS_PORT_LOCK_HASH_SEED);
+    if (eos_port_lock_release(EOS_PORT_LOCK_HASH_SEED) != EOS_PORT_STATUS_OK) {
+        eos_rust_abort();
+    }
 }
 
 static void eos_hash_seed_initialize(const eos_hash_seed_sources *sources) {

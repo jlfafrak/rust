@@ -19,6 +19,7 @@ void eos_host_test_native_environment(const char *name, const char *value);
 void eos_host_test_fail_next_environment_set(int32_t status);
 void eos_host_test_fail_next_environment_unset(int32_t status);
 void eos_host_test_fail_next_lock(int32_t status);
+void eos_host_test_fail_next_unlock(int32_t status);
 }
 
 namespace {
@@ -68,6 +69,21 @@ void test_abort_and_exit_terminate_only_the_child() {
     expect(waitpid(child, &status, 0) == child, "waitpid for exit child failed");
     expect(WIFEXITED(status) && WEXITSTATUS(status) == 37,
            "eos_rust_exit must preserve the low eight status bits on the host");
+}
+
+void test_lock_release_failure_aborts_without_false_success() {
+    pid_t child = fork();
+    expect(child >= 0, "fork for unlock-failure test failed");
+    if (child == 0) {
+        eos_host_test_fail_next_unlock(INT32_C(17));
+        (void)eos_rust_setenv("EOS_RUST_TASK4_UNLOCK_FAIL", "x", 1);
+        _exit(90);
+    }
+    int status = 0;
+    expect(waitpid(child, &status, 0) == child,
+           "waitpid for unlock-failure child failed");
+    expect(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT,
+           "lock release failure must abort instead of reporting success");
 }
 
 void test_environment_validation_and_overwrite() {
@@ -270,6 +286,7 @@ void test_concurrent_environment_updates_publish_complete_snapshots() {
 
 int main() {
     test_abort_and_exit_terminate_only_the_child();
+    test_lock_release_failure_aborts_without_false_success();
     test_environment_validation_and_overwrite();
     test_environment_snapshots_have_process_lifetime();
     test_native_environment_import_and_failed_update_rollback();

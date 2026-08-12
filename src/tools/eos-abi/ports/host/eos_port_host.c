@@ -14,6 +14,7 @@ static int32_t eos_host_next_alloc_status;
 static int32_t eos_host_next_aligned_status;
 static int32_t eos_host_next_realloc_status;
 static int32_t eos_host_next_lock_status;
+static int32_t eos_host_next_unlock_status;
 static int32_t eos_host_next_environment_set_status;
 static int32_t eos_host_next_environment_unset_status;
 static int eos_host_native_environment_present;
@@ -25,6 +26,7 @@ void eos_host_test_reset(void) {
     eos_host_next_aligned_status = 0;
     eos_host_next_realloc_status = 0;
     eos_host_next_lock_status = 0;
+    eos_host_next_unlock_status = 0;
     eos_host_next_environment_set_status = 0;
     eos_host_next_environment_unset_status = 0;
     eos_host_native_environment_present = 0;
@@ -33,6 +35,7 @@ void eos_host_test_fail_next_alloc(int32_t status) { eos_host_next_alloc_status 
 void eos_host_test_fail_next_aligned_alloc(int32_t status) { eos_host_next_aligned_status = status; }
 void eos_host_test_fail_next_realloc(int32_t status) { eos_host_next_realloc_status = status; }
 void eos_host_test_fail_next_lock(int32_t status) { eos_host_next_lock_status = status; }
+void eos_host_test_fail_next_unlock(int32_t status) { eos_host_next_unlock_status = status; }
 void eos_host_test_fail_next_environment_set(int32_t status) { eos_host_next_environment_set_status = status; }
 void eos_host_test_fail_next_environment_unset(int32_t status) { eos_host_next_environment_unset_status = status; }
 void eos_host_test_native_environment(const char *name, const char *value) {
@@ -180,6 +183,13 @@ static int32_t eos_port_lock_acquire(uint32_t lock_id) {
 }
 
 static int32_t eos_port_lock_release(uint32_t lock_id) {
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_next_unlock_status != 0) {
+        int32_t status = eos_host_next_unlock_status;
+        eos_host_next_unlock_status = 0;
+        return status;
+    }
+#endif
     if (lock_id >= EOS_PORT_LOCK_COUNT) return 1;
     return pthread_mutex_unlock(&eos_host_locks[lock_id]) == 0 ? 0 : 20;
 }

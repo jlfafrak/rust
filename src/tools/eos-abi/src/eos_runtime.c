@@ -16,7 +16,9 @@ static int32_t eos_runtime_lock_acquire(void) {
     return eos_port_lock_acquire(EOS_PORT_LOCK_RUNTIME);
 }
 static void eos_runtime_lock_release(void) {
-    (void)eos_port_lock_release(EOS_PORT_LOCK_RUNTIME);
+    if (eos_port_lock_release(EOS_PORT_LOCK_RUNTIME) != EOS_PORT_STATUS_OK) {
+        eos_rust_abort();
+    }
 }
 
 static int eos_environment_name_valid(const char *name) {
