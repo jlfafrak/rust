@@ -60,6 +60,7 @@ typedef uintptr_t eos_port_socket;
 #define EOS_PORT_SOCKET_EVENT_ERROR UINT32_C(0x04)
 #define EOS_PORT_SOCKET_EVENT_HANGUP UINT32_C(0x08)
 #define EOS_PORT_SOCKET_EVENT_PRIORITY UINT32_C(0x10)
+#define EOS_PORT_SOCKET_EVENT_HANGUP_ELIGIBLE UINT32_C(0x20)
 typedef struct eos_port_socket_address {
     uint16_t family;
     uint16_t port;
@@ -228,7 +229,12 @@ int main(void) {
                observed[1] == (EOS_PORT_SOCKET_EVENT_WRITE |
                                EOS_PORT_SOCKET_EVENT_ERROR |
                                EOS_PORT_SOCKET_EVENT_PRIORITY) &&
-               observed[2] == EOS_PORT_SOCKET_EVENT_HANGUP)) return 13;
+               observed[2] == 0)) return 13;
+    requested[2] = EOS_PORT_SOCKET_EVENT_HANGUP_ELIGIBLE;
+    observed[2] = 0;
+    if (expect(eos_martos_socketset_poll(&sockets[2], &requested[2],
+                                        &observed[2], 1, 0) == 0 &&
+               observed[2] == EOS_PORT_SOCKET_EVENT_HANGUP)) return 14;
     fake_create_count = 0;
     fake_set_count = 0;
     fake_select_count = 0;
@@ -237,6 +243,6 @@ int main(void) {
     if (expect(eos_martos_socketset_poll(NULL, NULL, NULL, 0, 0) == 0 &&
                fake_create_count == 1 && fake_set_count == 0 &&
                fake_select_count == 1 && fake_query_count == 0 &&
-               fake_delete_count == 1)) return 14;
+               fake_delete_count == 1)) return 15;
     return 0;
 }

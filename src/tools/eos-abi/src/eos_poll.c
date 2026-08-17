@@ -75,6 +75,11 @@ int32_t eos_rust_poll(eos_rust_pollfd *descriptors,
         if ((events & EOS_RUST_POLLPRI) != 0) {
             requested[socket_count] |= EOS_PORT_SOCKET_EVENT_PRIORITY;
         }
+        if (eos_socket_hangup_eligible(
+                (eos_socket *)references[socket_count].native.pointer) != 0) {
+            requested[socket_count] |=
+                EOS_PORT_SOCKET_EVENT_HANGUP_ELIGIBLE;
+        }
         observed[socket_count] = 0;
         entry_to_socket[index] = socket_count;
         ++socket_count;

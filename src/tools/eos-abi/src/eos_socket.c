@@ -12,6 +12,7 @@ typedef struct eos_socket {
     eos_rust_timeval receive_timeout;
     eos_rust_timeval send_timeout;
     int32_t pending_error;
+    uint32_t connection_started;
     uint32_t shutdown_state;
     eos_port_mutex state_lock;
 } eos_socket;
@@ -173,6 +174,14 @@ static int32_t eos_socket_release(eos_fd_reference *reference,
                                   int32_t result) {
     eos_fd_release_or_abort(reference);
     return result;
+}
+
+static uint32_t eos_socket_hangup_eligible(eos_socket *socket) {
+    uint32_t eligible;
+    eos_socket_lock(socket);
+    eligible = socket->connection_started;
+    eos_socket_unlock(socket);
+    return eligible;
 }
 
 static int32_t eos_socket_flags(int32_t flags, uint32_t nonblocking,
@@ -358,6 +367,7 @@ static int32_t eos_socket_publish(eos_port_socket native,
                                   int32_t domain,
                                   int32_t type,
                                   int32_t protocol,
+                                  uint32_t connection_started,
                                   uint32_t status_flags,
                                   const eos_rust_timeval *receive_timeout,
                                   const eos_rust_timeval *send_timeout) {
@@ -382,6 +392,7 @@ static int32_t eos_socket_publish(eos_port_socket native,
                            : protocol;
     socket->status_flags = EOS_RUST_O_RDWR |
                            (status_flags & EOS_RUST_O_NONBLOCK);
+    socket->connection_started = connection_started;
     if (receive_timeout != NULL) socket->receive_timeout = *receive_timeout;
     if (send_timeout != NULL) socket->send_timeout = *send_timeout;
     status = eos_port_mutex_create(UINT32_C(0), &socket->state_lock);
@@ -451,7 +462,7 @@ eos_rust_fd_t eos_rust_socket(int32_t domain, int32_t type,
     if (created.socket == EOS_PORT_SOCKET_INVALID) {
         return eos_socket_fail(created.error_number);
     }
-    return eos_socket_publish(created.socket, domain, type, protocol, 0,
+    return eos_socket_publish(created.socket, domain, type, protocol, 0, 0,
                               NULL, NULL);
 }
 
@@ -477,14 +488,19 @@ int32_t eos_rust_connect(eos_rust_fd_t descriptor,
     eos_port_socket_address converted;
     eos_fd_reference reference;
     eos_socket *socket;
+    uint32_t attempted = 0;
     int32_t error = eos_socket_public_to_port(address, address_length,
                                               &converted);
     if (error != 0) return eos_socket_fail(error);
     if (eos_socket_acquire(descriptor, &reference, &socket) != 0) return -1;
     if (socket->domain != converted.family) error = EOS_ERRNO_INVALID;
-    else error = eos_port_socket_connect(socket->native, &converted);
+    else {
+        error = eos_port_socket_connect(socket->native, &converted);
+        attempted = 1;
+    }
     eos_socket_lock(socket);
     socket->pending_error = error;
+    if (attempted != 0) socket->connection_started = 1;
     eos_socket_unlock(socket);
     return eos_socket_release(&reference,
                               error == 0 ? 0 : eos_socket_fail(error));
@@ -542,7 +558,7 @@ eos_rust_fd_t eos_rust_accept(eos_rust_fd_t descriptor,
     send_timeout = socket->send_timeout;
     eos_socket_unlock(socket);
     result = eos_socket_publish(accepted.socket, socket->domain, socket->type,
-                                socket->protocol, status_flags,
+                                socket->protocol, 1, status_flags,
                                 &receive_timeout, &send_timeout);
     return eos_socket_release(&reference, result);
 }

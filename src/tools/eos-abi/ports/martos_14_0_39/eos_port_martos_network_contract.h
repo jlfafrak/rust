@@ -227,7 +227,9 @@ static int32_t eos_martos_socketset_poll(
                 observed[index] |= EOS_PORT_SOCKET_EVENT_PRIORITY;
             }
         }
-        if (os_net_socket_get_protocol(native) == OS_NET_IPPROTO_TCP &&
+        if ((requested[index] &
+             EOS_PORT_SOCKET_EVENT_HANGUP_ELIGIBLE) != 0 &&
+            os_net_socket_get_protocol(native) == OS_NET_IPPROTO_TCP &&
             os_net_get_tcp_state(native) == OS_NET_TCP_CLOSED) {
             observed[index] |= EOS_PORT_SOCKET_EVENT_HANGUP;
         }

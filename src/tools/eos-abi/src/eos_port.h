@@ -71,6 +71,7 @@ typedef uintptr_t eos_port_socket;
 #define EOS_PORT_SOCKET_EVENT_ERROR UINT32_C(0x04)
 #define EOS_PORT_SOCKET_EVENT_HANGUP UINT32_C(0x08)
 #define EOS_PORT_SOCKET_EVENT_PRIORITY UINT32_C(0x10)
+#define EOS_PORT_SOCKET_EVENT_HANGUP_ELIGIBLE UINT32_C(0x20)
 #define EOS_PORT_SOCKET_POLL_CAPACITY UINT32_C(64)
 
 typedef struct eos_port_socket_address {
