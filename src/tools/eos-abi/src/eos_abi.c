@@ -1,3 +1,7 @@
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "eos_rust_abi.h"
 
 #include "eos_port.h"
@@ -25,6 +29,11 @@
 #include "eos_pipe.c"
 #include "eos_stdio.c"
 #include "eos_thread.c"
+#include "eos_mutex.c"
+#include "eos_time.c"
+#include "eos_condvar.c"
+#include "eos_rwlock.c"
+#include "eos_once.c"
 
 uint32_t eos_rust_abi_version(void) {
     return (EOS_RUST_ABI_MAJOR << 16) | EOS_RUST_ABI_MINOR;

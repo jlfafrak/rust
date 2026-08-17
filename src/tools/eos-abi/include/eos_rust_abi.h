@@ -13,8 +13,42 @@ typedef struct eos_rust_pthread_attr {
     uint32_t words[4];
 } eos_rust_pthread_attr;
 
+typedef struct eos_rust_timespec {
+    int64_t tv_sec;
+    int64_t tv_nsec;
+} eos_rust_timespec;
+
+typedef struct eos_rust_pthread_mutex {
+    uint32_t words[4];
+} eos_rust_pthread_mutex;
+
+typedef struct eos_rust_pthread_mutexattr {
+    uint32_t words[2];
+} eos_rust_pthread_mutexattr;
+
+typedef struct eos_rust_pthread_cond {
+    uint32_t words[4];
+} eos_rust_pthread_cond;
+
+typedef struct eos_rust_pthread_condattr {
+    uint32_t words[2];
+} eos_rust_pthread_condattr;
+
+typedef struct eos_rust_pthread_rwlock {
+    uint32_t words[4];
+} eos_rust_pthread_rwlock;
+
+typedef struct eos_rust_pthread_once {
+    uint32_t words[2];
+} eos_rust_pthread_once_t;
+
 #define EOS_RUST_PTHREAD_STACK_MIN UINT32_C(4096)
 #define EOS_RUST_PTHREAD_NAME_MAX UINT32_C(63)
+#define EOS_RUST_CLOCK_REALTIME INT32_C(0)
+#define EOS_RUST_CLOCK_MONOTONIC INT32_C(1)
+#define EOS_RUST_PTHREAD_MUTEX_NORMAL INT32_C(0)
+#define EOS_RUST_PTHREAD_MUTEX_RECURSIVE INT32_C(1)
+#define EOS_RUST_PTHREAD_ONCE_INIT {{UINT32_C(0), UINT32_C(0)}}
 
 typedef struct eos_rust_stat {
     uint64_t st_dev;
@@ -281,6 +315,82 @@ EOS_RUST_EXPORT int32_t eos_rust_pthread_key_delete(eos_rust_tls_key_t key);
 EOS_RUST_EXPORT void *eos_rust_pthread_getspecific(eos_rust_tls_key_t key);
 EOS_RUST_EXPORT int32_t eos_rust_pthread_setspecific(eos_rust_tls_key_t key,
                                                      const void *value);
+
+/*
+ * Synchronization values are fixed-layout registry identities, never native
+ * objects. Their all-zero representations are lazy process-private
+ * initializers. Pthread-shaped failures are returned as positive EOS errno
+ * values and preserve compatibility errno. Condition deadlines are absolute
+ * CLOCK_MONOTONIC values. Initialized objects must not be copied or moved.
+ */
+EOS_RUST_EXPORT int32_t eos_rust_pthread_mutexattr_init(
+    eos_rust_pthread_mutexattr *attribute);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_mutexattr_destroy(
+    eos_rust_pthread_mutexattr *attribute);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_mutexattr_settype(
+    eos_rust_pthread_mutexattr *attribute,
+    int32_t type);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_mutex_init(
+    eos_rust_pthread_mutex *mutex,
+    const eos_rust_pthread_mutexattr *attribute);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_mutex_destroy(
+    eos_rust_pthread_mutex *mutex);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_mutex_lock(
+    eos_rust_pthread_mutex *mutex);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_mutex_trylock(
+    eos_rust_pthread_mutex *mutex);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_mutex_unlock(
+    eos_rust_pthread_mutex *mutex);
+
+EOS_RUST_EXPORT int32_t eos_rust_pthread_condattr_init(
+    eos_rust_pthread_condattr *attribute);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_condattr_destroy(
+    eos_rust_pthread_condattr *attribute);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_condattr_setclock(
+    eos_rust_pthread_condattr *attribute,
+    int32_t clock_id);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_cond_init(
+    eos_rust_pthread_cond *condition,
+    const eos_rust_pthread_condattr *attribute);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_cond_destroy(
+    eos_rust_pthread_cond *condition);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_cond_signal(
+    eos_rust_pthread_cond *condition);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_cond_broadcast(
+    eos_rust_pthread_cond *condition);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_cond_wait(
+    eos_rust_pthread_cond *condition,
+    eos_rust_pthread_mutex *mutex);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_cond_timedwait(
+    eos_rust_pthread_cond *condition,
+    eos_rust_pthread_mutex *mutex,
+    const eos_rust_timespec *absolute_deadline);
+
+EOS_RUST_EXPORT int32_t eos_rust_pthread_rwlock_init(
+    eos_rust_pthread_rwlock *rwlock);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_rwlock_destroy(
+    eos_rust_pthread_rwlock *rwlock);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_rwlock_rdlock(
+    eos_rust_pthread_rwlock *rwlock);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_rwlock_tryrdlock(
+    eos_rust_pthread_rwlock *rwlock);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_rwlock_wrlock(
+    eos_rust_pthread_rwlock *rwlock);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_rwlock_trywrlock(
+    eos_rust_pthread_rwlock *rwlock);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_rwlock_unlock(
+    eos_rust_pthread_rwlock *rwlock);
+EOS_RUST_EXPORT int32_t eos_rust_pthread_once(
+    eos_rust_pthread_once_t *control,
+    void (*initialization_routine)(void));
+
+/* POSIX-shaped clock calls return 0/-1 and set compatibility errno. */
+EOS_RUST_EXPORT int32_t eos_rust_clock_gettime(
+    int32_t clock_id,
+    eos_rust_timespec *time);
+EOS_RUST_EXPORT int32_t eos_rust_nanosleep(
+    const eos_rust_timespec *requested,
+    eos_rust_timespec *remaining);
 
 /*
  * Returned environment strings and vectors are immutable snapshots owned by

@@ -19,6 +19,7 @@ static pthread_mutex_t eos_host_locks[EOS_PORT_LOCK_COUNT] = {
     PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER,
     PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER,
     PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER,
+    PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER,
     PTHREAD_MUTEX_INITIALIZER};
 static pthread_mutex_t eos_host_console_guard = PTHREAD_MUTEX_INITIALIZER;
 #ifdef EOS_RUST_HOST_TEST
@@ -78,6 +79,32 @@ static uint32_t eos_host_tls_set_successes_before_failure;
 static int32_t eos_host_delayed_tls_set_status;
 static _Atomic uint32_t eos_host_sync_create_count;
 static _Atomic uint32_t eos_host_sync_destroy_count;
+static int32_t eos_host_next_public_mutex_create_status;
+static int32_t eos_host_next_public_mutex_lock_status;
+static int32_t eos_host_next_public_mutex_unlock_status;
+static int32_t eos_host_next_public_mutex_delete_status;
+static int32_t eos_host_next_public_sem_create_status;
+static int32_t eos_host_next_public_sem_take_status;
+static int eos_host_next_public_sem_spurious;
+static int32_t eos_host_next_public_sem_give_status;
+static int32_t eos_host_next_public_sem_delete_status;
+static pthread_mutex_t eos_host_time_guard = PTHREAD_MUTEX_INITIALIZER;
+#define EOS_HOST_TIME_SCRIPT_CAPACITY UINT32_C(32000)
+#define EOS_HOST_TIME_DELAY_CAPACITY UINT32_C(32)
+static uint64_t eos_host_time_script[EOS_HOST_TIME_SCRIPT_CAPACITY];
+static uint32_t eos_host_time_script_count;
+static uint32_t eos_host_time_script_index;
+static uint64_t eos_host_time_fake_now;
+static int eos_host_time_fake;
+static int eos_host_time_delay_advances;
+static uint64_t eos_host_time_realtime;
+static int32_t eos_host_time_realtime_status;
+static uint32_t eos_host_time_delay_values[EOS_HOST_TIME_DELAY_CAPACITY];
+static uint32_t eos_host_time_delay_count;
+static uint32_t eos_host_time_delay_usec_values[EOS_HOST_TIME_DELAY_CAPACITY];
+static uint32_t eos_host_time_delay_usec_count;
+static uint32_t eos_host_time_delay_successes_before_failure;
+static int32_t eos_host_time_delayed_failure;
 
 void eos_host_test_reset(void) {
     eos_host_next_alloc_status = 0;
@@ -128,6 +155,15 @@ void eos_host_test_reset(void) {
     eos_host_delayed_tls_set_status = 0;
     atomic_store(&eos_host_sync_create_count, 0);
     atomic_store(&eos_host_sync_destroy_count, 0);
+    eos_host_next_public_mutex_create_status = 0;
+    eos_host_next_public_mutex_lock_status = 0;
+    eos_host_next_public_mutex_unlock_status = 0;
+    eos_host_next_public_mutex_delete_status = 0;
+    eos_host_next_public_sem_create_status = 0;
+    eos_host_next_public_sem_take_status = 0;
+    eos_host_next_public_sem_spurious = 0;
+    eos_host_next_public_sem_give_status = 0;
+    eos_host_next_public_sem_delete_status = 0;
     (void)strcpy(eos_host_hostname, "eos-host");
     (void)pthread_mutex_unlock(&eos_host_console_guard);
     (void)pthread_mutex_lock(&eos_host_closedir_guard);
@@ -207,6 +243,33 @@ void eos_host_test_fail_next_sync_destroy(int32_t status) {
 }
 void eos_host_test_fail_next_free(int32_t status) {
     eos_host_next_free_status = status;
+}
+void eos_host_test_fail_next_public_mutex_create(int32_t status) {
+    eos_host_next_public_mutex_create_status = status;
+}
+void eos_host_test_fail_next_public_mutex_lock(int32_t status) {
+    eos_host_next_public_mutex_lock_status = status;
+}
+void eos_host_test_fail_next_public_mutex_unlock(int32_t status) {
+    eos_host_next_public_mutex_unlock_status = status;
+}
+void eos_host_test_fail_next_public_mutex_delete(int32_t status) {
+    eos_host_next_public_mutex_delete_status = status;
+}
+void eos_host_test_fail_next_public_sem_create(int32_t status) {
+    eos_host_next_public_sem_create_status = status;
+}
+void eos_host_test_fail_next_public_sem_take(int32_t status) {
+    eos_host_next_public_sem_take_status = status;
+}
+void eos_host_test_spurious_next_public_sem_take(void) {
+    eos_host_next_public_sem_spurious = 1;
+}
+void eos_host_test_fail_next_public_sem_give(int32_t status) {
+    eos_host_next_public_sem_give_status = status;
+}
+void eos_host_test_fail_next_public_sem_delete(int32_t status) {
+    eos_host_next_public_sem_delete_status = status;
 }
 uint32_t eos_host_test_sync_create_count(void) {
     return atomic_load(&eos_host_sync_create_count);
@@ -697,6 +760,392 @@ static int32_t eos_port_sync_destroy(eos_port_sync sync) {
 #endif
     return 0;
 }
+
+typedef struct eos_host_public_mutex {
+    pthread_mutex_t native;
+} eos_host_public_mutex;
+
+typedef struct eos_host_public_semaphore {
+    pthread_mutex_t mutex;
+    pthread_cond_t condition;
+    uint32_t count;
+    uint32_t maximum;
+} eos_host_public_semaphore;
+
+static void eos_host_realtime_deadline(uint32_t timeout_ticks,
+                                       struct timespec *deadline) {
+    uint64_t nanoseconds;
+    (void)clock_gettime(CLOCK_REALTIME, deadline);
+    nanoseconds = (uint64_t)deadline->tv_nsec +
+                  ((uint64_t)timeout_ticks * UINT64_C(1000000000)) /
+                      (uint64_t)eos_port_tick_rate_hz();
+    deadline->tv_sec += (time_t)(nanoseconds / UINT64_C(1000000000));
+    deadline->tv_nsec = (long)(nanoseconds % UINT64_C(1000000000));
+}
+
+static int32_t eos_port_mutex_create(uint32_t recursive,
+                                     eos_port_mutex *mutex) {
+    eos_host_public_mutex *created;
+    pthread_mutexattr_t attribute;
+    int result;
+    if (mutex == NULL || recursive > UINT32_C(1)) return 1;
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_next_public_mutex_create_status != 0) {
+        int32_t status = eos_host_next_public_mutex_create_status;
+        eos_host_next_public_mutex_create_status = 0;
+        return status;
+    }
+#endif
+    created = (eos_host_public_mutex *)malloc(sizeof(*created));
+    if (created == NULL) return 15;
+    if (pthread_mutexattr_init(&attribute) != 0) {
+        free(created);
+        return 17;
+    }
+    result = pthread_mutexattr_settype(
+        &attribute, recursive != 0 ? PTHREAD_MUTEX_RECURSIVE
+                                   : PTHREAD_MUTEX_NORMAL);
+    if (result == 0) result = pthread_mutex_init(&created->native, &attribute);
+    (void)pthread_mutexattr_destroy(&attribute);
+    if (result != 0) {
+        free(created);
+        return 17;
+    }
+    *mutex = (eos_port_mutex)(uintptr_t)created;
+    return 0;
+}
+
+static int32_t eos_port_mutex_lock(eos_port_mutex mutex,
+                                   uint32_t timeout_ticks) {
+    eos_host_public_mutex *value =
+        (eos_host_public_mutex *)(uintptr_t)mutex;
+    int result;
+    if (value == NULL) return 1;
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_next_public_mutex_lock_status != 0) {
+        int32_t status = eos_host_next_public_mutex_lock_status;
+        eos_host_next_public_mutex_lock_status = 0;
+        return status;
+    }
+#endif
+    if (timeout_ticks == EOS_PORT_WAIT_FOREVER) {
+        result = pthread_mutex_lock(&value->native);
+    } else if (timeout_ticks == EOS_PORT_NO_WAIT) {
+        result = pthread_mutex_trylock(&value->native);
+    } else {
+        struct timespec deadline;
+        eos_host_realtime_deadline(timeout_ticks, &deadline);
+        result = pthread_mutex_timedlock(&value->native, &deadline);
+    }
+    if (result == 0) return 0;
+    if (result == EBUSY) return 22;
+    if (result == ETIMEDOUT) return 19;
+    return 17;
+}
+
+static int32_t eos_port_mutex_unlock(eos_port_mutex mutex) {
+    eos_host_public_mutex *value =
+        (eos_host_public_mutex *)(uintptr_t)mutex;
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_next_public_mutex_unlock_status != 0) {
+        int32_t status = eos_host_next_public_mutex_unlock_status;
+        eos_host_next_public_mutex_unlock_status = 0;
+        return status;
+    }
+#endif
+    return value != NULL && pthread_mutex_unlock(&value->native) == 0 ? 0 : 20;
+}
+
+static int32_t eos_port_mutex_destroy(eos_port_mutex mutex) {
+    eos_host_public_mutex *value =
+        (eos_host_public_mutex *)(uintptr_t)mutex;
+    if (value == NULL) return 1;
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_next_public_mutex_delete_status != 0) {
+        int32_t status = eos_host_next_public_mutex_delete_status;
+        eos_host_next_public_mutex_delete_status = 0;
+        return status;
+    }
+#endif
+    if (pthread_mutex_destroy(&value->native) != 0) return 17;
+    free(value);
+    return 0;
+}
+
+static int32_t eos_port_semaphore_create(uint32_t maximum_count,
+                                         uint32_t initial_count,
+                                         eos_port_semaphore *semaphore) {
+    eos_host_public_semaphore *created;
+    if (semaphore == NULL || maximum_count == 0 ||
+        initial_count > maximum_count) {
+        return 1;
+    }
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_next_public_sem_create_status != 0) {
+        int32_t status = eos_host_next_public_sem_create_status;
+        eos_host_next_public_sem_create_status = 0;
+        return status;
+    }
+#endif
+    created = (eos_host_public_semaphore *)malloc(sizeof(*created));
+    if (created == NULL) return 15;
+    if (pthread_mutex_init(&created->mutex, NULL) != 0) {
+        free(created);
+        return 17;
+    }
+    if (pthread_cond_init(&created->condition, NULL) != 0) {
+        (void)pthread_mutex_destroy(&created->mutex);
+        free(created);
+        return 17;
+    }
+    created->count = initial_count;
+    created->maximum = maximum_count;
+    *semaphore = (eos_port_semaphore)(uintptr_t)created;
+    return 0;
+}
+
+static int32_t eos_port_semaphore_take(eos_port_semaphore semaphore,
+                                       uint32_t timeout_ticks) {
+    eos_host_public_semaphore *value =
+        (eos_host_public_semaphore *)(uintptr_t)semaphore;
+    struct timespec deadline;
+    int result = 0;
+    if (value == NULL) return 1;
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_next_public_sem_spurious != 0) {
+        eos_host_next_public_sem_spurious = 0;
+        return 0;
+    }
+    if (eos_host_next_public_sem_take_status != 0) {
+        int32_t status = eos_host_next_public_sem_take_status;
+        eos_host_next_public_sem_take_status = 0;
+        return status;
+    }
+#endif
+    if (timeout_ticks != EOS_PORT_NO_WAIT &&
+        timeout_ticks != EOS_PORT_WAIT_FOREVER) {
+        eos_host_realtime_deadline(timeout_ticks, &deadline);
+    }
+    if (pthread_mutex_lock(&value->mutex) != 0) return 17;
+    while (value->count == 0 && result == 0) {
+        if (timeout_ticks == EOS_PORT_NO_WAIT) {
+            result = ETIMEDOUT;
+        } else if (timeout_ticks == EOS_PORT_WAIT_FOREVER) {
+            result = pthread_cond_wait(&value->condition, &value->mutex);
+        } else {
+            result = pthread_cond_timedwait(&value->condition, &value->mutex,
+                                            &deadline);
+        }
+    }
+    if (result == 0) --value->count;
+    if (pthread_mutex_unlock(&value->mutex) != 0) return 20;
+    if (result == 0) return 0;
+    if (result == ETIMEDOUT) return 19;
+    return 17;
+}
+
+static int32_t eos_port_semaphore_give(eos_port_semaphore semaphore) {
+    eos_host_public_semaphore *value =
+        (eos_host_public_semaphore *)(uintptr_t)semaphore;
+    int result = 0;
+    if (value == NULL) return 1;
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_next_public_sem_give_status != 0) {
+        int32_t status = eos_host_next_public_sem_give_status;
+        eos_host_next_public_sem_give_status = 0;
+        return status;
+    }
+#endif
+    if (pthread_mutex_lock(&value->mutex) != 0) return 17;
+    if (value->count == value->maximum) {
+        result = 17;
+    } else {
+        ++value->count;
+        if (pthread_cond_signal(&value->condition) != 0) result = 17;
+    }
+    if (pthread_mutex_unlock(&value->mutex) != 0) return 20;
+    return result;
+}
+
+static int32_t eos_port_semaphore_destroy(eos_port_semaphore semaphore) {
+    eos_host_public_semaphore *value =
+        (eos_host_public_semaphore *)(uintptr_t)semaphore;
+    if (value == NULL) return 1;
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_next_public_sem_delete_status != 0) {
+        int32_t status = eos_host_next_public_sem_delete_status;
+        eos_host_next_public_sem_delete_status = 0;
+        return status;
+    }
+#endif
+    if (pthread_cond_destroy(&value->condition) != 0) return 17;
+    if (pthread_mutex_destroy(&value->mutex) != 0) return 17;
+    free(value);
+    return 0;
+}
+
+static int32_t eos_port_monotonic_usec(uint64_t *usec) {
+    struct timespec now;
+    if (usec == NULL) return 1;
+#ifdef EOS_RUST_HOST_TEST
+    if (pthread_mutex_lock(&eos_host_time_guard) != 0) return 17;
+    if (eos_host_time_fake) {
+        if (eos_host_time_script_index < eos_host_time_script_count) {
+            eos_host_time_fake_now =
+                eos_host_time_script[eos_host_time_script_index++];
+        }
+        *usec = eos_host_time_fake_now;
+        if (pthread_mutex_unlock(&eos_host_time_guard) != 0) return 20;
+        return 0;
+    }
+    if (pthread_mutex_unlock(&eos_host_time_guard) != 0) return 20;
+#endif
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 25;
+    *usec = (uint64_t)now.tv_sec * UINT64_C(1000000) +
+            (uint64_t)now.tv_nsec / UINT64_C(1000);
+    return 0;
+}
+
+static int32_t eos_port_realtime_usec(uint64_t *usec) {
+    struct timespec now;
+    if (usec == NULL) return 1;
+#ifdef EOS_RUST_HOST_TEST
+    if (pthread_mutex_lock(&eos_host_time_guard) != 0) return 17;
+    if (eos_host_time_fake) {
+        int32_t status = eos_host_time_realtime_status;
+        *usec = eos_host_time_realtime;
+        if (pthread_mutex_unlock(&eos_host_time_guard) != 0) return 20;
+        return status;
+    }
+    if (pthread_mutex_unlock(&eos_host_time_guard) != 0) return 20;
+#endif
+    if (clock_gettime(CLOCK_REALTIME, &now) != 0) return 25;
+    *usec = (uint64_t)now.tv_sec * UINT64_C(1000000) +
+            (uint64_t)now.tv_nsec / UINT64_C(1000);
+    return 0;
+}
+
+static uint32_t eos_port_tick_rate_hz(void) { return UINT32_C(1000); }
+
+static int32_t eos_host_time_record_delay(uint32_t value, int microseconds) {
+#ifdef EOS_RUST_HOST_TEST
+    int32_t status = 0;
+    if (pthread_mutex_lock(&eos_host_time_guard) != 0) return 17;
+    if (eos_host_time_delayed_failure != 0) {
+        if (eos_host_time_delay_successes_before_failure == 0) {
+            status = eos_host_time_delayed_failure;
+            eos_host_time_delayed_failure = 0;
+        } else {
+            --eos_host_time_delay_successes_before_failure;
+        }
+    }
+    if (status == 0 && eos_host_time_fake) {
+        if (microseconds) {
+            if (eos_host_time_delay_usec_count < EOS_HOST_TIME_DELAY_CAPACITY) {
+                eos_host_time_delay_usec_values[eos_host_time_delay_usec_count++] =
+                    value;
+            }
+            if (eos_host_time_delay_advances) eos_host_time_fake_now += value;
+        } else {
+            if (eos_host_time_delay_count < EOS_HOST_TIME_DELAY_CAPACITY) {
+                eos_host_time_delay_values[eos_host_time_delay_count++] = value;
+            }
+            if (eos_host_time_delay_advances) {
+                eos_host_time_fake_now += (uint64_t)value * UINT64_C(1000);
+            }
+        }
+    }
+    if (pthread_mutex_unlock(&eos_host_time_guard) != 0) return 20;
+    if (status != 0 || eos_host_time_fake) return status;
+#else
+    (void)microseconds;
+#endif
+    {
+        struct timespec request;
+        uint64_t usec = microseconds ? (uint64_t)value
+                                     : (uint64_t)value * UINT64_C(1000);
+        request.tv_sec = (time_t)(usec / UINT64_C(1000000));
+        request.tv_nsec = (long)((usec % UINT64_C(1000000)) * UINT64_C(1000));
+        return nanosleep(&request, NULL) == 0 ? 0 : 25;
+    }
+}
+
+static int32_t eos_port_delay_ticks(uint32_t ticks) {
+    return eos_host_time_record_delay(ticks, 0);
+}
+
+static int32_t eos_port_delay_usec(uint32_t usec) {
+    return eos_host_time_record_delay(usec, 1);
+}
+
+#ifdef EOS_RUST_HOST_TEST
+static void eos_port_time_test_reset(void) {
+    (void)pthread_mutex_lock(&eos_host_time_guard);
+    eos_host_time_script_count = 0;
+    eos_host_time_script_index = 0;
+    eos_host_time_fake_now = 0;
+    eos_host_time_fake = 1;
+    eos_host_time_delay_advances = 0;
+    eos_host_time_realtime = 0;
+    eos_host_time_realtime_status = 0;
+    eos_host_time_delay_count = 0;
+    eos_host_time_delay_usec_count = 0;
+    eos_host_time_delay_successes_before_failure = UINT32_MAX;
+    eos_host_time_delayed_failure = 0;
+    (void)pthread_mutex_unlock(&eos_host_time_guard);
+}
+
+void eos_time_test_set_monotonic_sequence(const uint64_t *values,
+                                          uint32_t count) {
+    (void)pthread_mutex_lock(&eos_host_time_guard);
+    if (count > EOS_HOST_TIME_SCRIPT_CAPACITY) count = EOS_HOST_TIME_SCRIPT_CAPACITY;
+    if (count != 0 && values != NULL) {
+        (void)memcpy(eos_host_time_script, values,
+                     (size_t)count * sizeof(values[0]));
+        eos_host_time_fake_now = values[0];
+    }
+    eos_host_time_script_count = count;
+    eos_host_time_script_index = 0;
+    eos_host_time_fake = 1;
+    (void)pthread_mutex_unlock(&eos_host_time_guard);
+}
+
+void eos_time_test_set_realtime(uint64_t value, int32_t status) {
+    (void)pthread_mutex_lock(&eos_host_time_guard);
+    eos_host_time_realtime = value;
+    eos_host_time_realtime_status = status;
+    eos_host_time_fake = 1;
+    (void)pthread_mutex_unlock(&eos_host_time_guard);
+}
+
+void eos_time_test_fail_delay_after(uint32_t successful_calls,
+                                    int32_t status) {
+    (void)pthread_mutex_lock(&eos_host_time_guard);
+    eos_host_time_delay_successes_before_failure = successful_calls;
+    eos_host_time_delayed_failure = status;
+    (void)pthread_mutex_unlock(&eos_host_time_guard);
+}
+
+void eos_time_test_set_delay_advances_clock(int enabled) {
+    (void)pthread_mutex_lock(&eos_host_time_guard);
+    eos_host_time_delay_advances = enabled;
+    (void)pthread_mutex_unlock(&eos_host_time_guard);
+}
+
+uint32_t eos_time_test_delay_count(void) { return eos_host_time_delay_count; }
+uint32_t eos_time_test_delay_value(uint32_t index) {
+    return index < eos_host_time_delay_count ? eos_host_time_delay_values[index]
+                                             : UINT32_MAX;
+}
+uint32_t eos_time_test_delay_usec_count(void) {
+    return eos_host_time_delay_usec_count;
+}
+uint32_t eos_time_test_delay_usec_value(uint32_t index) {
+    return index < eos_host_time_delay_usec_count
+               ? eos_host_time_delay_usec_values[index]
+               : UINT32_MAX;
+}
+#endif
 
 static int32_t eos_host_status_from_errno(int error_number) {
     switch (error_number) {

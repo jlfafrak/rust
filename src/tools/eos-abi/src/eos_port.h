@@ -24,7 +24,13 @@ typedef struct eos_hash_seed_sources {
 #define EOS_PORT_LOCK_CWD UINT32_C(4)
 #define EOS_PORT_LOCK_THREAD_REGISTRY UINT32_C(5)
 #define EOS_PORT_LOCK_TLS_KEYS UINT32_C(6)
-#define EOS_PORT_LOCK_COUNT UINT32_C(7)
+#define EOS_PORT_LOCK_SYNC_REGISTRY UINT32_C(7)
+#define EOS_PORT_LOCK_TIME UINT32_C(8)
+#define EOS_PORT_LOCK_COUNT UINT32_C(9)
+
+#define EOS_PORT_NO_WAIT UINT32_C(0)
+#define EOS_PORT_WAIT_FOREVER UINT32_MAX
+#define EOS_PORT_MAX_FINITE_WAIT (UINT32_MAX - UINT32_C(1))
 
 #define EOS_PORT_FILE_TYPE_NONE UINT32_C(0)
 #define EOS_PORT_FILE_TYPE_REGULAR UINT32_C(1)
@@ -55,6 +61,8 @@ typedef struct eos_port_result {
 } eos_port_result;
 
 typedef uintptr_t eos_port_sync;
+typedef uintptr_t eos_port_mutex;
+typedef uintptr_t eos_port_semaphore;
 typedef void (*eos_port_thread_start)(void *argument);
 
 /* Implemented with internal linkage by the one C source selected by CMake. */
@@ -88,6 +96,24 @@ static int32_t eos_port_sync_unlock(eos_port_sync sync);
 static int32_t eos_port_sync_wait(eos_port_sync sync, uint32_t events);
 static int32_t eos_port_sync_broadcast(eos_port_sync sync, uint32_t events);
 static int32_t eos_port_sync_destroy(eos_port_sync sync);
+static int32_t eos_port_mutex_create(uint32_t recursive,
+                                     eos_port_mutex *mutex);
+static int32_t eos_port_mutex_lock(eos_port_mutex mutex,
+                                   uint32_t timeout_ticks);
+static int32_t eos_port_mutex_unlock(eos_port_mutex mutex);
+static int32_t eos_port_mutex_destroy(eos_port_mutex mutex);
+static int32_t eos_port_semaphore_create(uint32_t maximum_count,
+                                         uint32_t initial_count,
+                                         eos_port_semaphore *semaphore);
+static int32_t eos_port_semaphore_take(eos_port_semaphore semaphore,
+                                       uint32_t timeout_ticks);
+static int32_t eos_port_semaphore_give(eos_port_semaphore semaphore);
+static int32_t eos_port_semaphore_destroy(eos_port_semaphore semaphore);
+static int32_t eos_port_monotonic_usec(uint64_t *usec);
+static int32_t eos_port_realtime_usec(uint64_t *usec);
+static uint32_t eos_port_tick_rate_hz(void);
+static int32_t eos_port_delay_ticks(uint32_t ticks);
+static int32_t eos_port_delay_usec(uint32_t usec);
 static eos_port_result eos_port_file_open(const char *path, uint32_t flags,
                                           eos_port_file *file);
 static int32_t eos_port_file_read(eos_port_file file, void *buffer,

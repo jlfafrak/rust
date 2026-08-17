@@ -54,6 +54,7 @@ _Static_assert(EDEADLK == EOS_ERRNO_DEADLOCK, "unexpected EOS EDEADLK value");
 
 #include "eos_port_martos_fs_contract.h"
 #include "eos_port_martos_thread_contract.h"
+#include "eos_port_martos_sync_contract.h"
 
 /* Guard the numeric translation table against drift in the pinned SDK. */
 _Static_assert(OS_STS_OK == 0, "unexpected OS_STS_OK value");
@@ -115,6 +116,14 @@ _Static_assert(OS_THREAD_STACK_DEFAULT_BYTE_CNT == EOS_RUST_PTHREAD_STACK_MIN,
                "MARTOS minimum thread stack changed");
 _Static_assert(OS_NAME_LEN == EOS_RUST_PTHREAD_NAME_MAX + 1,
                "MARTOS thread name capacity changed");
+_Static_assert(OS_NO_WAIT == EOS_PORT_NO_WAIT,
+               "MARTOS no-wait sentinel changed");
+_Static_assert(OS_WAIT_FOREVER == EOS_PORT_WAIT_FOREVER,
+               "MARTOS wait-forever sentinel changed");
+_Static_assert(OS_MAX_DELAY == UINT32_MAX,
+               "MARTOS maximum delay changed");
+_Static_assert(sizeof(os_timer_get_usec()) == sizeof(uint64_t),
+               "MARTOS monotonic timer is no longer 64-bit");
 
 static int32_t eos_port_thread_tls_get(uint32_t slot, uintptr_t *value) {
     return eos_martos_thread_tls_get_native(slot, value);
@@ -262,6 +271,97 @@ static int32_t eos_port_sync_destroy(eos_port_sync sync) {
     status = (int32_t)os_mutex_delete(value->mutex);
     if (status != OS_STS_OK) return status;
     return (int32_t)os_mem_free(value);
+}
+
+static int32_t eos_port_mutex_create(uint32_t recursive,
+                                     eos_port_mutex *mutex) {
+    os_mutex *created = NULL;
+    int32_t status;
+    if (mutex == NULL || recursive > UINT32_C(1)) {
+        return OS_STS_INVALID_PARAM1;
+    }
+    status = eos_martos_mutex_create_native(recursive, &created);
+    if (status == OS_STS_OK) *mutex = (eos_port_mutex)(uintptr_t)created;
+    return status;
+}
+
+static int32_t eos_port_mutex_lock(eos_port_mutex mutex,
+                                   uint32_t timeout_ticks) {
+    os_mutex *value = (os_mutex *)(uintptr_t)mutex;
+    return value == NULL ? OS_STS_INVALID_PARAM1
+                         : eos_martos_mutex_lock_native(value, timeout_ticks);
+}
+
+static int32_t eos_port_mutex_unlock(eos_port_mutex mutex) {
+    os_mutex *value = (os_mutex *)(uintptr_t)mutex;
+    return value == NULL ? OS_STS_INVALID_PARAM1
+                         : eos_martos_mutex_unlock_native(value);
+}
+
+static int32_t eos_port_mutex_destroy(eos_port_mutex mutex) {
+    os_mutex *value = (os_mutex *)(uintptr_t)mutex;
+    return value == NULL ? OS_STS_INVALID_PARAM1
+                         : eos_martos_mutex_delete_native(value);
+}
+
+static int32_t eos_port_semaphore_create(uint32_t maximum_count,
+                                         uint32_t initial_count,
+                                         eos_port_semaphore *semaphore) {
+    os_sem *created = NULL;
+    int32_t status;
+    if (semaphore == NULL || maximum_count == 0 ||
+        initial_count > maximum_count) {
+        return OS_STS_INVALID_PARAM1;
+    }
+    status = eos_martos_semaphore_create_native(maximum_count, initial_count,
+                                                &created);
+    if (status == OS_STS_OK) {
+        *semaphore = (eos_port_semaphore)(uintptr_t)created;
+    }
+    return status;
+}
+
+static int32_t eos_port_semaphore_take(eos_port_semaphore semaphore,
+                                       uint32_t timeout_ticks) {
+    os_sem *value = (os_sem *)(uintptr_t)semaphore;
+    return value == NULL ? OS_STS_INVALID_PARAM1
+                         : eos_martos_semaphore_take_native(value,
+                                                            timeout_ticks);
+}
+
+static int32_t eos_port_semaphore_give(eos_port_semaphore semaphore) {
+    os_sem *value = (os_sem *)(uintptr_t)semaphore;
+    return value == NULL ? OS_STS_INVALID_PARAM1
+                         : eos_martos_semaphore_give_native(value);
+}
+
+static int32_t eos_port_semaphore_destroy(eos_port_semaphore semaphore) {
+    os_sem *value = (os_sem *)(uintptr_t)semaphore;
+    return value == NULL ? OS_STS_INVALID_PARAM1
+                         : eos_martos_semaphore_delete_native(value);
+}
+
+static int32_t eos_port_monotonic_usec(uint64_t *usec) {
+    if (usec == NULL) return OS_STS_INVALID_PARAM1;
+    *usec = eos_martos_monotonic_usec_native();
+    return OS_STS_OK;
+}
+
+static int32_t eos_port_realtime_usec(uint64_t *usec) {
+    return usec == NULL ? OS_STS_INVALID_PARAM1
+                        : eos_martos_realtime_usec_native(usec);
+}
+
+static uint32_t eos_port_tick_rate_hz(void) {
+    return eos_martos_tick_rate_native();
+}
+
+static int32_t eos_port_delay_ticks(uint32_t ticks) {
+    return eos_martos_delay_ticks_native(ticks);
+}
+
+static int32_t eos_port_delay_usec(uint32_t usec) {
+    return eos_martos_delay_usec_native(usec);
 }
 
 static void eos_martos_file_encode(os_efs_file_id native,

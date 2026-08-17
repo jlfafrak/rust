@@ -5,6 +5,30 @@
 #include <cstdlib>
 #include <iostream>
 #include <thread>
+#include <cstddef>
+
+static_assert(sizeof(eos_rust_timespec) == 16);
+static_assert(alignof(eos_rust_timespec) == alignof(int64_t));
+static_assert(offsetof(eos_rust_timespec, tv_sec) == 0);
+static_assert(offsetof(eos_rust_timespec, tv_nsec) == 8);
+static_assert(sizeof(eos_rust_pthread_mutex) == 16);
+static_assert(alignof(eos_rust_pthread_mutex) == alignof(uint32_t));
+static_assert(offsetof(eos_rust_pthread_mutex, words) == 0);
+static_assert(sizeof(eos_rust_pthread_mutexattr) == 8);
+static_assert(alignof(eos_rust_pthread_mutexattr) == alignof(uint32_t));
+static_assert(offsetof(eos_rust_pthread_mutexattr, words) == 0);
+static_assert(sizeof(eos_rust_pthread_cond) == 16);
+static_assert(alignof(eos_rust_pthread_cond) == alignof(uint32_t));
+static_assert(offsetof(eos_rust_pthread_cond, words) == 0);
+static_assert(sizeof(eos_rust_pthread_condattr) == 8);
+static_assert(alignof(eos_rust_pthread_condattr) == alignof(uint32_t));
+static_assert(offsetof(eos_rust_pthread_condattr, words) == 0);
+static_assert(sizeof(eos_rust_pthread_rwlock) == 16);
+static_assert(alignof(eos_rust_pthread_rwlock) == alignof(uint32_t));
+static_assert(offsetof(eos_rust_pthread_rwlock, words) == 0);
+static_assert(sizeof(eos_rust_pthread_once_t) == 8);
+static_assert(alignof(eos_rust_pthread_once_t) == alignof(uint32_t));
+static_assert(offsetof(eos_rust_pthread_once_t, words) == 0);
 
 namespace {
 

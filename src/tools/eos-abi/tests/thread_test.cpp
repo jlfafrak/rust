@@ -228,10 +228,13 @@ void test_identity_join_detach_and_failures() {
                           "detached basic worker did not destroy its sync");
 
     eos_rust_thread_t self_thread = 0;
+    const uint32_t self_destroy_before = eos_host_test_sync_destroy_count();
     expect(eos_rust_pthread_create(&self_thread, nullptr, self_join, nullptr) == 0 &&
                eos_rust_pthread_join(self_thread, &result) == 0 &&
                static_cast<int32_t>(reinterpret_cast<uintptr_t>(result)) == kDeadlock,
            "joining self must report EDEADLK");
+    wait_for_sync_destroy(self_destroy_before,
+                          "joined self-check worker did not finish child cleanup");
 
     const uint32_t live_before_failure = eos_thread_test_live_records();
     const uint32_t sync_before_failure = eos_host_test_sync_destroy_count();
@@ -248,9 +251,18 @@ void test_identity_join_detach_and_failures() {
            "registry lock failure must map directly");
     expect(eos_host_test_native_thread_delete_count() == 0,
            "compatibility code must never delete an auto-reaped native thread");
-    expect(eos_thread_test_live_records() == live_before_failure &&
-               eos_host_test_sync_destroy_count() == sync_before_failure + 2,
-           "failed create paths must release every compatibility record/sync once");
+    const uint32_t live_after_failure = eos_thread_test_live_records();
+    const uint32_t sync_after_failure = eos_host_test_sync_destroy_count();
+    if (live_after_failure != live_before_failure ||
+        sync_after_failure != sync_before_failure + 2) {
+        std::fprintf(stderr,
+                     "failed-create accounting: live %u -> %u, sync %u -> %u "
+                     "(expected %u)\n",
+                     live_before_failure, live_after_failure,
+                     sync_before_failure, sync_after_failure,
+                     sync_before_failure + 2);
+        fail("failed create paths must release every compatibility record/sync once");
+    }
 }
 
 void test_auto_start_publication_and_claims() {
