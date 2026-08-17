@@ -259,6 +259,16 @@ int32_t eos_rust_pthread_mutexattr_settype(
     return 0;
 }
 
+static int32_t eos_mutex_init_destination_locked(
+    const eos_rust_pthread_mutex *mutex) {
+    if (eos_sync_words_zero(mutex->words, UINT32_C(4))) return 0;
+    return mutex->words[1] == EOS_SYNC_MUTEX_MAGIC &&
+                   mutex->words[2] == 0 && mutex->words[3] == 0 &&
+                   eos_mutex_find_locked(mutex->words[0]) != NULL
+               ? EOS_ERRNO_BUSY
+               : EOS_ERRNO_INVALID;
+}
+
 int32_t eos_rust_pthread_mutex_init(
     eos_rust_pthread_mutex *mutex,
     const eos_rust_pthread_mutexattr *attribute) {
@@ -268,6 +278,11 @@ int32_t eos_rust_pthread_mutex_init(
     if (mutex == NULL) return EOS_ERRNO_INVALID;
     status = eos_mutex_attribute_type(attribute, &type);
     if (status != 0) return status;
+    status = eos_sync_registry_lock();
+    if (status != 0) return status;
+    status = eos_mutex_init_destination_locked(mutex);
+    eos_sync_registry_unlock();
+    if (status != 0) return status;
     status = eos_mutex_allocate(type, &record);
     if (status != 0) return status;
     status = eos_sync_registry_lock();
@@ -275,12 +290,8 @@ int32_t eos_rust_pthread_mutex_init(
         eos_mutex_discard(record);
         return status;
     }
-    if (!eos_sync_words_zero(mutex->words, UINT32_C(4))) {
-        status = mutex->words[1] == EOS_SYNC_MUTEX_MAGIC &&
-                         mutex->words[2] == 0 && mutex->words[3] == 0 &&
-                         eos_mutex_find_locked(mutex->words[0]) != NULL
-                     ? EOS_ERRNO_BUSY
-                     : EOS_ERRNO_INVALID;
+    status = eos_mutex_init_destination_locked(mutex);
+    if (status != 0) {
         eos_sync_registry_unlock();
         eos_mutex_discard(record);
         return status;

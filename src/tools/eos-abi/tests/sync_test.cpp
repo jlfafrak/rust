@@ -296,6 +296,83 @@ void test_mutexes() {
 #endif
 }
 
+void test_explicit_init_error_precedence() {
+    eos_rust_pthread_mutex malformed_mutex{{1, 0, 0, 0}};
+    eos_rust_pthread_mutex empty_mutex{};
+    eos_host_test_fail_next_public_mutex_create(15);
+    const int32_t malformed_mutex_status =
+        eos_rust_pthread_mutex_init(&malformed_mutex, nullptr);
+    const int32_t empty_mutex_status =
+        eos_rust_pthread_mutex_init(&empty_mutex, nullptr);
+    expect(malformed_mutex_status == kInvalid &&
+               empty_mutex_status == kNoMemory,
+           "malformed mutex init must precede and preserve allocation failure");
+
+    eos_rust_pthread_mutex live_mutex{};
+    empty_mutex = {};
+    expect(eos_rust_pthread_mutex_init(&live_mutex, nullptr) == 0,
+           "live mutex precedence setup failed");
+    eos_host_test_fail_next_public_mutex_create(15);
+    const int32_t live_mutex_status =
+        eos_rust_pthread_mutex_init(&live_mutex, nullptr);
+    const int32_t second_empty_mutex_status =
+        eos_rust_pthread_mutex_init(&empty_mutex, nullptr);
+    expect(live_mutex_status == kBusy &&
+               second_empty_mutex_status == kNoMemory &&
+               eos_rust_pthread_mutex_destroy(&live_mutex) == 0,
+           "live mutex init must precede and preserve allocation failure");
+
+    eos_rust_pthread_cond malformed_condition{{1, 0, 0, 0}};
+    eos_rust_pthread_cond empty_condition{};
+    eos_host_test_fail_next_public_mutex_create(15);
+    const int32_t malformed_condition_status =
+        eos_rust_pthread_cond_init(&malformed_condition, nullptr);
+    const int32_t empty_condition_status =
+        eos_rust_pthread_cond_init(&empty_condition, nullptr);
+    expect(malformed_condition_status == kInvalid &&
+               empty_condition_status == kNoMemory,
+           "malformed condition init must precede and preserve allocation failure");
+
+    eos_rust_pthread_cond live_condition{};
+    empty_condition = {};
+    expect(eos_rust_pthread_cond_init(&live_condition, nullptr) == 0,
+           "live condition precedence setup failed");
+    eos_host_test_fail_next_public_mutex_create(15);
+    const int32_t live_condition_status =
+        eos_rust_pthread_cond_init(&live_condition, nullptr);
+    const int32_t second_empty_condition_status =
+        eos_rust_pthread_cond_init(&empty_condition, nullptr);
+    expect(live_condition_status == kBusy &&
+               second_empty_condition_status == kNoMemory &&
+               eos_rust_pthread_cond_destroy(&live_condition) == 0,
+           "live condition init must precede and preserve allocation failure");
+
+    eos_rust_pthread_rwlock malformed_rwlock{{1, 0, 0, 0}};
+    eos_rust_pthread_rwlock empty_rwlock{};
+    eos_host_test_fail_next_public_mutex_create(15);
+    const int32_t malformed_rwlock_status =
+        eos_rust_pthread_rwlock_init(&malformed_rwlock);
+    const int32_t empty_rwlock_status =
+        eos_rust_pthread_rwlock_init(&empty_rwlock);
+    expect(malformed_rwlock_status == kInvalid &&
+               empty_rwlock_status == kNoMemory,
+           "malformed rwlock init must precede and preserve allocation failure");
+
+    eos_rust_pthread_rwlock live_rwlock{};
+    empty_rwlock = {};
+    expect(eos_rust_pthread_rwlock_init(&live_rwlock) == 0,
+           "live rwlock precedence setup failed");
+    eos_host_test_fail_next_public_mutex_create(15);
+    const int32_t live_rwlock_status =
+        eos_rust_pthread_rwlock_init(&live_rwlock);
+    const int32_t second_empty_rwlock_status =
+        eos_rust_pthread_rwlock_init(&empty_rwlock);
+    expect(live_rwlock_status == kBusy &&
+               second_empty_rwlock_status == kNoMemory &&
+               eos_rust_pthread_rwlock_destroy(&live_rwlock) == 0,
+           "live rwlock init must precede and preserve allocation failure");
+}
+
 void test_concurrent_explicit_initialization() {
     eos_rust_pthread_mutex mutex{};
     eos_rust_pthread_cond condition{};
@@ -876,6 +953,7 @@ int main() {
     eos_host_test_reset();
     test_layouts_and_attributes();
     test_mutexes();
+    test_explicit_init_error_precedence();
     test_concurrent_explicit_initialization();
     test_conditions_and_parker();
     test_condition_retains_objects_through_reacquire();

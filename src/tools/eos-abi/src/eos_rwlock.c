@@ -222,10 +222,25 @@ static void eos_rwlock_acquire_immediate_locked(eos_rwlock_record *record,
     }
 }
 
+static int32_t eos_rwlock_init_destination_locked(
+    const eos_rust_pthread_rwlock *rwlock) {
+    if (eos_sync_words_zero(rwlock->words, UINT32_C(4))) return 0;
+    return rwlock->words[1] == EOS_SYNC_RWLOCK_MAGIC &&
+                   rwlock->words[2] == 0 && rwlock->words[3] == 0 &&
+                   eos_rwlock_find_locked(rwlock->words[0]) != NULL
+               ? EOS_ERRNO_BUSY
+               : EOS_ERRNO_INVALID;
+}
+
 int32_t eos_rust_pthread_rwlock_init(eos_rust_pthread_rwlock *rwlock) {
     eos_rwlock_record *record;
     int32_t status;
     if (rwlock == NULL) return EOS_ERRNO_INVALID;
+    status = eos_sync_registry_lock();
+    if (status != 0) return status;
+    status = eos_rwlock_init_destination_locked(rwlock);
+    eos_sync_registry_unlock();
+    if (status != 0) return status;
     status = eos_rwlock_allocate(&record);
     if (status != 0) return status;
     status = eos_sync_registry_lock();
@@ -233,12 +248,8 @@ int32_t eos_rust_pthread_rwlock_init(eos_rust_pthread_rwlock *rwlock) {
         eos_rwlock_discard(record);
         return status;
     }
-    if (!eos_sync_words_zero(rwlock->words, UINT32_C(4))) {
-        status = rwlock->words[1] == EOS_SYNC_RWLOCK_MAGIC &&
-                         rwlock->words[2] == 0 && rwlock->words[3] == 0 &&
-                         eos_rwlock_find_locked(rwlock->words[0]) != NULL
-                     ? EOS_ERRNO_BUSY
-                     : EOS_ERRNO_INVALID;
+    status = eos_rwlock_init_destination_locked(rwlock);
+    if (status != 0) {
         eos_sync_registry_unlock();
         eos_rwlock_discard(record);
         return status;

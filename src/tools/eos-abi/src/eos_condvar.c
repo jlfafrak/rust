@@ -221,6 +221,16 @@ int32_t eos_rust_pthread_condattr_setclock(
     return 0;
 }
 
+static int32_t eos_condition_init_destination_locked(
+    const eos_rust_pthread_cond *condition) {
+    if (eos_sync_words_zero(condition->words, UINT32_C(4))) return 0;
+    return condition->words[1] == EOS_SYNC_COND_MAGIC &&
+                   condition->words[2] == 0 && condition->words[3] == 0 &&
+                   eos_condition_find_locked(condition->words[0]) != NULL
+               ? EOS_ERRNO_BUSY
+               : EOS_ERRNO_INVALID;
+}
+
 int32_t eos_rust_pthread_cond_init(
     eos_rust_pthread_cond *condition,
     const eos_rust_pthread_condattr *attribute) {
@@ -229,6 +239,11 @@ int32_t eos_rust_pthread_cond_init(
     if (condition == NULL || eos_condition_attribute_validate(attribute) != 0) {
         return EOS_ERRNO_INVALID;
     }
+    status = eos_sync_registry_lock();
+    if (status != 0) return status;
+    status = eos_condition_init_destination_locked(condition);
+    eos_sync_registry_unlock();
+    if (status != 0) return status;
     status = eos_condition_allocate(&record);
     if (status != 0) return status;
     status = eos_sync_registry_lock();
@@ -236,13 +251,8 @@ int32_t eos_rust_pthread_cond_init(
         eos_condition_discard(record);
         return status;
     }
-    if (!eos_sync_words_zero(condition->words, UINT32_C(4))) {
-        status = condition->words[1] == EOS_SYNC_COND_MAGIC &&
-                         condition->words[2] == 0 &&
-                         condition->words[3] == 0 &&
-                         eos_condition_find_locked(condition->words[0]) != NULL
-                     ? EOS_ERRNO_BUSY
-                     : EOS_ERRNO_INVALID;
+    status = eos_condition_init_destination_locked(condition);
+    if (status != 0) {
         eos_sync_registry_unlock();
         eos_condition_discard(record);
         return status;

@@ -11,9 +11,8 @@ surface; there is deliberately no separate park export.
 The accepted 66-symbol ABI grows by exactly 27 symbols to 93. Host-test seams remain absent
 from production archives. No Task 9 networking or later PAL work is included.
 
-The implementation commit containing this report is titled
-`runtime: add EOS synchronization and clocks`. Its final hash is recorded in the Task 8
-handoff because a commit cannot embed its own final content hash.
+The implementation commit is `9e48c8fb06ed55c88993b0658beab7dfc03a4399`, titled
+`runtime: add EOS synchronization and clocks`.
 
 ## TDD and debugging evidence
 
@@ -53,6 +52,25 @@ Additional test-first RED/GREEN rounds found and fixed:
   malformed nonzero objects returned `EBUSY`. Validation was moved ahead of requested-mode
   classification, and mutex/condition/rwlock init now distinguishes a valid live object
   (`EBUSY`) from malformed/stale words (`EINVAL`) without mutation.
+
+Independent exact-delta review then identified four concurrency/arithmetic/error-precedence
+defects. Each was reproduced with a deterministic failing test before production changes:
+
+- A paused condition waiter proved that destroying its condition and user mutex could succeed
+  before mandatory reacquisition. Condition wait now retains both the condition operation and a
+  mutex-record operation from before release through mandatory reacquisition
+  (`b51c76ab`, `fix: retain condition wait ownership`).
+- A paused recoverable semaphore-take failure racing an rwlock grant reproduced a zero-counter
+  abort in both reader and writer directions. Private per-waiter semaphores and selection under
+  the rwlock state mutex now linearize grant against failure
+  (`5d581c07`, `fix: arbitrate rwlock grants per waiter`).
+- A relative sleep just one nanosecond beyond the largest roundable `uint64_t` microsecond value
+  wrapped to zero. The seconds product and rounded fraction are now checked together
+  (`f4fc2e0e`, `fix: reject nanosleep microsecond overflow`).
+- Injected native allocation failure outranked malformed/live destination classification during
+  explicit init. Mutex, condition, and rwlock init now classify under the registry lock before
+  allocation, then revalidate before publication; six fault-retention cases pin `EINVAL`/`EBUSY`
+  precedence.
 
 The full strict suite also exposed a pre-existing test race in Task 7 lifecycle accounting.
 `pthread_join` may return after harvesting the registry record but before the child trampoline
@@ -138,8 +156,10 @@ while that selection is still protected. Signal selects at most one; broadcast s
 the current eligible set; a future waiter cannot consume an old token.
 
 After any success, timeout, spurious wake, or recoverable native wait failure, the waiter
-arbitrates removal under the condition lock, destroys its semaphore, drops its operation owner,
-and reacquires the user mutex before returning. When a signal selection races an observed
+arbitrates removal under the condition lock, destroys its semaphore, and reacquires the user
+mutex before returning. The condition operation and a retained mutex-record operation remain
+live throughout that mandatory reacquisition, so neither object can be destroyed or reused
+under the sleeping waiter. When a signal selection races an observed
 timeout, selection wins and the queued token is consumed with no-wait. The deterministic pause
 seam proves that exact linearization. A failed give after selection is irreversible and aborts.
 
@@ -149,13 +169,15 @@ waiter non-consumption, spurious wake, and the timeout/signal race.
 
 ## Rwlock and once state machines
 
-Rwlocks use one internal mutex and separate counting semaphores for readers and writers. New
-readers are admitted only when there is no active writer and no queued writer. The final reader
-or writer grants exactly one queued writer first; only when no writer waits is the entire queued
-reader batch granted. Waiting counts remain owned by the blocked operation and are rolled back
-on recoverable wait failure. A deterministic writer-wait observation proves that a late reader
-cannot pass an already queued writer. A 12-thread contention test checks reader/writer exclusion
-under both normal and fully instrumented TSan builds.
+Rwlocks use one internal mutex and a private counting semaphore per blocked waiter. New readers
+are admitted only when there is no active writer and no queued writer. The final reader or writer
+selects exactly one queued writer first; only when no writer waits is the entire queued reader
+batch selected. Selection, waiting-count removal, and ownership reservation occur under the
+state mutex before each private token is given. A recoverable wait failure removes only an
+unselected waiter; if selection won the race, the reserved grant wins and its token is consumed.
+A deterministic writer-wait observation proves that a late reader cannot pass an already queued
+writer. Paused failure/grant races cover both reader and writer directions, and a 12-thread
+contention test checks reader/writer exclusion under normal and fully instrumented TSan builds.
 
 Once records move through `NEW -> RUNNING(owner) -> COMPLETE`. The record is published before
 the callback runs; the callback executes outside every runtime lock. Contenders wait on the
@@ -180,6 +202,8 @@ Nanosleep rounds a positive sub-microsecond tail upward, splits whole millisecon
 `os_delay` chunks, and sends the remaining microseconds to `os_delay_usec`. It never passes
 `UINT32_MAX` to delay. On an injected native failure it sets the mapped errno and returns a
 normalized remainder derived from the monotonic deadline; success zeros a supplied remainder.
+The seconds product plus rounded fractional microseconds is checked as one expression before
+reading the clock. Tests pin the exact `UINT64_MAX - 1`, `UINT64_MAX`, and overflow boundaries.
 
 ## Native mapping and boundary
 
@@ -204,16 +228,18 @@ lock; realtime; delay; and cleanup failure paths. Recoverable failures leave pub
 owners balanced. Irreversible cleanup failures are bounded child-process abort tests.
 
 Race/mutation coverage includes 16-thread lazy mutex publication, 16-thread concurrent explicit
-init for all destroyable object classes, normal-vs-recursive mapping, wrong-owner unlock, stale
-objects, exact signal/broadcast sets, future-signal theft, spurious wake, deterministic
-timeout/signal arbitration, writer preference, high-contention exclusion, once pre-callback
-publication/completion visibility, process-lifetime retention, identity exhaustion, monotonic
-source regression, concurrent non-regression, sub-tick ceiling, finite saturation, long sleep
-chunking, exact failure remainder, and wait-forever-sentinel avoidance.
+init for all destroyable object classes, malformed/live init precedence over preserved native
+allocation faults, normal-vs-recursive mapping, wrong-owner unlock, stale objects, exact
+signal/broadcast sets, future-signal theft, spurious wake, deterministic timeout/signal and
+destroy/reacquire arbitration, writer preference, deterministic rwlock failure/grant arbitration,
+high-contention exclusion, once pre-callback publication/completion visibility, process-lifetime
+retention, identity exhaustion, monotonic source regression, concurrent non-regression, sub-tick
+ceiling, finite saturation, checked microsecond-conversion boundaries, long sleep chunking, exact
+failure remainder, and wait-forever-sentinel avoidance.
 
 ## Final verification
 
-All commands below were rerun after the final validation-order fix:
+All commands below were rerun after the independent review fixes:
 
 - focused synchronization/time/thread/TLS/error/ABI/MARTOS mapping/TSan/export set: 14/14;
 - fresh normal Release host configure/build/CTest: 32/32;
