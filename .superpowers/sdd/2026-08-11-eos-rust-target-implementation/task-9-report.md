@@ -13,9 +13,10 @@ host-test seam. MARTOS 14.0.39 has no public hostname resolver, so DNS and named
 fail honestly with `EAI_SYSTEM` and compatibility `ENOTSUP`; numeric resolution remains fully
 common and deterministic. No Task 10 or later work is included.
 
-The implementation commit containing this report is titled
-`runtime: add EOS networking services`. Its final hash is recorded in the Task 9 handoff because
-a commit cannot embed its own final content hash.
+The implementation commit is `ecda1aa984834655dadee47b2005cba70597a33f`
+(`runtime: add EOS networking services`). Independent exact-delta review found no Critical and
+five Important issues; every verified issue was reproduced, fixed with TDD, and reverified in
+the separate commits recorded below.
 
 ## TDD and debugging evidence
 
@@ -64,6 +65,29 @@ Further deterministic RED/GREEN rounds found and fixed:
 
 Both final audit fixes passed `socket`, `poll`, and their fully instrumented TSan variants 4/4
 before the complete verification matrices were refreshed.
+
+Independent review over `e18afb49..ecda1aa9` then found five Important issues. Separate
+RED/GREEN fix commits resolved them:
+
+- `95d448ec` distinguishes valid non-socket descriptors (`ENOTSOCK`) from stale/invalid
+  descriptors (`EBADF`) while retaining the descriptor lease through the kind check.
+- `4f516ea1` maps host `EACCES` and `EPERM` to stable `EACCES` rather than the unknown-error
+  `EIO` fallback.
+- `2e4d72d9` publishes the result of every connect attempt under the shared state lock, clearing
+  an obsolete pending error after a successful retry.
+- `c88447bc` gates MARTOS `TCP_CLOSED` hangup reporting on shared connection-started state.
+  Fresh/listening sockets are ineligible; attempted connects and accepted sockets are eligible,
+  and duplicates observe the same open-file-description state.
+- `bfde2832` pins all documented MARTOS negative network mappings, IPv6 native roundtrip and
+  scope policy, exact timeout `setsockopt` arguments, and socketset create/add/select/query/delete
+  success, fault, zero-entry, cleanup, and fail-fast paths. It also distinguishes a null
+  socketset allocation result (`ENOBUFS`) from the invalid sentinel (`EIO`).
+
+The last three TDD REDs were independently discriminating: the MARTOS contract executable
+exited 18 on the invalid-sentinel mismatch; the timeout adapter fixture failed strict compilation
+on the missing shared adapter; and the eligibility assertions failed link on the absent
+host-test seam. The corrected mapping, socket, poll, socket TSan, and poll TSan targets passed
+5/5 before the full post-review matrices.
 
 ## Stable ABI, layouts, constants, and exports
 
@@ -130,10 +154,12 @@ asynchronous connect. Options without an honest common/MARTOS implementation ret
 
 Transfers reject counts above `INT32_MAX` and invalid buffer/count combinations before
 descriptor or native access. Nonnegative partial progress outranks any later error. The host
-port captures native errno immediately and maps known networking failures; MARTOS maps its
+port captures native errno immediately and maps known networking failures, including native
+permission failures to stable `EACCES`; MARTOS maps its
 documented `EWOULDBLOCK`, `EINVAL`, `EADDRNOTAVAIL`, `EADDRINUSE`, `ENOBUFS`, `ENOPROTOOPT`, and
 `ECLOSED` results operation-wise. Receive closure is zero bytes, other closure is connection
 reset, connect would-block is in-progress, and unknown statuses conservatively become `EIO`.
+Successful connects clear any older compatibility pending error.
 
 ## Address, poll, and resolver contracts
 
@@ -152,6 +178,9 @@ prove close/reuse cannot retarget extraction. The MARTOS port creates a private 
 every call (including zero-entry calls), adds requested plus mandatory exception/interrupt bits,
 selects, queries each entry, and deletes the set on every path; cleanup failure after an
 irreversible operation is fail-fast. No readiness credit or socketset survives a call.
+`TCP_CLOSED` becomes hangup only for sockets that have started a connection; this eligibility is
+shared by duplicates and initialized for accepted sockets, so a fresh unconnected MARTOS TCP
+socket does not report a false hangup.
 
 IPv4 and IPv6 text parsing/formatting is strict common code, including leading/overflow IPv4
 rejection, compression, embedded IPv4, longest-zero canonicalization, unsupported-family errno,
@@ -170,10 +199,12 @@ native structure size (24), not status zero. Remote address uses its documented 
 Pointer sentinels distinguish no-socket from invalid-socket. MARTOS exposes no public DNS
 primitive.
 
-The shared MARTOS fake pins exact numeric constants, normalized/native byte order and fields,
-IPv6 scope rejection, negative result mapping, create/accept pointer sentinels, timeout option
-names/arguments, local/remote returns, priority/error/hangup bits, and create/add/select/query/
-delete socketset lifecycle including zero entries.
+The shared MARTOS fake pins exact numeric constants, IPv4 and IPv6 normalized/native byte order
+and fields, IPv6 scope rejection, all seven documented negative results plus generic/unknown
+fallbacks, create/accept and socketset pointer sentinels, the actual receive/send timeout adapter's
+socket/level/name/value/length arguments, local/remote returns, priority/error/hangup bits, and
+create/add/select/query/delete socketset lifecycle including zero entries, each failure stage,
+and cleanup fail-fast behavior.
 
 Host-only deterministic seams cover delayed allocation at every resolver/publication point,
 create/connect errors, exactly-once native close, partial send/receive, two-option timeout failure
@@ -182,14 +213,16 @@ cover descriptor exhaustion, accept publication rollback, duplicated shared flag
 descriptor-local close-on-exec, nonblocking enable/restore rollback, partial-count precedence,
 resolver partial allocation, and close/reuse.
 
-## Final verification before implementation commit
+## Final verification after independent-review fixes
 
-All commands below were rerun after the final scope and invalid-poll fixes:
+All commands below were freshly configured or rerun after `bfde2832`:
 
 - focused socket/poll/addrinfo/fd/pipe/ABI/MARTOS mapping/TSan/export suite: 15/15;
-- fresh normal Release host configure/build/CTest: 39/39;
-- strict Debug `-O0 -Wall -Wextra -Werror -pedantic` C/C++ build/CTest: 39/39;
-- strict Release `-O3 -Wall -Wextra -Werror -pedantic` C/C++ build/CTest: 39/39;
+- fresh normal Release host configure/build/CTest: 39/39 in 101.27 seconds;
+- fresh strict Debug `-O0 -Wall -Wextra -Werror -pedantic` C/C++
+  configure/build/CTest: 39/39 in 103.61 seconds;
+- fresh strict Release `-O3 -Wall -Wextra -Werror -pedantic` C/C++
+  configure/build/CTest: 39/39 in 30.35 seconds;
 - real MARTOS `BUILD_TESTING=OFF` Release build against
   `/home/dev/code/gpt-test/lib/martos-smp-14.0.39` with `-Wall -Wextra -Werror`: passed;
 - exact host and MARTOS export checks: 113/113;
@@ -202,8 +235,8 @@ All commands below were rerun after the final scope and invalid-poll fixes:
 - `git diff --check`: clean.
 
 The three networking TSan executables instrument both the compatibility library and executable.
-All passed without a race report. Socket-using host runs required only the scoped sandbox bypass
-described above.
+All passed in every matrix without a race report. Socket-using host runs required only the scoped
+sandbox bypass described above.
 
 ## Self-review and limitations
 
