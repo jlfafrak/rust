@@ -15,8 +15,9 @@ common and deterministic. No Task 10 or later work is included.
 
 The implementation commit is `ecda1aa984834655dadee47b2005cba70597a33f`
 (`runtime: add EOS networking services`). Independent exact-delta review found no Critical and
-five Important issues; every verified issue was reproduced, fixed with TDD, and reverified in
-the separate commits recorded below.
+five Important issues; re-review of those fixes found one additional Important duplicate-poll
+issue. Every verified issue was reproduced, fixed with TDD, and reverified in the separate
+commits recorded below.
 
 ## TDD and debugging evidence
 
@@ -82,12 +83,26 @@ RED/GREEN fix commits resolved them:
   scope policy, exact timeout `setsockopt` arguments, and socketset create/add/select/query/delete
   success, fault, zero-entry, cleanup, and fail-fast paths. It also distinguishes a null
   socketset allocation result (`ENOBUFS`) from the invalid sentinel (`EIO`).
+- `e791b054` groups repeated MARTOS native handles, ORs their native interests once, queries each
+  unique handle once, and projects readiness back through each public entry's own event mask.
+  Common code also masks read/write/priority by the entry request while continuing to report
+  error and hangup unconditionally.
 
 The last three TDD REDs were independently discriminating: the MARTOS contract executable
 exited 18 on the invalid-sentinel mismatch; the timeout adapter fixture failed strict compilation
 on the missing shared adapter; and the eligibility assertions failed link on the absent
 host-test seam. The corrected mapping, socket, poll, socket TSan, and poll TSan targets passed
 5/5 before the full post-review matrices.
+
+The duplicate-poll mapping fixture then failed independently with exit 25: two entries sharing
+native handle 4, requesting read and write separately, were added and queried twice and received
+unioned readiness. After the fix, add/query counts are 1/1, the native interest is the union,
+and observed events are exactly read for entry zero and write for entry one. A separate injected
+host-port result made common `poll_test` fail with
+`poll must mask normal readiness by each entry's request while preserving error and hangup`.
+After common projection was corrected, same-native split entries return ready count two with
+exact read/write results, while unrequested normal bits plus error/hangup return ready count one
+with exactly error/hangup. Behavioral poll/socket and both TSan targets passed 4/4.
 
 ## Stable ABI, layouts, constants, and exports
 
@@ -176,7 +191,9 @@ duplicates independently, and leases every valid socket through result extractio
 priority, error, and hangup are mapped. Host tests deterministically pause after native result to
 prove close/reuse cannot retarget extraction. The MARTOS port creates a private socketset for
 every call (including zero-entry calls), adds requested plus mandatory exception/interrupt bits,
-selects, queries each entry, and deletes the set on every path; cleanup failure after an
+merges repeated native handles and interests, selects, queries each unique handle once, projects
+read/write/priority through each public entry's request while preserving unconditional error and
+eligible hangup, and deletes the set on every path; cleanup failure after an
 irreversible operation is fail-fast. No readiness credit or socketset survives a call.
 `TCP_CLOSED` becomes hangup only for sockets that have started a connection; this eligibility is
 shared by duplicates and initialized for accepted sockets, so a fresh unconnected MARTOS TCP
@@ -203,8 +220,8 @@ The shared MARTOS fake pins exact numeric constants, IPv4 and IPv6 normalized/na
 and fields, IPv6 scope rejection, all seven documented negative results plus generic/unknown
 fallbacks, create/accept and socketset pointer sentinels, the actual receive/send timeout adapter's
 socket/level/name/value/length arguments, local/remote returns, priority/error/hangup bits, and
-create/add/select/query/delete socketset lifecycle including zero entries, each failure stage,
-and cleanup fail-fast behavior.
+create/add/select/query/delete socketset lifecycle including zero entries, repeated handles with
+different public interests, each failure stage, and cleanup fail-fast behavior.
 
 Host-only deterministic seams cover delayed allocation at every resolver/publication point,
 create/connect errors, exactly-once native close, partial send/receive, two-option timeout failure
@@ -218,11 +235,12 @@ resolver partial allocation, and close/reuse.
 All commands below were freshly configured or rerun after `bfde2832`:
 
 - focused socket/poll/addrinfo/fd/pipe/ABI/MARTOS mapping/TSan/export suite: 15/15;
-- fresh normal Release host configure/build/CTest: 39/39 in 101.27 seconds;
+- fresh normal Release host configure/build/CTest: 39/39; the final post-duplicate-poll refresh
+  completed in 30.27 seconds;
 - fresh strict Debug `-O0 -Wall -Wextra -Werror -pedantic` C/C++
-  configure/build/CTest: 39/39 in 103.61 seconds;
+  configure/build/CTest: 39/39; the final refresh completed in 109.25 seconds;
 - fresh strict Release `-O3 -Wall -Wextra -Werror -pedantic` C/C++
-  configure/build/CTest: 39/39 in 30.35 seconds;
+  configure/build/CTest: 39/39; the final refresh completed in 29.52 seconds;
 - real MARTOS `BUILD_TESTING=OFF` Release build against
   `/home/dev/code/gpt-test/lib/martos-smp-14.0.39` with `-Wall -Wextra -Werror`: passed;
 - exact host and MARTOS export checks: 113/113;
