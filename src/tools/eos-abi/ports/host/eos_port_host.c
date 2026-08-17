@@ -1639,6 +1639,9 @@ static int32_t eos_port_hostname(char *name, uint32_t capacity) {
 
 static int32_t eos_host_network_error(int error_number) {
     if (error_number == 0) return 0;
+    if (error_number == EACCES || error_number == EPERM) {
+        return EOS_ERRNO_ACCESS;
+    }
     if (error_number == EAGAIN || error_number == EWOULDBLOCK) {
         return EOS_ERRNO_WOULD_BLOCK;
     }
@@ -1682,6 +1685,12 @@ static int32_t eos_host_network_error(int error_number) {
     if (error_number == EPIPE) return EOS_ERRNO_PIPE;
     return EOS_ERRNO_IO;
 }
+
+#ifdef EOS_RUST_HOST_TEST
+int32_t eos_host_test_network_error(int32_t native_error) {
+    return eos_host_network_error(native_error);
+}
+#endif
 
 static int eos_host_socket_fd(eos_port_socket socket) {
     return (int)(socket - (eos_port_socket)1);

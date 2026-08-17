@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -26,6 +27,7 @@ void eos_host_test_fail_alloc_after(uint32_t successful_allocations,
                                     int32_t status);
 int32_t eos_socket_test_ipv6_output(uint32_t scope_id,
                                     eos_rust_sockaddr_in6 *destination);
+int32_t eos_host_test_network_error(int32_t native_error);
 }
 
 static_assert(sizeof(eos_rust_sockaddr) == 16);
@@ -71,6 +73,11 @@ static int test_validation_before_native_access() {
                    scoped.sin6_family == EOS_RUST_AF_INET6 &&
                    scoped.sin6_scope_id == UINT32_C(73),
                "normalized IPv6 output must preserve the scope identifier")) {
+        return 1;
+    }
+    if (expect(eos_host_test_network_error(EACCES) == 13 &&
+                   eos_host_test_network_error(EPERM) == 13,
+               "native socket permission failures must map to EACCES")) {
         return 1;
     }
     eos_host_test_fail_next_socket_create(49);
