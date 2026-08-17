@@ -42,6 +42,64 @@ typedef struct eos_rust_pthread_once {
     uint32_t words[2];
 } eos_rust_pthread_once_t;
 
+typedef uint32_t eos_rust_socklen_t;
+
+typedef struct eos_rust_in_addr {
+    uint32_t s_addr;
+} eos_rust_in_addr;
+
+typedef struct eos_rust_in6_addr {
+    uint8_t s6_addr[16];
+} eos_rust_in6_addr;
+
+typedef struct eos_rust_sockaddr {
+    uint16_t sa_family;
+    uint8_t sa_data[14];
+} eos_rust_sockaddr;
+
+typedef struct eos_rust_sockaddr_in {
+    uint16_t sin_family;
+    uint16_t sin_port;
+    eos_rust_in_addr sin_addr;
+    uint8_t sin_zero[8];
+} eos_rust_sockaddr_in;
+
+typedef struct eos_rust_sockaddr_in6 {
+    uint16_t sin6_family;
+    uint16_t sin6_port;
+    uint32_t sin6_flowinfo;
+    eos_rust_in6_addr sin6_addr;
+    uint32_t sin6_scope_id;
+} eos_rust_sockaddr_in6;
+
+typedef struct eos_rust_sockaddr_storage {
+    uint16_t ss_family;
+    uint8_t ss_data[26];
+    uint32_t ss_align;
+} eos_rust_sockaddr_storage;
+
+typedef struct eos_rust_timeval {
+    int64_t tv_sec;
+    int64_t tv_usec;
+} eos_rust_timeval;
+
+typedef struct eos_rust_pollfd {
+    int32_t fd;
+    int16_t events;
+    int16_t revents;
+} eos_rust_pollfd;
+
+typedef struct eos_rust_addrinfo {
+    int32_t ai_flags;
+    int32_t ai_family;
+    int32_t ai_socktype;
+    int32_t ai_protocol;
+    uint32_t ai_addrlen;
+    eos_rust_sockaddr *ai_addr;
+    char *ai_canonname;
+    struct eos_rust_addrinfo *ai_next;
+} eos_rust_addrinfo;
+
 #define EOS_RUST_PTHREAD_STACK_MIN UINT32_C(4096)
 #define EOS_RUST_PTHREAD_NAME_MAX UINT32_C(63)
 #define EOS_RUST_CLOCK_REALTIME INT32_C(0)
@@ -49,6 +107,71 @@ typedef struct eos_rust_pthread_once {
 #define EOS_RUST_PTHREAD_MUTEX_NORMAL INT32_C(0)
 #define EOS_RUST_PTHREAD_MUTEX_RECURSIVE INT32_C(1)
 #define EOS_RUST_PTHREAD_ONCE_INIT {{UINT32_C(0), UINT32_C(0)}}
+
+/* Permanent EOS socket ABI values; these are not native MARTOS constants. */
+#define EOS_RUST_AF_UNSPEC INT32_C(0)
+#define EOS_RUST_AF_INET INT32_C(2)
+#define EOS_RUST_AF_INET6 INT32_C(10)
+#define EOS_RUST_SOCK_STREAM INT32_C(1)
+#define EOS_RUST_SOCK_DGRAM INT32_C(2)
+#define EOS_RUST_IPPROTO_IP INT32_C(0)
+#define EOS_RUST_IPPROTO_TCP INT32_C(6)
+#define EOS_RUST_IPPROTO_UDP INT32_C(17)
+#define EOS_RUST_IPPROTO_IPV6 INT32_C(41)
+#define EOS_RUST_SHUT_RD INT32_C(0)
+#define EOS_RUST_SHUT_WR INT32_C(1)
+#define EOS_RUST_SHUT_RDWR INT32_C(2)
+#define EOS_RUST_MSG_OOB INT32_C(0x1)
+#define EOS_RUST_MSG_PEEK INT32_C(0x2)
+#define EOS_RUST_MSG_DONTROUTE INT32_C(0x4)
+#define EOS_RUST_MSG_DONTWAIT INT32_C(0x40)
+#define EOS_RUST_MSG_NOSIGNAL INT32_C(0x4000)
+
+#define EOS_RUST_SOL_SOCKET INT32_C(1)
+#define EOS_RUST_SO_REUSEADDR INT32_C(2)
+#define EOS_RUST_SO_ERROR INT32_C(4)
+#define EOS_RUST_SO_BROADCAST INT32_C(6)
+#define EOS_RUST_SO_SNDBUF INT32_C(7)
+#define EOS_RUST_SO_RCVBUF INT32_C(8)
+#define EOS_RUST_SO_KEEPALIVE INT32_C(9)
+#define EOS_RUST_SO_LINGER INT32_C(13)
+#define EOS_RUST_SO_RCVTIMEO INT32_C(20)
+#define EOS_RUST_SO_SNDTIMEO INT32_C(21)
+#define EOS_RUST_TCP_NODELAY INT32_C(1)
+#define EOS_RUST_IP_TTL INT32_C(2)
+#define EOS_RUST_IP_MULTICAST_TTL INT32_C(33)
+#define EOS_RUST_IP_MULTICAST_LOOP INT32_C(34)
+#define EOS_RUST_IP_ADD_MEMBERSHIP INT32_C(35)
+#define EOS_RUST_IP_DROP_MEMBERSHIP INT32_C(36)
+#define EOS_RUST_IPV6_MULTICAST_LOOP INT32_C(19)
+#define EOS_RUST_IPV6_ADD_MEMBERSHIP INT32_C(20)
+#define EOS_RUST_IPV6_DROP_MEMBERSHIP INT32_C(21)
+#define EOS_RUST_IPV6_V6ONLY INT32_C(26)
+
+#define EOS_RUST_POLLIN INT16_C(0x001)
+#define EOS_RUST_POLLPRI INT16_C(0x002)
+#define EOS_RUST_POLLOUT INT16_C(0x004)
+#define EOS_RUST_POLLERR INT16_C(0x008)
+#define EOS_RUST_POLLHUP INT16_C(0x010)
+#define EOS_RUST_POLLNVAL INT16_C(0x020)
+
+#define EOS_RUST_AI_PASSIVE INT32_C(0x001)
+#define EOS_RUST_AI_CANONNAME INT32_C(0x002)
+#define EOS_RUST_AI_NUMERICHOST INT32_C(0x004)
+#define EOS_RUST_AI_V4MAPPED INT32_C(0x008)
+#define EOS_RUST_AI_ALL INT32_C(0x010)
+#define EOS_RUST_AI_ADDRCONFIG INT32_C(0x020)
+#define EOS_RUST_AI_NUMERICSERV INT32_C(0x400)
+#define EOS_RUST_EAI_BADFLAGS INT32_C(-1)
+#define EOS_RUST_EAI_NONAME INT32_C(-2)
+#define EOS_RUST_EAI_AGAIN INT32_C(-3)
+#define EOS_RUST_EAI_FAIL INT32_C(-4)
+#define EOS_RUST_EAI_FAMILY INT32_C(-6)
+#define EOS_RUST_EAI_SOCKTYPE INT32_C(-7)
+#define EOS_RUST_EAI_SERVICE INT32_C(-8)
+#define EOS_RUST_EAI_MEMORY INT32_C(-10)
+#define EOS_RUST_EAI_SYSTEM INT32_C(-11)
+#define EOS_RUST_EAI_OVERFLOW INT32_C(-12)
 
 typedef struct eos_rust_stat {
     uint64_t st_dev;
@@ -391,6 +514,87 @@ EOS_RUST_EXPORT int32_t eos_rust_clock_gettime(
 EOS_RUST_EXPORT int32_t eos_rust_nanosleep(
     const eos_rust_timespec *requested,
     eos_rust_timespec *remaining);
+
+/*
+ * Socket byte counts and lengths are permanently 32-bit. Transfers reject a
+ * count above INT32_MAX before descriptor, buffer, or native access. Socket
+ * addresses contain network-byte-order ports and addresses and never expose
+ * a native host or MARTOS structure.
+ */
+EOS_RUST_EXPORT eos_rust_fd_t eos_rust_socket(int32_t domain,
+                                               int32_t type,
+                                               int32_t protocol);
+EOS_RUST_EXPORT int32_t eos_rust_bind(eos_rust_fd_t descriptor,
+                                      const eos_rust_sockaddr *address,
+                                      eos_rust_socklen_t address_length);
+EOS_RUST_EXPORT int32_t eos_rust_connect(eos_rust_fd_t descriptor,
+                                         const eos_rust_sockaddr *address,
+                                         eos_rust_socklen_t address_length);
+EOS_RUST_EXPORT int32_t eos_rust_listen(eos_rust_fd_t descriptor,
+                                        int32_t backlog);
+EOS_RUST_EXPORT eos_rust_fd_t eos_rust_accept(
+    eos_rust_fd_t descriptor,
+    eos_rust_sockaddr *address,
+    eos_rust_socklen_t *address_length);
+EOS_RUST_EXPORT int32_t eos_rust_send(eos_rust_fd_t descriptor,
+                                      const void *buffer,
+                                      uint32_t byte_count,
+                                      int32_t flags);
+EOS_RUST_EXPORT int32_t eos_rust_recv(eos_rust_fd_t descriptor,
+                                      void *buffer,
+                                      uint32_t byte_count,
+                                      int32_t flags);
+EOS_RUST_EXPORT int32_t eos_rust_sendto(
+    eos_rust_fd_t descriptor,
+    const void *buffer,
+    uint32_t byte_count,
+    int32_t flags,
+    const eos_rust_sockaddr *destination,
+    eos_rust_socklen_t destination_length);
+EOS_RUST_EXPORT int32_t eos_rust_recvfrom(
+    eos_rust_fd_t descriptor,
+    void *buffer,
+    uint32_t byte_count,
+    int32_t flags,
+    eos_rust_sockaddr *source,
+    eos_rust_socklen_t *source_length);
+EOS_RUST_EXPORT int32_t eos_rust_shutdown(eos_rust_fd_t descriptor,
+                                          int32_t how);
+EOS_RUST_EXPORT int32_t eos_rust_getsockname(
+    eos_rust_fd_t descriptor,
+    eos_rust_sockaddr *address,
+    eos_rust_socklen_t *address_length);
+EOS_RUST_EXPORT int32_t eos_rust_getpeername(
+    eos_rust_fd_t descriptor,
+    eos_rust_sockaddr *address,
+    eos_rust_socklen_t *address_length);
+EOS_RUST_EXPORT int32_t eos_rust_setsockopt(eos_rust_fd_t descriptor,
+                                            int32_t level,
+                                            int32_t option_name,
+                                            const void *option_value,
+                                            eos_rust_socklen_t option_length);
+EOS_RUST_EXPORT int32_t eos_rust_getsockopt(eos_rust_fd_t descriptor,
+                                            int32_t level,
+                                            int32_t option_name,
+                                            void *option_value,
+                                            eos_rust_socklen_t *option_length);
+EOS_RUST_EXPORT int32_t eos_rust_poll(eos_rust_pollfd *descriptors,
+                                      uint32_t descriptor_count,
+                                      int32_t timeout_milliseconds);
+EOS_RUST_EXPORT int32_t eos_rust_inet_pton(int32_t family,
+                                           const char *source,
+                                           void *destination);
+EOS_RUST_EXPORT const char *eos_rust_inet_ntop(int32_t family,
+                                               const void *source,
+                                               char *destination,
+                                               eos_rust_socklen_t capacity);
+EOS_RUST_EXPORT int32_t eos_rust_getaddrinfo(
+    const char *node,
+    const char *service,
+    const eos_rust_addrinfo *hints,
+    eos_rust_addrinfo **result);
+EOS_RUST_EXPORT void eos_rust_freeaddrinfo(eos_rust_addrinfo *result);
+EOS_RUST_EXPORT const char *eos_rust_gai_strerror(int32_t error_code);
 
 /*
  * Returned environment strings and vectors are immutable snapshots owned by

@@ -35,6 +35,10 @@ int32_t eos_rust_read(eos_rust_fd_t descriptor, void *buffer,
                            (eos_pipe_endpoint *)reference.native.pointer,
                            buffer, byte_count);
         break;
+    case EOS_FD_KIND_SOCKET:
+        result = eos_socket_receive_held(
+            (eos_socket *)reference.native.pointer, buffer, byte_count, 0);
+        break;
     case EOS_FD_KIND_CONSOLE: {
         uint32_t completed = 0;
         if (reference.native.word != UINT32_C(0)) {
@@ -82,6 +86,10 @@ int32_t eos_rust_write(eos_rust_fd_t descriptor, const void *buffer,
                      : eos_pipe_write(
                            (eos_pipe_endpoint *)reference.native.pointer,
                            buffer, byte_count);
+        break;
+    case EOS_FD_KIND_SOCKET:
+        result = eos_socket_send_held(
+            (eos_socket *)reference.native.pointer, buffer, byte_count, 0);
         break;
     case EOS_FD_KIND_CONSOLE: {
         uint32_t completed = 0;
@@ -212,6 +220,9 @@ static int32_t eos_stdio_status_flags(eos_fd_reference *reference,
         sync = ((eos_pipe_endpoint *)reference->native.pointer)->pipe->sync;
         allowed = EOS_RUST_O_NONBLOCK;
         break;
+    case EOS_FD_KIND_SOCKET:
+        return eos_socket_status_flags(
+            (eos_socket *)reference->native.pointer, command, argument);
     case EOS_FD_KIND_CONSOLE:
         if (command == EOS_RUST_F_GETFL) {
             return reference->native.word == UINT32_C(0)

@@ -63,6 +63,33 @@ typedef struct eos_port_result {
 typedef uintptr_t eos_port_sync;
 typedef uintptr_t eos_port_mutex;
 typedef uintptr_t eos_port_semaphore;
+typedef uintptr_t eos_port_socket;
+
+#define EOS_PORT_SOCKET_INVALID ((eos_port_socket)UINTPTR_MAX)
+#define EOS_PORT_SOCKET_EVENT_READ UINT32_C(0x01)
+#define EOS_PORT_SOCKET_EVENT_WRITE UINT32_C(0x02)
+#define EOS_PORT_SOCKET_EVENT_ERROR UINT32_C(0x04)
+#define EOS_PORT_SOCKET_EVENT_HANGUP UINT32_C(0x08)
+#define EOS_PORT_SOCKET_EVENT_PRIORITY UINT32_C(0x10)
+#define EOS_PORT_SOCKET_POLL_CAPACITY UINT32_C(64)
+
+typedef struct eos_port_socket_address {
+    uint16_t family;
+    uint16_t port;
+    uint32_t flowinfo;
+    uint8_t address[16];
+    uint32_t scope_id;
+} eos_port_socket_address;
+
+typedef struct eos_port_socket_create_result {
+    eos_port_socket socket;
+    int32_t error_number;
+} eos_port_socket_create_result;
+
+typedef struct eos_port_socket_io_result {
+    int32_t count;
+    int32_t error_number;
+} eos_port_socket_io_result;
 typedef void (*eos_port_thread_start)(void *argument);
 
 /* Implemented with internal linkage by the one C source selected by CMake. */
@@ -144,5 +171,62 @@ static int32_t eos_port_console_write(uintptr_t stream, const void *buffer,
                                       uint32_t byte_count,
                                       uint32_t *completed);
 static int32_t eos_port_hostname(char *name, uint32_t capacity);
+static eos_port_socket_create_result eos_port_socket_create(int32_t domain,
+                                                            int32_t type,
+                                                            int32_t protocol);
+static int32_t eos_port_socket_close(eos_port_socket socket);
+static int32_t eos_port_socket_bind(eos_port_socket socket,
+                                    const eos_port_socket_address *address);
+static int32_t eos_port_socket_connect(eos_port_socket socket,
+                                       const eos_port_socket_address *address);
+static int32_t eos_port_socket_listen(eos_port_socket socket,
+                                      int32_t backlog);
+static eos_port_socket_create_result eos_port_socket_accept(
+    eos_port_socket socket,
+    eos_port_socket_address *address);
+static eos_port_socket_io_result eos_port_socket_send(
+    eos_port_socket socket,
+    const void *buffer,
+    uint32_t byte_count,
+    int32_t flags);
+static eos_port_socket_io_result eos_port_socket_receive(
+    eos_port_socket socket,
+    void *buffer,
+    uint32_t byte_count,
+    int32_t flags);
+static eos_port_socket_io_result eos_port_socket_send_to(
+    eos_port_socket socket,
+    const void *buffer,
+    uint32_t byte_count,
+    int32_t flags,
+    const eos_port_socket_address *destination);
+static eos_port_socket_io_result eos_port_socket_receive_from(
+    eos_port_socket socket,
+    void *buffer,
+    uint32_t byte_count,
+    int32_t flags,
+    eos_port_socket_address *source);
+static int32_t eos_port_socket_shutdown(eos_port_socket socket, int32_t how);
+static int32_t eos_port_socket_local_address(
+    eos_port_socket socket,
+    eos_port_socket_address *address);
+static int32_t eos_port_socket_remote_address(
+    eos_port_socket socket,
+    eos_port_socket_address *address);
+static int32_t eos_port_socket_set_timeout(eos_port_socket socket,
+                                           uint32_t receive,
+                                           uint32_t timeout_ticks);
+static int32_t eos_port_socket_set_nonblocking(eos_port_socket socket,
+                                               uint32_t enabled);
+static int32_t eos_port_socket_set_integer_option(eos_port_socket socket,
+                                                  int32_t option_name,
+                                                  int32_t value);
+static int32_t eos_port_socket_connection_error(eos_port_socket socket,
+                                                int32_t *error_number);
+static int32_t eos_port_socket_poll(const eos_port_socket *sockets,
+                                    const uint32_t *requested,
+                                    uint32_t *observed,
+                                    uint32_t socket_count,
+                                    uint32_t timeout_ticks);
 
 #endif

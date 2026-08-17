@@ -241,6 +241,21 @@ if(BUILD_TESTING)
             COMMAND ${EOS_RUST_SYNC_TIME_TEST}_test)
     endforeach()
 
+    foreach(EOS_RUST_NETWORK_TEST socket poll addrinfo)
+        add_executable(${EOS_RUST_NETWORK_TEST}_test
+            tests/${EOS_RUST_NETWORK_TEST}_test.cpp)
+        set_target_properties(${EOS_RUST_NETWORK_TEST}_test PROPERTIES
+            CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+        target_compile_definitions(${EOS_RUST_NETWORK_TEST}_test PRIVATE
+            EOS_RUST_HOST_TEST=1)
+        target_include_directories(${EOS_RUST_NETWORK_TEST}_test PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src")
+        target_link_libraries(${EOS_RUST_NETWORK_TEST}_test PRIVATE
+            eos_rust_abi_host_test Threads::Threads)
+        add_test(NAME ${EOS_RUST_NETWORK_TEST}
+            COMMAND ${EOS_RUST_NETWORK_TEST}_test)
+    endforeach()
+
     foreach(EOS_RUST_MARTOS_FS_CASE rmdir trunc rename)
         add_executable(martos_fs_${EOS_RUST_MARTOS_FS_CASE}_contract_test
             tests/martos_fs_contract_test.c)
@@ -273,6 +288,16 @@ if(BUILD_TESTING)
     target_include_directories(martos_sync_contract_test PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/ports/martos_14_0_39")
     add_test(NAME martos_sync_contract COMMAND martos_sync_contract_test)
+
+    add_executable(martos_network_contract_test
+        tests/martos_network_contract_test.c)
+    set_target_properties(martos_network_contract_test PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO)
+    target_include_directories(martos_network_contract_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/ports/martos_14_0_39")
+    add_test(NAME martos_network_contract COMMAND martos_network_contract_test)
 
     set(CMAKE_REQUIRED_FLAGS "-fsanitize=thread")
     set(CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=thread")
@@ -375,6 +400,25 @@ if(BUILD_TESTING)
         target_link_libraries(sync_tsan PRIVATE
             eos_rust_abi_host_tsan Threads::Threads)
         add_test(NAME sync_tsan COMMAND sync_tsan)
+
+        foreach(EOS_RUST_NETWORK_RACE socket poll addrinfo)
+            add_executable(${EOS_RUST_NETWORK_RACE}_tsan
+                tests/${EOS_RUST_NETWORK_RACE}_test.cpp)
+            set_target_properties(${EOS_RUST_NETWORK_RACE}_tsan PROPERTIES
+                CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+            target_compile_definitions(${EOS_RUST_NETWORK_RACE}_tsan PRIVATE
+                EOS_RUST_HOST_TEST=1 EOS_RUST_TSAN_TEST=1)
+            target_include_directories(${EOS_RUST_NETWORK_RACE}_tsan PRIVATE
+                "${CMAKE_CURRENT_SOURCE_DIR}/src")
+            target_compile_options(${EOS_RUST_NETWORK_RACE}_tsan PRIVATE
+                -fsanitize=thread)
+            target_link_options(${EOS_RUST_NETWORK_RACE}_tsan PRIVATE
+                -fsanitize=thread)
+            target_link_libraries(${EOS_RUST_NETWORK_RACE}_tsan PRIVATE
+                eos_rust_abi_host_tsan Threads::Threads)
+            add_test(NAME ${EOS_RUST_NETWORK_RACE}_tsan
+                COMMAND ${EOS_RUST_NETWORK_RACE}_tsan)
+        endforeach()
     else()
         message(STATUS
             "ThreadSanitizer compile/runtime probe failed; fd_race remains enabled without TSan")

@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <stdint.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -11,7 +12,16 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <netinet/in.h>
+#include <poll.h>
 #include <sched.h>
+
+/* glibc exposes this as a macro; do not let it rewrite the stable ABI field. */
+#ifdef s6_addr
+#undef s6_addr
+#endif
 
 static pthread_key_t eos_host_tls_slot_keys[8];
 static pthread_once_t eos_host_tls_once = PTHREAD_ONCE_INIT;
@@ -108,6 +118,25 @@ static uint32_t eos_host_time_delay_usec_values[EOS_HOST_TIME_DELAY_CAPACITY];
 static uint32_t eos_host_time_delay_usec_count;
 static uint32_t eos_host_time_delay_successes_before_failure;
 static int32_t eos_host_time_delayed_failure;
+static uint32_t eos_host_alloc_successes_before_failure;
+static int32_t eos_host_delayed_alloc_status;
+static int32_t eos_host_next_socket_create_error;
+static int32_t eos_host_next_socket_connect_error;
+static int32_t eos_host_next_socket_close_error;
+static _Atomic uint32_t eos_host_socket_close_count;
+static uint32_t eos_host_socket_partial_send_bytes;
+static int32_t eos_host_socket_partial_send_error;
+static uint32_t eos_host_socket_partial_receive_bytes;
+static int32_t eos_host_socket_partial_receive_error;
+static uint32_t eos_host_timeout_successes_before_failure;
+static int32_t eos_host_delayed_timeout_error;
+#define EOS_HOST_TIMEOUT_LOG_CAPACITY UINT32_C(16)
+static uint32_t eos_host_timeout_log_count;
+static uint32_t eos_host_timeout_log_receive[EOS_HOST_TIMEOUT_LOG_CAPACITY];
+static uint32_t eos_host_timeout_log_ticks[EOS_HOST_TIMEOUT_LOG_CAPACITY];
+static _Atomic uint32_t eos_host_poll_pause;
+static _Atomic uint32_t eos_host_poll_entered;
+static _Atomic uint32_t eos_host_poll_release;
 
 void eos_host_test_reset(void) {
     eos_host_next_alloc_status = 0;
@@ -170,6 +199,22 @@ void eos_host_test_reset(void) {
     atomic_store(&eos_host_public_sem_take_failure_release, UINT32_C(1));
     eos_host_next_public_sem_give_status = 0;
     eos_host_next_public_sem_delete_status = 0;
+    eos_host_alloc_successes_before_failure = UINT32_MAX;
+    eos_host_delayed_alloc_status = 0;
+    eos_host_next_socket_create_error = 0;
+    eos_host_next_socket_connect_error = 0;
+    eos_host_next_socket_close_error = 0;
+    atomic_store(&eos_host_socket_close_count, 0);
+    eos_host_socket_partial_send_bytes = UINT32_MAX;
+    eos_host_socket_partial_send_error = 0;
+    eos_host_socket_partial_receive_bytes = UINT32_MAX;
+    eos_host_socket_partial_receive_error = 0;
+    eos_host_timeout_successes_before_failure = UINT32_MAX;
+    eos_host_delayed_timeout_error = 0;
+    eos_host_timeout_log_count = 0;
+    atomic_store(&eos_host_poll_pause, 0);
+    atomic_store(&eos_host_poll_entered, 0);
+    atomic_store(&eos_host_poll_release, 1);
     (void)strcpy(eos_host_hostname, "eos-host");
     (void)pthread_mutex_unlock(&eos_host_console_guard);
     (void)pthread_mutex_lock(&eos_host_closedir_guard);
@@ -180,6 +225,11 @@ void eos_host_test_reset(void) {
     (void)pthread_mutex_unlock(&eos_host_closedir_guard);
 }
 void eos_host_test_fail_next_alloc(int32_t status) { eos_host_next_alloc_status = status; }
+void eos_host_test_fail_alloc_after(uint32_t successful_allocations,
+                                    int32_t status) {
+    eos_host_alloc_successes_before_failure = successful_allocations;
+    eos_host_delayed_alloc_status = status;
+}
 void eos_host_test_fail_next_aligned_alloc(int32_t status) { eos_host_next_aligned_status = status; }
 void eos_host_test_fail_next_realloc(int32_t status) { eos_host_next_realloc_status = status; }
 void eos_host_test_fail_next_lock(int32_t status) { eos_host_next_lock_status = status; }
@@ -314,6 +364,55 @@ uint32_t eos_host_test_last_thread_priority(void) {
 }
 uint32_t eos_host_test_native_thread_delete_count(void) {
     return atomic_load(&eos_host_native_thread_delete_count);
+}
+void eos_host_test_fail_next_socket_create(int32_t error_number) {
+    eos_host_next_socket_create_error = error_number;
+}
+void eos_host_test_fail_next_socket_connect(int32_t error_number) {
+    eos_host_next_socket_connect_error = error_number;
+}
+void eos_host_test_fail_next_socket_close(int32_t error_number) {
+    eos_host_next_socket_close_error = error_number;
+}
+uint32_t eos_host_test_socket_close_count(void) {
+    return atomic_load(&eos_host_socket_close_count);
+}
+void eos_host_test_socket_partial_send(uint32_t bytes, int32_t error_number) {
+    eos_host_socket_partial_send_bytes = bytes;
+    eos_host_socket_partial_send_error = error_number;
+}
+void eos_host_test_socket_partial_receive(uint32_t bytes,
+                                          int32_t error_number) {
+    eos_host_socket_partial_receive_bytes = bytes;
+    eos_host_socket_partial_receive_error = error_number;
+}
+void eos_host_test_fail_socket_timeout_after(uint32_t successful_updates,
+                                             int32_t error_number) {
+    eos_host_timeout_successes_before_failure = successful_updates;
+    eos_host_delayed_timeout_error = error_number;
+}
+uint32_t eos_host_test_socket_timeout_log_count(void) {
+    return eos_host_timeout_log_count;
+}
+uint32_t eos_host_test_socket_timeout_log_receive(uint32_t index) {
+    return index < eos_host_timeout_log_count
+               ? eos_host_timeout_log_receive[index] : UINT32_MAX;
+}
+uint32_t eos_host_test_socket_timeout_log_ticks(uint32_t index) {
+    return index < eos_host_timeout_log_count
+               ? eos_host_timeout_log_ticks[index] : UINT32_MAX;
+}
+void eos_host_test_pause_socket_poll(int enabled) {
+    atomic_store(&eos_host_poll_entered, 0);
+    atomic_store(&eos_host_poll_release, enabled ? 0U : 1U);
+    atomic_store(&eos_host_poll_pause, enabled ? 1U : 0U);
+}
+uint32_t eos_host_test_socket_poll_entered(void) {
+    return atomic_load(&eos_host_poll_entered);
+}
+void eos_host_test_resume_socket_poll(void) {
+    atomic_store(&eos_host_poll_release, 1);
+    atomic_store(&eos_host_poll_pause, 0);
 }
 void eos_host_test_console_input(const char *text) {
     size_t length = strlen(text);
@@ -513,6 +612,16 @@ static int32_t eos_port_memory_alloc(uint32_t byte_count, void **memory) {
         eos_host_next_alloc_status = 0;
         *memory = NULL;
         return status;
+    }
+    if (eos_host_delayed_alloc_status != 0) {
+        if (eos_host_alloc_successes_before_failure == 0) {
+            int32_t status = eos_host_delayed_alloc_status;
+            eos_host_delayed_alloc_status = 0;
+            eos_host_alloc_successes_before_failure = UINT32_MAX;
+            *memory = NULL;
+            return status;
+        }
+        --eos_host_alloc_successes_before_failure;
     }
 #endif
     void *allocated = malloc((size_t)byte_count);
@@ -1525,6 +1634,473 @@ static int32_t eos_port_hostname(char *name, uint32_t capacity) {
     }
     (void)memcpy(name, eos_host_hostname, length + 1U);
     (void)pthread_mutex_unlock(&eos_host_console_guard);
+    return 0;
+}
+
+static int32_t eos_host_network_error(int error_number) {
+    if (error_number == 0) return 0;
+    if (error_number == EAGAIN || error_number == EWOULDBLOCK) {
+        return EOS_ERRNO_WOULD_BLOCK;
+    }
+    if (error_number == EINPROGRESS) return EOS_ERRNO_IN_PROGRESS;
+    if (error_number == EALREADY) return EOS_ERRNO_ALREADY;
+    if (error_number == EBADF) return EOS_ERRNO_BAD_DESCRIPTOR;
+    if (error_number == ENOTSOCK) return EOS_ERRNO_NOT_SOCKET;
+    if (error_number == EDESTADDRREQ) return EOS_ERRNO_DESTINATION_REQUIRED;
+    if (error_number == EMSGSIZE) return EOS_ERRNO_MESSAGE_SIZE;
+    if (error_number == EPROTOTYPE) return EOS_ERRNO_PROTOCOL_TYPE;
+    if (error_number == ENOPROTOOPT) return EOS_ERRNO_NO_PROTOCOL_OPTION;
+    if (error_number == EPROTONOSUPPORT) {
+        return EOS_ERRNO_PROTOCOL_NOT_SUPPORTED;
+    }
+    if (error_number == EAFNOSUPPORT) {
+        return EOS_ERRNO_ADDRESS_FAMILY_NOT_SUPPORTED;
+    }
+    if (error_number == EADDRINUSE) return EOS_ERRNO_ADDRESS_IN_USE;
+    if (error_number == EADDRNOTAVAIL) return EOS_ERRNO_ADDRESS_NOT_AVAILABLE;
+    if (error_number == ENETDOWN) return EOS_ERRNO_NETWORK_DOWN;
+    if (error_number == ENETUNREACH) return EOS_ERRNO_NETWORK_UNREACHABLE;
+    if (error_number == ENETRESET) return EOS_ERRNO_NETWORK_RESET;
+    if (error_number == ECONNABORTED) return EOS_ERRNO_CONNECTION_ABORTED;
+    if (error_number == ECONNRESET) return EOS_ERRNO_CONNECTION_RESET;
+    if (error_number == ENOBUFS) return EOS_ERRNO_NO_BUFFERS;
+    if (error_number == EISCONN) return EOS_ERRNO_IS_CONNECTED;
+    if (error_number == ENOTCONN) return EOS_ERRNO_NOT_CONNECTED;
+#ifdef ESHUTDOWN
+    if (error_number == ESHUTDOWN) return EOS_ERRNO_SHUTDOWN;
+#endif
+    if (error_number == ETIMEDOUT) return EOS_ERRNO_TIMED_OUT;
+    if (error_number == ECONNREFUSED) return EOS_ERRNO_CONNECTION_REFUSED;
+#ifdef EHOSTDOWN
+    if (error_number == EHOSTDOWN) return EOS_ERRNO_HOST_DOWN;
+#endif
+    if (error_number == EHOSTUNREACH) return EOS_ERRNO_HOST_UNREACHABLE;
+    if (error_number == EINVAL) return EOS_ERRNO_INVALID;
+    if (error_number == ENOMEM) return EOS_ERRNO_NO_MEMORY;
+    if (error_number == EFAULT) return EOS_ERRNO_FAULT;
+    if (error_number == EINTR) return EOS_ERRNO_INTERRUPTED;
+    if (error_number == EPIPE) return EOS_ERRNO_PIPE;
+    return EOS_ERRNO_IO;
+}
+
+static int eos_host_socket_fd(eos_port_socket socket) {
+    return (int)(socket - (eos_port_socket)1);
+}
+
+static eos_port_socket eos_host_socket_value(int descriptor) {
+    return (eos_port_socket)(uint32_t)descriptor + (eos_port_socket)1;
+}
+
+static int32_t eos_host_address_to_native(
+    const eos_port_socket_address *source,
+    struct sockaddr_storage *destination,
+    socklen_t *length) {
+    (void)memset(destination, 0, sizeof(*destination));
+    if (source->family == EOS_RUST_AF_INET) {
+        struct sockaddr_in *value = (struct sockaddr_in *)destination;
+        value->sin_family = AF_INET;
+        value->sin_port = source->port;
+        (void)memcpy(&value->sin_addr, source->address, 4);
+        *length = (socklen_t)sizeof(*value);
+        return 0;
+    }
+    if (source->family == EOS_RUST_AF_INET6) {
+        struct sockaddr_in6 *value = (struct sockaddr_in6 *)destination;
+        value->sin6_family = AF_INET6;
+        value->sin6_port = source->port;
+        value->sin6_flowinfo = source->flowinfo;
+        value->sin6_scope_id = source->scope_id;
+        (void)memcpy(&value->sin6_addr, source->address, 16);
+        *length = (socklen_t)sizeof(*value);
+        return 0;
+    }
+    return EOS_ERRNO_ADDRESS_FAMILY_NOT_SUPPORTED;
+}
+
+static int32_t eos_host_address_from_native(
+    const struct sockaddr *source,
+    socklen_t length,
+    eos_port_socket_address *destination) {
+    (void)memset(destination, 0, sizeof(*destination));
+    if (source->sa_family == AF_INET &&
+        length >= (socklen_t)sizeof(struct sockaddr_in)) {
+        const struct sockaddr_in *value = (const struct sockaddr_in *)source;
+        destination->family = EOS_RUST_AF_INET;
+        destination->port = value->sin_port;
+        (void)memcpy(destination->address, &value->sin_addr, 4);
+        return 0;
+    }
+    if (source->sa_family == AF_INET6 &&
+        length >= (socklen_t)sizeof(struct sockaddr_in6)) {
+        const struct sockaddr_in6 *value = (const struct sockaddr_in6 *)source;
+        destination->family = EOS_RUST_AF_INET6;
+        destination->port = value->sin6_port;
+        destination->flowinfo = value->sin6_flowinfo;
+        destination->scope_id = value->sin6_scope_id;
+        (void)memcpy(destination->address, &value->sin6_addr, 16);
+        return 0;
+    }
+    return EOS_ERRNO_ADDRESS_FAMILY_NOT_SUPPORTED;
+}
+
+static int32_t eos_host_message_flags(int32_t flags) {
+    int32_t native_flags = 0;
+    if ((flags & EOS_RUST_MSG_OOB) != 0) native_flags |= MSG_OOB;
+    if ((flags & EOS_RUST_MSG_PEEK) != 0) native_flags |= MSG_PEEK;
+    if ((flags & EOS_RUST_MSG_DONTROUTE) != 0) native_flags |= MSG_DONTROUTE;
+    if ((flags & EOS_RUST_MSG_DONTWAIT) != 0) native_flags |= MSG_DONTWAIT;
+#ifdef MSG_NOSIGNAL
+    if ((flags & EOS_RUST_MSG_NOSIGNAL) != 0) native_flags |= MSG_NOSIGNAL;
+#endif
+    return native_flags;
+}
+
+static eos_port_socket_create_result eos_port_socket_create(int32_t domain,
+                                                            int32_t type,
+                                                            int32_t protocol) {
+    eos_port_socket_create_result result = {EOS_PORT_SOCKET_INVALID, 0};
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_next_socket_create_error != 0) {
+        result.error_number = eos_host_next_socket_create_error;
+        eos_host_next_socket_create_error = 0;
+        return result;
+    }
+#endif
+    int descriptor = socket(domain == EOS_RUST_AF_INET ? AF_INET : AF_INET6,
+                            type == EOS_RUST_SOCK_STREAM ? SOCK_STREAM
+                                                         : SOCK_DGRAM,
+                            protocol);
+    if (descriptor < 0) result.error_number = eos_host_network_error(errno);
+    else result.socket = eos_host_socket_value(descriptor);
+    return result;
+}
+
+static int32_t eos_port_socket_close(eos_port_socket socket_value) {
+    int result;
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_next_socket_close_error != 0) {
+        int32_t error = eos_host_next_socket_close_error;
+        eos_host_next_socket_close_error = 0;
+        return error;
+    }
+#endif
+    result = close(eos_host_socket_fd(socket_value));
+#ifdef EOS_RUST_HOST_TEST
+    if (result == 0) (void)atomic_fetch_add(&eos_host_socket_close_count, 1);
+#endif
+    return result == 0 ? 0 : eos_host_network_error(errno);
+}
+
+static int32_t eos_port_socket_bind(eos_port_socket socket_value,
+                                    const eos_port_socket_address *address) {
+    struct sockaddr_storage native;
+    socklen_t length;
+    int32_t error = eos_host_address_to_native(address, &native, &length);
+    if (error != 0) return error;
+    return bind(eos_host_socket_fd(socket_value),
+                (const struct sockaddr *)&native, length) == 0
+               ? 0 : eos_host_network_error(errno);
+}
+
+static int32_t eos_port_socket_connect(eos_port_socket socket_value,
+                                       const eos_port_socket_address *address) {
+    struct sockaddr_storage native;
+    socklen_t length;
+    int32_t error = eos_host_address_to_native(address, &native, &length);
+    if (error != 0) return error;
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_next_socket_connect_error != 0) {
+        error = eos_host_next_socket_connect_error;
+        eos_host_next_socket_connect_error = 0;
+        return error;
+    }
+#endif
+    return connect(eos_host_socket_fd(socket_value),
+                   (const struct sockaddr *)&native, length) == 0
+               ? 0 : eos_host_network_error(errno);
+}
+
+static int32_t eos_port_socket_listen(eos_port_socket socket_value,
+                                      int32_t backlog) {
+    return listen(eos_host_socket_fd(socket_value), backlog) == 0
+               ? 0 : eos_host_network_error(errno);
+}
+
+static eos_port_socket_create_result eos_port_socket_accept(
+    eos_port_socket socket_value,
+    eos_port_socket_address *address) {
+    eos_port_socket_create_result result = {EOS_PORT_SOCKET_INVALID, 0};
+    struct sockaddr_storage native;
+    socklen_t length = (socklen_t)sizeof(native);
+    int descriptor = accept(eos_host_socket_fd(socket_value),
+                            (struct sockaddr *)&native, &length);
+    if (descriptor < 0) {
+        result.error_number = eos_host_network_error(errno);
+        return result;
+    }
+    result.error_number = eos_host_address_from_native(
+        (const struct sockaddr *)&native, length, address);
+    if (result.error_number != 0) {
+        if (eos_port_socket_close(eos_host_socket_value(descriptor)) != 0) {
+            eos_rust_abort();
+        }
+        return result;
+    }
+    result.socket = eos_host_socket_value(descriptor);
+    return result;
+}
+
+static eos_port_socket_io_result eos_host_io_result(ssize_t count) {
+    eos_port_socket_io_result result;
+    if (count < 0) {
+        result.count = -1;
+        result.error_number = eos_host_network_error(errno);
+    } else {
+        result.count = (int32_t)count;
+        result.error_number = 0;
+    }
+    return result;
+}
+
+static eos_port_socket_io_result eos_port_socket_send(
+    eos_port_socket socket_value, const void *buffer, uint32_t byte_count,
+    int32_t flags) {
+    uint32_t requested = byte_count;
+#ifdef EOS_RUST_HOST_TEST
+    int32_t trailing = eos_host_socket_partial_send_error;
+    if (eos_host_socket_partial_send_bytes != UINT32_MAX) {
+        if (requested > eos_host_socket_partial_send_bytes) {
+            requested = eos_host_socket_partial_send_bytes;
+        }
+        eos_host_socket_partial_send_bytes = UINT32_MAX;
+        eos_host_socket_partial_send_error = 0;
+        if (requested == 0 && trailing != 0) {
+            return (eos_port_socket_io_result){-1, trailing};
+        }
+    }
+#endif
+    return eos_host_io_result(send(eos_host_socket_fd(socket_value), buffer,
+                                   requested, eos_host_message_flags(flags)));
+}
+
+static eos_port_socket_io_result eos_port_socket_receive(
+    eos_port_socket socket_value, void *buffer, uint32_t byte_count,
+    int32_t flags) {
+    uint32_t requested = byte_count;
+#ifdef EOS_RUST_HOST_TEST
+    int32_t trailing = eos_host_socket_partial_receive_error;
+    if (eos_host_socket_partial_receive_bytes != UINT32_MAX) {
+        if (requested > eos_host_socket_partial_receive_bytes) {
+            requested = eos_host_socket_partial_receive_bytes;
+        }
+        eos_host_socket_partial_receive_bytes = UINT32_MAX;
+        eos_host_socket_partial_receive_error = 0;
+        if (requested == 0 && trailing != 0) {
+            return (eos_port_socket_io_result){-1, trailing};
+        }
+    }
+#endif
+    return eos_host_io_result(recv(eos_host_socket_fd(socket_value), buffer,
+                                   requested, eos_host_message_flags(flags)));
+}
+
+static eos_port_socket_io_result eos_port_socket_send_to(
+    eos_port_socket socket_value, const void *buffer, uint32_t byte_count,
+    int32_t flags, const eos_port_socket_address *destination) {
+    struct sockaddr_storage native;
+    socklen_t length;
+    int32_t error = eos_host_address_to_native(destination, &native, &length);
+    if (error != 0) return (eos_port_socket_io_result){-1, error};
+    return eos_host_io_result(sendto(eos_host_socket_fd(socket_value), buffer,
+                                     byte_count, eos_host_message_flags(flags),
+                                     (const struct sockaddr *)&native, length));
+}
+
+static eos_port_socket_io_result eos_port_socket_receive_from(
+    eos_port_socket socket_value, void *buffer, uint32_t byte_count,
+    int32_t flags, eos_port_socket_address *source) {
+    struct sockaddr_storage native;
+    socklen_t length = (socklen_t)sizeof(native);
+    eos_port_socket_io_result result = eos_host_io_result(
+        recvfrom(eos_host_socket_fd(socket_value), buffer, byte_count,
+                 eos_host_message_flags(flags),
+                 source == NULL ? NULL : (struct sockaddr *)&native,
+                 source == NULL ? NULL : &length));
+    if (result.count >= 0 && source != NULL) {
+        int32_t error = eos_host_address_from_native(
+            (const struct sockaddr *)&native, length, source);
+        if (error != 0) {
+            if (result.count != 0) {
+                return (eos_port_socket_io_result){-1, error};
+            }
+            (void)memset(source, 0, sizeof(*source));
+        }
+    }
+    return result;
+}
+
+static int32_t eos_port_socket_shutdown(eos_port_socket socket_value,
+                                        int32_t how) {
+    return shutdown(eos_host_socket_fd(socket_value), how) == 0
+               ? 0 : eos_host_network_error(errno);
+}
+
+static int32_t eos_host_socket_address_query(eos_port_socket socket_value,
+                                             eos_port_socket_address *address,
+                                             int peer) {
+    struct sockaddr_storage native;
+    socklen_t length = (socklen_t)sizeof(native);
+    int result = peer ? getpeername(eos_host_socket_fd(socket_value),
+                                    (struct sockaddr *)&native, &length)
+                      : getsockname(eos_host_socket_fd(socket_value),
+                                    (struct sockaddr *)&native, &length);
+    if (result != 0) return eos_host_network_error(errno);
+    return eos_host_address_from_native((const struct sockaddr *)&native,
+                                        length, address);
+}
+
+static int32_t eos_port_socket_local_address(
+    eos_port_socket socket_value, eos_port_socket_address *address) {
+    return eos_host_socket_address_query(socket_value, address, 0);
+}
+
+static int32_t eos_port_socket_remote_address(
+    eos_port_socket socket_value, eos_port_socket_address *address) {
+    return eos_host_socket_address_query(socket_value, address, 1);
+}
+
+static int32_t eos_port_socket_set_timeout(eos_port_socket socket_value,
+                                           uint32_t receive,
+                                           uint32_t timeout_ticks) {
+    struct timeval value;
+    uint32_t rate = eos_port_tick_rate_hz();
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_timeout_log_count < EOS_HOST_TIMEOUT_LOG_CAPACITY) {
+        eos_host_timeout_log_receive[eos_host_timeout_log_count] = receive;
+        eos_host_timeout_log_ticks[eos_host_timeout_log_count] = timeout_ticks;
+        ++eos_host_timeout_log_count;
+    }
+    if (eos_host_delayed_timeout_error != 0) {
+        if (eos_host_timeout_successes_before_failure == 0) {
+            int32_t error = eos_host_delayed_timeout_error;
+            eos_host_delayed_timeout_error = 0;
+            eos_host_timeout_successes_before_failure = UINT32_MAX;
+            return error;
+        }
+        --eos_host_timeout_successes_before_failure;
+    }
+#endif
+    if (timeout_ticks == EOS_PORT_WAIT_FOREVER) {
+        value.tv_sec = 0;
+        value.tv_usec = 0;
+    } else if (timeout_ticks == EOS_PORT_NO_WAIT) {
+        value.tv_sec = 0;
+        value.tv_usec = 1;
+    } else {
+        uint64_t usec = ((uint64_t)timeout_ticks * UINT64_C(1000000) +
+                         rate - 1U) / rate;
+        value.tv_sec = (time_t)(usec / UINT64_C(1000000));
+        value.tv_usec = (suseconds_t)(usec % UINT64_C(1000000));
+    }
+    return setsockopt(eos_host_socket_fd(socket_value), SOL_SOCKET,
+                      receive ? SO_RCVTIMEO : SO_SNDTIMEO,
+                      &value, (socklen_t)sizeof(value)) == 0
+               ? 0 : eos_host_network_error(errno);
+}
+
+static int32_t eos_port_socket_set_nonblocking(eos_port_socket socket_value,
+                                               uint32_t enabled) {
+    int descriptor = eos_host_socket_fd(socket_value);
+    int flags = fcntl(descriptor, F_GETFL, 0);
+    if (flags < 0) return eos_host_network_error(errno);
+    if (enabled != 0) flags |= O_NONBLOCK;
+    else flags &= ~O_NONBLOCK;
+    return fcntl(descriptor, F_SETFL, flags) == 0
+               ? 0 : eos_host_network_error(errno);
+}
+
+static int32_t eos_port_socket_set_integer_option(eos_port_socket socket_value,
+                                                  int32_t option_name,
+                                                  int32_t value) {
+    int native_name = option_name == EOS_RUST_SO_SNDBUF ? SO_SNDBUF : SO_RCVBUF;
+    return setsockopt(eos_host_socket_fd(socket_value), SOL_SOCKET,
+                      native_name, &value, (socklen_t)sizeof(value)) == 0
+               ? 0 : eos_host_network_error(errno);
+}
+
+static int32_t eos_port_socket_connection_error(eos_port_socket socket_value,
+                                                int32_t *error_number) {
+    int native_error = 0;
+    socklen_t length = (socklen_t)sizeof(native_error);
+    if (getsockopt(eos_host_socket_fd(socket_value), SOL_SOCKET, SO_ERROR,
+                   &native_error, &length) != 0) {
+        return eos_host_network_error(errno);
+    }
+    *error_number = eos_host_network_error(native_error);
+    return 0;
+}
+
+static int32_t eos_port_socket_poll(const eos_port_socket *sockets,
+                                    const uint32_t *requested,
+                                    uint32_t *observed,
+                                    uint32_t socket_count,
+                                    uint32_t timeout_ticks) {
+    struct pollfd native[EOS_PORT_SOCKET_POLL_CAPACITY];
+    uint32_t index;
+    int timeout;
+    int result;
+    uint32_t rate = eos_port_tick_rate_hz();
+    if (timeout_ticks == EOS_PORT_WAIT_FOREVER) timeout = -1;
+    else {
+        uint64_t milliseconds =
+            ((uint64_t)timeout_ticks * UINT64_C(1000) + rate - 1U) / rate;
+        timeout = milliseconds > (uint64_t)INT_MAX ? INT_MAX
+                                                   : (int)milliseconds;
+    }
+    for (index = 0; index < socket_count; ++index) {
+        native[index].fd = eos_host_socket_fd(sockets[index]);
+        native[index].events = 0;
+        native[index].revents = 0;
+        if ((requested[index] & EOS_PORT_SOCKET_EVENT_READ) != 0) {
+            native[index].events |= POLLIN;
+        }
+        if ((requested[index] & EOS_PORT_SOCKET_EVENT_WRITE) != 0) {
+            native[index].events |= POLLOUT;
+        }
+        if ((requested[index] & EOS_PORT_SOCKET_EVENT_PRIORITY) != 0) {
+            native[index].events |= POLLPRI;
+        }
+    }
+    result = poll(native, socket_count, timeout);
+    if (result < 0) return eos_host_network_error(errno);
+#ifdef EOS_RUST_HOST_TEST
+    if (atomic_load(&eos_host_poll_pause) != 0) {
+        atomic_store(&eos_host_poll_entered, 1);
+        while (atomic_load(&eos_host_poll_release) == 0) (void)sched_yield();
+    }
+#endif
+    for (index = 0; index < socket_count; ++index) {
+        observed[index] = 0;
+        if ((native[index].revents & POLLIN) != 0) {
+            observed[index] |= EOS_PORT_SOCKET_EVENT_READ;
+        }
+        if ((native[index].revents & POLLPRI) != 0) {
+            observed[index] |= EOS_PORT_SOCKET_EVENT_PRIORITY;
+        }
+        if ((native[index].revents & POLLOUT) != 0) {
+            observed[index] |= EOS_PORT_SOCKET_EVENT_WRITE;
+        }
+        if ((native[index].revents & (POLLERR | POLLNVAL)) != 0) {
+            observed[index] |= EOS_PORT_SOCKET_EVENT_ERROR;
+        }
+        if ((native[index].revents & (POLLHUP
+#ifdef POLLRDHUP
+                                       | POLLRDHUP
+#endif
+                                      )) != 0) {
+            observed[index] |= EOS_PORT_SOCKET_EVENT_HANGUP;
+        }
+    }
     return 0;
 }
 

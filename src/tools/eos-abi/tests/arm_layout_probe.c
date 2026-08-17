@@ -36,5 +36,44 @@ _Static_assert(sizeof(eos_rust_pthread_once_t) == 8, "once size");
 _Static_assert(_Alignof(eos_rust_pthread_once_t) == 4, "once alignment");
 _Static_assert(offsetof(eos_rust_pthread_once_t, words) == 0,
                "once words offset");
+_Static_assert(sizeof(eos_rust_sockaddr) == 16, "sockaddr size");
+_Static_assert(_Alignof(eos_rust_sockaddr) == 2, "sockaddr alignment");
+_Static_assert(sizeof(eos_rust_sockaddr_in) == 16, "IPv4 sockaddr size");
+_Static_assert(offsetof(eos_rust_sockaddr_in, sin_addr) == 4,
+               "IPv4 address offset");
+_Static_assert(sizeof(eos_rust_sockaddr_in6) == 28, "IPv6 sockaddr size");
+_Static_assert(offsetof(eos_rust_sockaddr_in6, sin6_addr) == 8,
+               "IPv6 address offset");
+_Static_assert(offsetof(eos_rust_sockaddr_in6, sin6_scope_id) == 24,
+               "IPv6 scope offset");
+_Static_assert(sizeof(eos_rust_sockaddr_storage) == 32,
+               "sockaddr storage size");
+_Static_assert(_Alignof(eos_rust_sockaddr_storage) == 4,
+               "sockaddr storage alignment");
+_Static_assert(sizeof(eos_rust_timeval) == 16, "timeval size");
+_Static_assert(_Alignof(eos_rust_timeval) == 8, "timeval alignment");
+_Static_assert(sizeof(eos_rust_pollfd) == 8, "pollfd size");
+_Static_assert(_Alignof(eos_rust_pollfd) == 4, "pollfd alignment");
+_Static_assert(offsetof(eos_rust_pollfd, revents) == 6,
+               "pollfd result offset");
+_Static_assert(sizeof(eos_rust_addrinfo) == 32, "addrinfo ARM size");
+_Static_assert(_Alignof(eos_rust_addrinfo) == 4,
+               "addrinfo ARM alignment");
+_Static_assert(offsetof(eos_rust_addrinfo, ai_flags) == 0,
+               "addrinfo flags offset");
+_Static_assert(offsetof(eos_rust_addrinfo, ai_family) == 4,
+               "addrinfo family offset");
+_Static_assert(offsetof(eos_rust_addrinfo, ai_socktype) == 8,
+               "addrinfo socktype offset");
+_Static_assert(offsetof(eos_rust_addrinfo, ai_protocol) == 12,
+               "addrinfo protocol offset");
+_Static_assert(offsetof(eos_rust_addrinfo, ai_addrlen) == 16,
+               "addrinfo address length offset");
+_Static_assert(offsetof(eos_rust_addrinfo, ai_addr) == 20,
+               "addrinfo address pointer offset");
+_Static_assert(offsetof(eos_rust_addrinfo, ai_canonname) == 24,
+               "addrinfo canonical pointer offset");
+_Static_assert(offsetof(eos_rust_addrinfo, ai_next) == 28,
+               "addrinfo next pointer offset");
 
 eos_rust_pthread_mutex eos_arm_layout_probe;

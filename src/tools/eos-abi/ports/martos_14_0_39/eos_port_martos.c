@@ -32,6 +32,7 @@ _Static_assert(EINVAL == EOS_ERRNO_INVALID, "unexpected EOS EINVAL value");
 _Static_assert(EMFILE == EOS_ERRNO_TOO_MANY_OPEN_FILES,
                "unexpected EOS EMFILE value");
 _Static_assert(ENOTTY == EOS_ERRNO_NOT_TTY, "unexpected EOS ENOTTY value");
+_Static_assert(ENOSPC == EOS_ERRNO_NO_SPACE, "unexpected EOS ENOSPC value");
 _Static_assert(ESPIPE == EOS_ERRNO_ILLEGAL_SEEK,
                "unexpected EOS ESPIPE value");
 _Static_assert(EROFS == EOS_ERRNO_READ_ONLY_FS, "unexpected EOS EROFS value");
@@ -39,12 +40,56 @@ _Static_assert(EPIPE == EOS_ERRNO_PIPE, "unexpected EOS EPIPE value");
 _Static_assert(ERANGE == EOS_ERRNO_RANGE, "unexpected EOS ERANGE value");
 _Static_assert(EWOULDBLOCK == EOS_ERRNO_WOULD_BLOCK,
                "unexpected EOS EWOULDBLOCK value");
+_Static_assert(EINPROGRESS == EOS_ERRNO_IN_PROGRESS,
+               "unexpected EOS EINPROGRESS value");
+_Static_assert(EALREADY == EOS_ERRNO_ALREADY,
+               "unexpected EOS EALREADY value");
+_Static_assert(ENOTSOCK == EOS_ERRNO_NOT_SOCKET,
+               "unexpected EOS ENOTSOCK value");
+_Static_assert(EDESTADDRREQ == EOS_ERRNO_DESTINATION_REQUIRED,
+               "unexpected EOS EDESTADDRREQ value");
+_Static_assert(EMSGSIZE == EOS_ERRNO_MESSAGE_SIZE,
+               "unexpected EOS EMSGSIZE value");
+_Static_assert(EPROTOTYPE == EOS_ERRNO_PROTOCOL_TYPE,
+               "unexpected EOS EPROTOTYPE value");
+_Static_assert(ENOPROTOOPT == EOS_ERRNO_NO_PROTOCOL_OPTION,
+               "unexpected EOS ENOPROTOOPT value");
 _Static_assert(EPROTONOSUPPORT == EOS_ERRNO_PROTOCOL_NOT_SUPPORTED,
                "unexpected EOS EPROTONOSUPPORT value");
 _Static_assert(ENOTSUP == EOS_ERRNO_NOT_SUPPORTED, "unexpected EOS ENOTSUP value");
+_Static_assert(EAFNOSUPPORT == EOS_ERRNO_ADDRESS_FAMILY_NOT_SUPPORTED,
+               "unexpected EOS EAFNOSUPPORT value");
+_Static_assert(EADDRINUSE == EOS_ERRNO_ADDRESS_IN_USE,
+               "unexpected EOS EADDRINUSE value");
+_Static_assert(EADDRNOTAVAIL == EOS_ERRNO_ADDRESS_NOT_AVAILABLE,
+               "unexpected EOS EADDRNOTAVAIL value");
+_Static_assert(ENETDOWN == EOS_ERRNO_NETWORK_DOWN,
+               "unexpected EOS ENETDOWN value");
+_Static_assert(ENETUNREACH == EOS_ERRNO_NETWORK_UNREACHABLE,
+               "unexpected EOS ENETUNREACH value");
+_Static_assert(ENETRESET == EOS_ERRNO_NETWORK_RESET,
+               "unexpected EOS ENETRESET value");
+_Static_assert(ECONNABORTED == EOS_ERRNO_CONNECTION_ABORTED,
+               "unexpected EOS ECONNABORTED value");
+_Static_assert(ECONNRESET == EOS_ERRNO_CONNECTION_RESET,
+               "unexpected EOS ECONNRESET value");
+_Static_assert(ENOBUFS == EOS_ERRNO_NO_BUFFERS,
+               "unexpected EOS ENOBUFS value");
+_Static_assert(EISCONN == EOS_ERRNO_IS_CONNECTED,
+               "unexpected EOS EISCONN value");
+_Static_assert(ENOTCONN == EOS_ERRNO_NOT_CONNECTED,
+               "unexpected EOS ENOTCONN value");
+_Static_assert(ESHUTDOWN == EOS_ERRNO_SHUTDOWN,
+               "unexpected EOS ESHUTDOWN value");
 _Static_assert(ETIMEDOUT == EOS_ERRNO_TIMED_OUT, "unexpected EOS ETIMEDOUT value");
+_Static_assert(ECONNREFUSED == EOS_ERRNO_CONNECTION_REFUSED,
+               "unexpected EOS ECONNREFUSED value");
 _Static_assert(ENAMETOOLONG == EOS_ERRNO_NAME_TOO_LONG,
                "unexpected EOS ENAMETOOLONG value");
+_Static_assert(EHOSTDOWN == EOS_ERRNO_HOST_DOWN,
+               "unexpected EOS EHOSTDOWN value");
+_Static_assert(EHOSTUNREACH == EOS_ERRNO_HOST_UNREACHABLE,
+               "unexpected EOS EHOSTUNREACH value");
 _Static_assert(ENOTEMPTY == EOS_ERRNO_NOT_EMPTY,
                "unexpected EOS ENOTEMPTY value");
 _Static_assert(EOVERFLOW == EOS_ERRNO_OVERFLOW,
@@ -55,6 +100,12 @@ _Static_assert(EDEADLK == EOS_ERRNO_DEADLOCK, "unexpected EOS EDEADLK value");
 #include "eos_port_martos_fs_contract.h"
 #include "eos_port_martos_thread_contract.h"
 #include "eos_port_martos_sync_contract.h"
+#include "eos_port_martos_network_contract.h"
+
+/* The SDK convenience macro must not rewrite the stable ABI's field name. */
+#ifdef sin_addr
+#undef sin_addr
+#endif
 
 /* Guard the numeric translation table against drift in the pinned SDK. */
 _Static_assert(OS_STS_OK == 0, "unexpected OS_STS_OK value");
@@ -665,4 +716,207 @@ static void eos_port_hash_seed_sources(eos_hash_seed_sources *sources) {
     if (heap_marker != NULL) {
         (void)os_mem_free(heap_marker);
     }
+}
+
+static eos_port_socket_create_result eos_port_socket_create(int32_t domain,
+                                                            int32_t type,
+                                                            int32_t protocol) {
+    uint32 native_domain = domain == EOS_RUST_AF_INET
+                               ? OS_NET_AF_INET : OS_NET_AF_INET6;
+    uint32 native_type = type == EOS_RUST_SOCK_STREAM
+                             ? OS_NET_SOCK_STREAM : OS_NET_SOCK_DGRAM;
+    uint32 native_protocol = protocol == EOS_RUST_IPPROTO_IP
+                                 ? OS_NET_SOCK_DEPENDENT_PROTO
+                                 : protocol == EOS_RUST_IPPROTO_TCP
+                                       ? OS_NET_IPPROTO_TCP
+                                       : OS_NET_IPPROTO_UDP;
+    return eos_martos_pointer_result(
+        os_net_socket_create(native_domain, native_type, native_protocol), 0);
+}
+
+static int32_t eos_port_socket_close(eos_port_socket socket) {
+    return eos_martos_network_error(
+        os_net_socket_close((os_net_socket)(uintptr_t)socket),
+        EOS_MARTOS_NETWORK_OTHER);
+}
+
+static int32_t eos_port_socket_bind(eos_port_socket socket,
+                                    const eos_port_socket_address *address) {
+    os_net_sockaddr native;
+    int32_t error = eos_martos_address_to_native(address, &native);
+    if (error != 0) return error;
+    return eos_martos_network_error(
+        os_net_bind((os_net_socket)(uintptr_t)socket, &native,
+                    (uint32)sizeof(native)), EOS_MARTOS_NETWORK_OTHER);
+}
+
+static int32_t eos_port_socket_connect(eos_port_socket socket,
+                                       const eos_port_socket_address *address) {
+    os_net_sockaddr native;
+    int32_t error = eos_martos_address_to_native(address, &native);
+    if (error != 0) return error;
+    return eos_martos_network_error(
+        os_net_connect((os_net_socket)(uintptr_t)socket, &native,
+                       (uint32)sizeof(native)), EOS_MARTOS_NETWORK_CONNECT);
+}
+
+static int32_t eos_port_socket_listen(eos_port_socket socket,
+                                      int32_t backlog) {
+    return eos_martos_network_error(
+        os_net_listen((os_net_socket)(uintptr_t)socket, backlog),
+        EOS_MARTOS_NETWORK_OTHER);
+}
+
+static eos_port_socket_create_result eos_port_socket_accept(
+    eos_port_socket socket,
+    eos_port_socket_address *address) {
+    os_net_sockaddr native;
+    uint32 length = (uint32)sizeof(native);
+    eos_port_socket_create_result result;
+    int32_t error;
+    (void)memset(&native, 0, sizeof(native));
+    native.sin_len = (uint8)sizeof(native);
+    result = eos_martos_pointer_result(
+        os_net_accept((os_net_socket)(uintptr_t)socket, &native, &length), 1);
+    if (result.socket == EOS_PORT_SOCKET_INVALID) return result;
+    if (length != (uint32)sizeof(native)) error = EOS_ERRNO_IO;
+    else error = eos_martos_address_from_native(&native, address);
+    if (error != 0) {
+        if (os_net_socket_close((os_net_socket)(uintptr_t)result.socket) != 0) {
+            eos_rust_abort();
+        }
+        result.socket = EOS_PORT_SOCKET_INVALID;
+        result.error_number = error;
+    }
+    return result;
+}
+
+static eos_port_socket_io_result eos_port_socket_send(
+    eos_port_socket socket, const void *buffer, uint32_t byte_count,
+    int32_t flags) {
+    return eos_martos_network_io_result(
+        os_net_send((os_net_socket)(uintptr_t)socket, buffer,
+                    (uint32)byte_count, eos_martos_message_flags(flags)),
+        EOS_MARTOS_NETWORK_SEND);
+}
+
+static eos_port_socket_io_result eos_port_socket_receive(
+    eos_port_socket socket, void *buffer, uint32_t byte_count,
+    int32_t flags) {
+    return eos_martos_network_io_result(
+        os_net_recv((os_net_socket)(uintptr_t)socket, buffer,
+                    (uint32)byte_count, eos_martos_message_flags(flags)),
+        EOS_MARTOS_NETWORK_RECEIVE);
+}
+
+static eos_port_socket_io_result eos_port_socket_send_to(
+    eos_port_socket socket, const void *buffer, uint32_t byte_count,
+    int32_t flags, const eos_port_socket_address *destination) {
+    os_net_sockaddr native;
+    int32_t error = eos_martos_address_to_native(destination, &native);
+    if (error != 0) return (eos_port_socket_io_result){-1, error};
+    return eos_martos_network_io_result(
+        os_net_sendto((os_net_socket)(uintptr_t)socket, buffer,
+                      (uint32)byte_count, eos_martos_message_flags(flags),
+                      &native, (uint32)sizeof(native)),
+        EOS_MARTOS_NETWORK_SEND);
+}
+
+static eos_port_socket_io_result eos_port_socket_receive_from(
+    eos_port_socket socket, void *buffer, uint32_t byte_count,
+    int32_t flags, eos_port_socket_address *source) {
+    os_net_sockaddr native;
+    uint32 length = (uint32)sizeof(native);
+    int32_t native_result;
+    eos_port_socket_io_result result;
+    (void)memset(&native, 0, sizeof(native));
+    native.sin_len = (uint8)sizeof(native);
+    native_result = os_net_recvfrom(
+        (os_net_socket)(uintptr_t)socket, buffer, (uint32)byte_count,
+        eos_martos_message_flags(flags), source == NULL ? NULL : &native,
+        source == NULL ? NULL : &length);
+    result = eos_martos_network_io_result(native_result,
+                                          EOS_MARTOS_NETWORK_RECEIVE);
+    if (result.count >= 0 && source != NULL) {
+        int32_t error;
+        if (native_result == OS_NET_ECLOSED) {
+            (void)memset(source, 0, sizeof(*source));
+            error = 0;
+        } else {
+            error = length == (uint32)sizeof(native)
+                        ? eos_martos_address_from_native(&native, source)
+                        : EOS_ERRNO_IO;
+        }
+        if (error != 0) return (eos_port_socket_io_result){-1, error};
+    }
+    return result;
+}
+
+static int32_t eos_port_socket_shutdown(eos_port_socket socket, int32_t how) {
+    return eos_martos_network_error(
+        os_net_shutdown((os_net_socket)(uintptr_t)socket, how),
+        EOS_MARTOS_NETWORK_OTHER);
+}
+
+static int32_t eos_port_socket_local_address(
+    eos_port_socket socket, eos_port_socket_address *address) {
+    return eos_martos_local_address(socket, address);
+}
+
+static int32_t eos_port_socket_remote_address(
+    eos_port_socket socket, eos_port_socket_address *address) {
+    return eos_martos_remote_address(socket, address);
+}
+
+static int32_t eos_port_socket_set_timeout(eos_port_socket socket,
+                                           uint32_t receive,
+                                           uint32_t timeout_ticks) {
+    uint32 native_timeout = (uint32)timeout_ticks;
+    return eos_martos_network_error(
+        os_net_setsockopt((os_net_socket)(uintptr_t)socket,
+                          OS_NET_SOL_SOCKET,
+                          eos_martos_timeout_option(receive),
+                          &native_timeout, (uint32)sizeof(native_timeout)),
+        EOS_MARTOS_NETWORK_OTHER);
+}
+
+static int32_t eos_port_socket_set_nonblocking(eos_port_socket socket,
+                                               uint32_t enabled) {
+    (void)socket;
+    (void)enabled;
+    return 0;
+}
+
+static int32_t eos_port_socket_set_integer_option(eos_port_socket socket,
+                                                  int32_t option_name,
+                                                  int32_t value) {
+    int32_t native_option = eos_martos_integer_option(option_name);
+    if (native_option < 0) return EOS_ERRNO_NO_PROTOCOL_OPTION;
+    return eos_martos_network_error(
+        os_net_setsockopt((os_net_socket)(uintptr_t)socket,
+                          OS_NET_SOL_SOCKET, native_option,
+                          &value, (uint32)sizeof(value)),
+        EOS_MARTOS_NETWORK_OTHER);
+}
+
+static int32_t eos_port_socket_connection_error(eos_port_socket socket,
+                                                int32_t *error_number) {
+    os_net_socket native = (os_net_socket)(uintptr_t)socket;
+    if (os_net_is_socket_connected(native) != 0) {
+        *error_number = 0;
+    } else if (os_net_get_tcp_state(native) == OS_NET_TCP_CLOSED) {
+        *error_number = EOS_ERRNO_CONNECTION_RESET;
+    } else {
+        *error_number = EOS_ERRNO_IN_PROGRESS;
+    }
+    return 0;
+}
+
+static int32_t eos_port_socket_poll(const eos_port_socket *sockets,
+                                    const uint32_t *requested,
+                                    uint32_t *observed,
+                                    uint32_t socket_count,
+                                    uint32_t timeout_ticks) {
+    return eos_martos_socketset_poll(sockets, requested, observed,
+                                     socket_count, timeout_ticks);
 }

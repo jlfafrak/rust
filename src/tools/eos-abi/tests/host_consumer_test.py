@@ -14,7 +14,32 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="eos-host-consumer-") as directory:
         root = Path(directory)
         (root / "main.c").write_text(
-            "#include <eos_rust_abi.h>\nint main(void) { return (int)eos_rust_abi_version() == 0; }\n",
+            '''#include <eos_rust_abi.h>
+#include <stddef.h>
+
+_Static_assert(sizeof(eos_rust_sockaddr_in6) == 28, "IPv6 ABI size");
+_Static_assert(sizeof(eos_rust_addrinfo) >= 32, "addrinfo ABI size");
+
+int main(void) {
+    eos_rust_sockaddr_in address = {0};
+    eos_rust_pollfd descriptor = {-1, EOS_RUST_POLLIN, 0};
+    eos_rust_addrinfo *results = NULL;
+    char text[16];
+    int32_t status;
+    address.sin_family = EOS_RUST_AF_INET;
+    status = eos_rust_inet_pton(EOS_RUST_AF_INET, "127.0.0.1",
+                                &address.sin_addr);
+    if (status != 1 || eos_rust_inet_ntop(EOS_RUST_AF_INET,
+                                          &address.sin_addr, text,
+                                          sizeof(text)) == NULL) {
+        return 1;
+    }
+    status = eos_rust_getaddrinfo("127.0.0.1", "80", NULL, &results);
+    eos_rust_freeaddrinfo(results);
+    return status != 0 || eos_rust_poll(&descriptor, 1, 0) != 0 ||
+           eos_rust_abi_version() == 0;
+}
+''',
             encoding="utf-8",
         )
         (root / "CMakeLists.txt").write_text(
