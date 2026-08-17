@@ -38,6 +38,9 @@ void eos_sync_test_exhaust_identities(void);
 void eos_sync_test_pause_after_condition_timeout(int enabled);
 uint32_t eos_sync_test_condition_timeout_pause_entered(void);
 void eos_sync_test_resume_after_condition_timeout(void);
+void eos_sync_test_pause_before_condition_reacquire(int enabled);
+uint32_t eos_sync_test_condition_reacquire_pause_entered(void);
+void eos_sync_test_resume_condition_reacquire(void);
 void eos_sync_test_reset_rwlock_wait_audit(void);
 uint32_t eos_sync_test_rwlock_writer_wait_entered(void);
 }
@@ -579,6 +582,43 @@ void test_rwlock_writer_preference() {
            "rwlock writer-preference cleanup failed");
 }
 
+void test_condition_retains_objects_through_reacquire() {
+    eos_rust_pthread_mutex mutex{};
+    eos_rust_pthread_cond condition{};
+    std::atomic<bool> ready{false};
+    std::atomic<int32_t> result{kInvalid};
+
+    eos_sync_test_pause_before_condition_reacquire(1);
+    std::thread waiter([&] {
+        expect(eos_rust_pthread_mutex_lock(&mutex) == 0,
+               "condition lifetime waiter mutex lock failed");
+        ready.store(true, std::memory_order_release);
+        result.store(eos_rust_pthread_cond_wait(&condition, &mutex),
+                     std::memory_order_release);
+        expect(eos_rust_pthread_mutex_unlock(&mutex) == 0,
+               "condition lifetime waiter mutex unlock failed");
+    });
+    while (!ready.load(std::memory_order_acquire)) std::this_thread::yield();
+    expect(eos_rust_pthread_mutex_lock(&mutex) == 0,
+           "condition lifetime signaler mutex lock failed");
+    expect(eos_rust_pthread_cond_signal(&condition) == 0,
+           "condition lifetime signal failed");
+    expect(eos_rust_pthread_mutex_unlock(&mutex) == 0,
+           "condition lifetime signaler mutex unlock failed");
+    while (eos_sync_test_condition_reacquire_pause_entered() == 0) {
+        std::this_thread::yield();
+    }
+    expect(eos_rust_pthread_cond_destroy(&condition) == kBusy &&
+               eos_rust_pthread_mutex_destroy(&mutex) == kBusy,
+           "condition wait must retain both objects through mutex reacquisition");
+    eos_sync_test_resume_condition_reacquire();
+    waiter.join();
+    expect(result.load(std::memory_order_acquire) == 0 &&
+               eos_rust_pthread_cond_destroy(&condition) == 0 &&
+               eos_rust_pthread_mutex_destroy(&mutex) == 0,
+           "condition lifetime cleanup failed");
+}
+
 void test_rwlock_faults_and_contention() {
     eos_rust_pthread_rwlock allocation_fault{};
     eos_host_test_fail_next_public_sem_create(15);
@@ -775,6 +815,7 @@ int main() {
     test_mutexes();
     test_concurrent_explicit_initialization();
     test_conditions_and_parker();
+    test_condition_retains_objects_through_reacquire();
     test_rwlock_writer_preference();
     test_rwlock_faults_and_contention();
     test_once_and_exhaustion();

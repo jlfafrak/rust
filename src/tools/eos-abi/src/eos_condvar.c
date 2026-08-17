@@ -30,6 +30,9 @@ static eos_condition_record *eos_condition_records;
 static _Atomic uint32_t eos_condition_test_timeout_pause;
 static _Atomic uint32_t eos_condition_test_timeout_entered;
 static _Atomic uint32_t eos_condition_test_timeout_release;
+static _Atomic uint32_t eos_condition_test_reacquire_pause;
+static _Atomic uint32_t eos_condition_test_reacquire_entered;
+static _Atomic uint32_t eos_condition_test_reacquire_release;
 
 void eos_sync_test_pause_after_condition_timeout(int enabled) {
     atomic_store(&eos_condition_test_timeout_entered, UINT32_C(0));
@@ -46,6 +49,30 @@ uint32_t eos_sync_test_condition_timeout_pause_entered(void) {
 void eos_sync_test_resume_after_condition_timeout(void) {
     atomic_store(&eos_condition_test_timeout_release, UINT32_C(1));
     atomic_store(&eos_condition_test_timeout_pause, UINT32_C(0));
+}
+
+void eos_sync_test_pause_before_condition_reacquire(int enabled) {
+    atomic_store(&eos_condition_test_reacquire_entered, UINT32_C(0));
+    atomic_store(&eos_condition_test_reacquire_release,
+                 enabled ? UINT32_C(0) : UINT32_C(1));
+    atomic_store(&eos_condition_test_reacquire_pause,
+                 enabled ? UINT32_C(1) : UINT32_C(0));
+}
+
+uint32_t eos_sync_test_condition_reacquire_pause_entered(void) {
+    return atomic_load(&eos_condition_test_reacquire_entered);
+}
+
+void eos_sync_test_resume_condition_reacquire(void) {
+    atomic_store(&eos_condition_test_reacquire_release, UINT32_C(1));
+    atomic_store(&eos_condition_test_reacquire_pause, UINT32_C(0));
+}
+
+static void eos_condition_test_before_reacquire(void) {
+    if (atomic_load(&eos_condition_test_reacquire_pause) != 0) {
+        atomic_store(&eos_condition_test_reacquire_entered, UINT32_C(1));
+        while (atomic_load(&eos_condition_test_reacquire_release) == 0) {}
+    }
 }
 #endif
 
@@ -290,6 +317,7 @@ static int32_t eos_condition_wait_common(
     const eos_rust_timespec *absolute_deadline) {
     eos_condition_record *record = NULL;
     eos_condition_waiter *waiter = NULL;
+    eos_mutex_record *mutex_record = NULL;
     int32_t status;
     int32_t wait_result;
     if (absolute_deadline != NULL &&
@@ -312,10 +340,18 @@ static int32_t eos_condition_wait_common(
         eos_condition_release_operation(record);
         return eos_sync_status_error(status, "condition.waiter.create");
     }
+    status = eos_mutex_retain_for_condition(mutex, &mutex_record);
+    if (status != 0) {
+        if (eos_port_semaphore_destroy(waiter->semaphore) != 0) eos_rust_abort();
+        eos_sync_free(waiter);
+        eos_condition_release_operation(record);
+        return status;
+    }
     status = eos_port_mutex_lock(record->lock, EOS_PORT_WAIT_FOREVER);
     if (status != 0) {
         if (eos_port_semaphore_destroy(waiter->semaphore) != 0) eos_rust_abort();
         eos_sync_free(waiter);
+        eos_mutex_release_operation(mutex_record);
         eos_condition_release_operation(record);
         return eos_sync_status_error(status, "condition.lock");
     }
@@ -338,6 +374,7 @@ static int32_t eos_condition_wait_common(
         if (eos_port_mutex_unlock(record->lock) != 0) eos_rust_abort();
         if (eos_port_semaphore_destroy(waiter->semaphore) != 0) eos_rust_abort();
         eos_sync_free(waiter);
+        eos_mutex_release_operation(mutex_record);
         eos_condition_release_operation(record);
         return status;
     }
@@ -375,14 +412,18 @@ static int32_t eos_condition_wait_common(
     if (eos_port_mutex_unlock(record->lock) != 0) eos_rust_abort();
     if (eos_port_semaphore_destroy(waiter->semaphore) != 0) eos_rust_abort();
     eos_sync_free(waiter);
-    eos_condition_release_operation(record);
 
+#ifdef EOS_RUST_HOST_TEST
+    eos_condition_test_before_reacquire();
+#endif
     status = eos_rust_pthread_mutex_lock(mutex);
     if (status != 0) {
         eos_port_direct_diagnostic(
             "libeos_rust_abi: condition failed to reacquire user mutex\n");
         eos_rust_abort();
     }
+    eos_mutex_release_operation(mutex_record);
+    eos_condition_release_operation(record);
     return wait_result;
 }
 

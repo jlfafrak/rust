@@ -215,6 +215,15 @@ static void eos_mutex_release_operation(eos_mutex_record *record) {
     eos_sync_registry_unlock();
 }
 
+static int32_t eos_mutex_retain_for_condition(
+    eos_rust_pthread_mutex *mutex, eos_mutex_record **record) {
+    int32_t status = eos_sync_registry_lock();
+    if (status != 0) return status;
+    status = eos_mutex_acquire_existing_locked(mutex, record);
+    eos_sync_registry_unlock();
+    return status;
+}
+
 int32_t eos_rust_pthread_mutexattr_init(
     eos_rust_pthread_mutexattr *attribute) {
     if (attribute == NULL) return EOS_ERRNO_INVALID;
