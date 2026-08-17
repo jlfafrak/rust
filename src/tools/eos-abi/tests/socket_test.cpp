@@ -92,6 +92,9 @@ static int test_validation_before_native_access() {
     if (expect(eos_rust_send(-1, nullptr, UINT32_MAX, 0) == -1 &&
                    *eos_rust_errno_location() == 22,
                "oversized send must fail before descriptor and buffer access")) return 1;
+    if (expect(eos_rust_send(0, nullptr, 0, 0) == -1 &&
+                   *eos_rust_errno_location() == 38,
+               "valid non-socket descriptors must report ENOTSOCK")) return 1;
     return 0;
 }
 

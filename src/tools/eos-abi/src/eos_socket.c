@@ -157,8 +157,12 @@ int32_t eos_socket_test_ipv6_output(uint32_t scope_id,
 static int32_t eos_socket_acquire(eos_rust_fd_t descriptor,
                                   eos_fd_reference *reference,
                                   eos_socket **socket) {
-    if (eos_fd_acquire(descriptor, EOS_FD_KIND_SOCKET, reference) != 0) {
+    if (eos_fd_acquire(descriptor, EOS_FD_KIND_NONE, reference) != 0) {
         return -1;
+    }
+    if (reference->kind != EOS_FD_KIND_SOCKET) {
+        eos_fd_release_or_abort(reference);
+        return eos_socket_fail(EOS_ERRNO_NOT_SOCKET);
     }
     *socket = (eos_socket *)reference->native.pointer;
     if (*socket == NULL) eos_rust_abort();
