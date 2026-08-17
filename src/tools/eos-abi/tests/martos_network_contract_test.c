@@ -145,6 +145,7 @@ static os_net_select_event_bits os_net_fd_isset(os_net_socket socket,
     ++fake_query_count;
     if (value == 1) return OS_NET_SELECT_READ;
     if (value == 2) return OS_NET_SELECT_WRITE | OS_NET_SELECT_EXCEPT;
+    if (value == 4) return OS_NET_SELECT_READ | OS_NET_SELECT_WRITE;
     return 0;
 }
 static uint32 os_net_socket_get_protocol(os_net_socket socket) {
@@ -214,11 +215,15 @@ int main(void) {
     eos_port_socket_io_result io_result;
     os_net_sockaddr native;
     eos_port_socket sockets[3] = {1, 2, 3};
+    eos_port_socket duplicate_sockets[2] = {4, 4};
     uint32_t requested[3] = {EOS_PORT_SOCKET_EVENT_READ,
                              EOS_PORT_SOCKET_EVENT_WRITE |
                                  EOS_PORT_SOCKET_EVENT_PRIORITY,
                              0};
+    uint32_t duplicate_requested[2] = {EOS_PORT_SOCKET_EVENT_READ,
+                                       EOS_PORT_SOCKET_EVENT_WRITE};
     uint32_t observed[3] = {0, 0, 0};
+    uint32_t duplicate_observed[2] = {0, 0};
     (void)memset(&normalized, 0, sizeof(normalized));
     normalized.family = EOS_RUST_AF_INET;
     normalized.port = UINT16_C(0x3412);
@@ -335,6 +340,17 @@ int main(void) {
                                EOS_PORT_SOCKET_EVENT_ERROR |
                                EOS_PORT_SOCKET_EVENT_PRIORITY) &&
                observed[2] == 0)) return 14;
+    reset_socketset_fixture();
+    if (expect(eos_martos_socketset_poll(
+                   duplicate_sockets, duplicate_requested,
+                   duplicate_observed, 2, 0) == 0 &&
+               fake_create_count == 1 && fake_set_count == 1 &&
+               fake_select_count == 1 && fake_query_count == 1 &&
+               fake_delete_count == 1 &&
+               (fake_set_bits[0] & OS_NET_SELECT_READ) != 0 &&
+               (fake_set_bits[0] & OS_NET_SELECT_WRITE) != 0 &&
+               duplicate_observed[0] == EOS_PORT_SOCKET_EVENT_READ &&
+               duplicate_observed[1] == EOS_PORT_SOCKET_EVENT_WRITE)) return 25;
     requested[2] = EOS_PORT_SOCKET_EVENT_HANGUP_ELIGIBLE;
     observed[2] = 0;
     if (expect(eos_martos_socketset_poll(&sockets[2], &requested[2],

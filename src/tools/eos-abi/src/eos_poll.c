@@ -97,12 +97,15 @@ int32_t eos_rust_poll(eos_rust_pollfd *descriptors,
     }
     for (index = 0; index < descriptor_count; ++index) {
         uint32_t socket_index = entry_to_socket[index];
+        int16_t events = descriptors[index].events;
         int16_t revents = descriptors[index].revents;
         if (socket_index == UINT32_MAX) continue;
-        if ((observed[socket_index] & EOS_PORT_SOCKET_EVENT_READ) != 0) {
+        if ((observed[socket_index] & EOS_PORT_SOCKET_EVENT_READ) != 0 &&
+            (events & EOS_RUST_POLLIN) != 0) {
             revents |= EOS_RUST_POLLIN;
         }
-        if ((observed[socket_index] & EOS_PORT_SOCKET_EVENT_WRITE) != 0) {
+        if ((observed[socket_index] & EOS_PORT_SOCKET_EVENT_WRITE) != 0 &&
+            (events & EOS_RUST_POLLOUT) != 0) {
             revents |= EOS_RUST_POLLOUT;
         }
         if ((observed[socket_index] & EOS_PORT_SOCKET_EVENT_ERROR) != 0) {
@@ -111,7 +114,8 @@ int32_t eos_rust_poll(eos_rust_pollfd *descriptors,
         if ((observed[socket_index] & EOS_PORT_SOCKET_EVENT_HANGUP) != 0) {
             revents |= EOS_RUST_POLLHUP;
         }
-        if ((observed[socket_index] & EOS_PORT_SOCKET_EVENT_PRIORITY) != 0) {
+        if ((observed[socket_index] & EOS_PORT_SOCKET_EVENT_PRIORITY) != 0 &&
+            (events & EOS_RUST_POLLPRI) != 0) {
             revents |= EOS_RUST_POLLPRI;
         }
         descriptors[index].revents = revents;

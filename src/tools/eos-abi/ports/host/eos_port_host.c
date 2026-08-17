@@ -137,6 +137,7 @@ static uint32_t eos_host_timeout_log_ticks[EOS_HOST_TIMEOUT_LOG_CAPACITY];
 static _Atomic uint32_t eos_host_poll_pause;
 static _Atomic uint32_t eos_host_poll_entered;
 static _Atomic uint32_t eos_host_poll_release;
+static _Atomic uint32_t eos_host_poll_forced_events;
 
 void eos_host_test_reset(void) {
     eos_host_next_alloc_status = 0;
@@ -215,6 +216,7 @@ void eos_host_test_reset(void) {
     atomic_store(&eos_host_poll_pause, 0);
     atomic_store(&eos_host_poll_entered, 0);
     atomic_store(&eos_host_poll_release, 1);
+    atomic_store(&eos_host_poll_forced_events, 0);
     (void)strcpy(eos_host_hostname, "eos-host");
     (void)pthread_mutex_unlock(&eos_host_console_guard);
     (void)pthread_mutex_lock(&eos_host_closedir_guard);
@@ -413,6 +415,25 @@ uint32_t eos_host_test_socket_poll_entered(void) {
 void eos_host_test_resume_socket_poll(void) {
     atomic_store(&eos_host_poll_release, 1);
     atomic_store(&eos_host_poll_pause, 0);
+}
+void eos_host_test_force_socket_poll_events(uint32_t compatibility_events) {
+    uint32_t port_events = 0;
+    if ((compatibility_events & EOS_RUST_POLLIN) != 0) {
+        port_events |= EOS_PORT_SOCKET_EVENT_READ;
+    }
+    if ((compatibility_events & EOS_RUST_POLLOUT) != 0) {
+        port_events |= EOS_PORT_SOCKET_EVENT_WRITE;
+    }
+    if ((compatibility_events & EOS_RUST_POLLERR) != 0) {
+        port_events |= EOS_PORT_SOCKET_EVENT_ERROR;
+    }
+    if ((compatibility_events & EOS_RUST_POLLHUP) != 0) {
+        port_events |= EOS_PORT_SOCKET_EVENT_HANGUP;
+    }
+    if ((compatibility_events & EOS_RUST_POLLPRI) != 0) {
+        port_events |= EOS_PORT_SOCKET_EVENT_PRIORITY;
+    }
+    atomic_store(&eos_host_poll_forced_events, port_events);
 }
 void eos_host_test_console_input(const char *text) {
     size_t length = strlen(text);
@@ -2109,6 +2130,9 @@ static int32_t eos_port_socket_poll(const eos_port_socket *sockets,
                                       )) != 0) {
             observed[index] |= EOS_PORT_SOCKET_EVENT_HANGUP;
         }
+#ifdef EOS_RUST_HOST_TEST
+        observed[index] |= atomic_load(&eos_host_poll_forced_events);
+#endif
     }
     return 0;
 }

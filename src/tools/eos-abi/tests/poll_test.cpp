@@ -15,6 +15,7 @@ void eos_host_test_reset(void);
 void eos_host_test_pause_socket_poll(int enabled);
 uint32_t eos_host_test_socket_poll_entered(void);
 void eos_host_test_resume_socket_poll(void);
+void eos_host_test_force_socket_poll_events(uint32_t compatibility_events);
 }
 
 static_assert(sizeof(eos_rust_pollfd) == 8);
@@ -116,6 +117,29 @@ int main() {
         EOS_RUST_AF_INET, EOS_RUST_SOCK_DGRAM, EOS_RUST_IPPROTO_UDP);
     if (expect(receiver_one >= 3 && sender >= 3,
                "poll UDP sockets must be created")) return EXIT_FAILURE;
+    eos_host_test_force_socket_poll_events(
+        EOS_RUST_POLLOUT | EOS_RUST_POLLPRI |
+        EOS_RUST_POLLERR | EOS_RUST_POLLHUP);
+    eos_rust_pollfd masked_entry{receiver_one, EOS_RUST_POLLIN, 0};
+    if (expect(eos_rust_poll(&masked_entry, 1, 0) == 1 &&
+                   masked_entry.revents ==
+                       (EOS_RUST_POLLERR | EOS_RUST_POLLHUP),
+               "poll must mask normal readiness by each entry's request while preserving error and hangup")) {
+        return EXIT_FAILURE;
+    }
+    eos_host_test_force_socket_poll_events(EOS_RUST_POLLIN |
+                                           EOS_RUST_POLLOUT);
+    eos_rust_pollfd split_entries[2] = {
+        {receiver_one, EOS_RUST_POLLIN, 0},
+        {receiver_one, EOS_RUST_POLLOUT, 0},
+    };
+    if (expect(eos_rust_poll(split_entries, 2, 0) == 2 &&
+                   split_entries[0].revents == EOS_RUST_POLLIN &&
+                   split_entries[1].revents == EOS_RUST_POLLOUT,
+               "duplicate poll entries must retain separate masks and ready counts")) {
+        return EXIT_FAILURE;
+    }
+    eos_host_test_force_socket_poll_events(0);
     eos_rust_sockaddr_in address_one = bind_udp(receiver_one);
     static constexpr char payload[] = "poll";
     if (expect(eos_rust_sendto(

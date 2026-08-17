@@ -200,11 +200,20 @@ static int32_t eos_martos_socketset_poll(
     for (index = 0; index < socket_count; ++index) {
         os_net_select_event_bits bits = OS_NET_SELECT_EXCEPT |
                                        OS_NET_SELECT_INTR;
-        if ((requested[index] & EOS_PORT_SOCKET_EVENT_READ) != 0) {
-            bits |= OS_NET_SELECT_READ;
+        uint32_t member;
+        uint32_t previous;
+        for (previous = 0; previous < index; ++previous) {
+            if (sockets[previous] == sockets[index]) break;
         }
-        if ((requested[index] & EOS_PORT_SOCKET_EVENT_WRITE) != 0) {
-            bits |= OS_NET_SELECT_WRITE;
+        if (previous != index) continue;
+        for (member = index; member < socket_count; ++member) {
+            if (sockets[member] != sockets[index]) continue;
+            if ((requested[member] & EOS_PORT_SOCKET_EVENT_READ) != 0) {
+                bits |= OS_NET_SELECT_READ;
+            }
+            if ((requested[member] & EOS_PORT_SOCKET_EVENT_WRITE) != 0) {
+                bits |= OS_NET_SELECT_WRITE;
+            }
         }
         native_result = os_net_fd_set((os_net_socket)(uintptr_t)sockets[index],
                                       set, bits);
@@ -222,27 +231,55 @@ static int32_t eos_martos_socketset_poll(
         if (os_net_socketset_delete(set) != 0) eos_rust_abort();
         return error;
     }
+    for (index = 0; index < socket_count; ++index) observed[index] = 0;
     for (index = 0; index < socket_count; ++index) {
         os_net_socket native = (os_net_socket)(uintptr_t)sockets[index];
-        os_net_select_event_bits bits = os_net_fd_isset(native, set);
-        observed[index] = 0;
-        if ((bits & OS_NET_SELECT_READ) != 0) {
-            observed[index] |= EOS_PORT_SOCKET_EVENT_READ;
+        os_net_select_event_bits bits;
+        uint32_t hangup = 0;
+        uint32_t member;
+        uint32_t previous;
+        for (previous = 0; previous < index; ++previous) {
+            if (sockets[previous] == sockets[index]) break;
         }
-        if ((bits & OS_NET_SELECT_WRITE) != 0) {
-            observed[index] |= EOS_PORT_SOCKET_EVENT_WRITE;
-        }
-        if ((bits & (OS_NET_SELECT_EXCEPT | OS_NET_SELECT_INTR)) != 0) {
-            observed[index] |= EOS_PORT_SOCKET_EVENT_ERROR;
-            if ((requested[index] & EOS_PORT_SOCKET_EVENT_PRIORITY) != 0) {
-                observed[index] |= EOS_PORT_SOCKET_EVENT_PRIORITY;
+        if (previous != index) continue;
+        bits = os_net_fd_isset(native, set);
+        for (member = index; member < socket_count; ++member) {
+            if (sockets[member] == sockets[index] &&
+                (requested[member] &
+                 EOS_PORT_SOCKET_EVENT_HANGUP_ELIGIBLE) != 0) {
+                hangup = 1;
+                break;
             }
         }
-        if ((requested[index] &
-             EOS_PORT_SOCKET_EVENT_HANGUP_ELIGIBLE) != 0 &&
+        if (hangup != 0 &&
             os_net_socket_get_protocol(native) == OS_NET_IPPROTO_TCP &&
             os_net_get_tcp_state(native) == OS_NET_TCP_CLOSED) {
-            observed[index] |= EOS_PORT_SOCKET_EVENT_HANGUP;
+            hangup = 1;
+        } else {
+            hangup = 0;
+        }
+        for (member = index; member < socket_count; ++member) {
+            if (sockets[member] != sockets[index]) continue;
+            if ((bits & OS_NET_SELECT_READ) != 0 &&
+                (requested[member] & EOS_PORT_SOCKET_EVENT_READ) != 0) {
+                observed[member] |= EOS_PORT_SOCKET_EVENT_READ;
+            }
+            if ((bits & OS_NET_SELECT_WRITE) != 0 &&
+                (requested[member] & EOS_PORT_SOCKET_EVENT_WRITE) != 0) {
+                observed[member] |= EOS_PORT_SOCKET_EVENT_WRITE;
+            }
+            if ((bits & (OS_NET_SELECT_EXCEPT | OS_NET_SELECT_INTR)) != 0) {
+                observed[member] |= EOS_PORT_SOCKET_EVENT_ERROR;
+                if ((requested[member] &
+                     EOS_PORT_SOCKET_EVENT_PRIORITY) != 0) {
+                    observed[member] |= EOS_PORT_SOCKET_EVENT_PRIORITY;
+                }
+            }
+            if (hangup != 0 &&
+                (requested[member] &
+                 EOS_PORT_SOCKET_EVENT_HANGUP_ELIGIBLE) != 0) {
+                observed[member] |= EOS_PORT_SOCKET_EVENT_HANGUP;
+            }
         }
     }
     if (os_net_socketset_delete(set) != 0) eos_rust_abort();
