@@ -25,6 +25,8 @@ uint32_t eos_time_test_deadline_ticks(uint64_t now_usec,
                                       const eos_rust_timespec *deadline,
                                       uint32_t ticks_per_second,
                                       int32_t *expired);
+int32_t eos_time_test_requested_usec(const eos_rust_timespec *requested,
+                                     uint64_t *usec);
 }
 
 namespace {
@@ -234,6 +236,31 @@ void test_nanosleep_split_rounding_and_remainder() {
                    remaining.tv_sec == 4 && remaining.tv_nsec == 5,
                "invalid nanosleep request must fail before native delay");
     }
+
+    uint64_t converted = 17;
+    request = {INT64_C(18446744073709), INT64_C(551614000)};
+    expect(eos_time_test_requested_usec(&request, &converted) == 0 &&
+               converted == UINT64_MAX - UINT64_C(1),
+           "nanosleep conversion below the uint64 boundary failed");
+    request.tv_nsec = INT64_C(551615000);
+    expect(eos_time_test_requested_usec(&request, &converted) == 0 &&
+               converted == UINT64_MAX,
+           "nanosleep conversion at the uint64 boundary failed");
+    request.tv_nsec = INT64_C(551615001);
+    converted = 19;
+    expect(eos_time_test_requested_usec(&request, &converted) == kOverflow &&
+               converted == 19,
+           "nanosleep conversion above the uint64 boundary must overflow");
+
+    eos_time_test_reset();
+    request = {INT64_C(18446744073709), INT64_C(551615001)};
+    remaining = {8, 9};
+    expect(eos_rust_nanosleep(&request, &remaining) == -1 &&
+               *eos_rust_errno_location() == kOverflow &&
+               remaining.tv_sec == 8 && remaining.tv_nsec == 9 &&
+               eos_time_test_delay_count() == 0 &&
+               eos_time_test_delay_usec_count() == 0,
+           "rounded nanosleep microseconds must reject addition overflow");
 
     request = {INT64_MAX, 999999999};
     remaining = {6, 7};

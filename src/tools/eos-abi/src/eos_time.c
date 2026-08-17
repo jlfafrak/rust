@@ -34,6 +34,24 @@ static int eos_time_timespec_valid(const eos_rust_timespec *time) {
            time->tv_nsec < INT64_C(1000000000);
 }
 
+static int32_t eos_time_requested_usec(const eos_rust_timespec *requested,
+                                       uint64_t *usec) {
+    uint64_t seconds;
+    uint64_t fractional_usec;
+    if (!eos_time_timespec_valid(requested) || usec == NULL) {
+        return EOS_ERRNO_INVALID;
+    }
+    seconds = (uint64_t)requested->tv_sec;
+    fractional_usec =
+        ((uint64_t)requested->tv_nsec + UINT64_C(999)) / UINT64_C(1000);
+    if (seconds >
+        (UINT64_MAX - fractional_usec) / UINT64_C(1000000)) {
+        return EOS_ERRNO_OVERFLOW;
+    }
+    *usec = seconds * UINT64_C(1000000) + fractional_usec;
+    return 0;
+}
+
 static void eos_time_usec_to_timespec(uint64_t usec,
                                       eos_rust_timespec *time) {
     time->tv_sec = (int64_t)(usec / UINT64_C(1000000));
@@ -153,18 +171,11 @@ int32_t eos_rust_nanosleep(const eos_rust_timespec *requested,
     uint64_t requested_usec;
     uint64_t deadline_usec;
     int32_t status;
-    if (!eos_time_timespec_valid(requested)) {
-        *eos_tls_errno_location() = EOS_ERRNO_INVALID;
+    status = eos_time_requested_usec(requested, &requested_usec);
+    if (status != 0) {
+        *eos_tls_errno_location() = status;
         return -1;
     }
-    if ((uint64_t)requested->tv_sec >
-        UINT64_MAX / UINT64_C(1000000)) {
-        *eos_tls_errno_location() = EOS_ERRNO_OVERFLOW;
-        return -1;
-    }
-    requested_usec = (uint64_t)requested->tv_sec * UINT64_C(1000000) +
-                     ((uint64_t)requested->tv_nsec + UINT64_C(999)) /
-                         UINT64_C(1000);
     status = eos_time_monotonic_usec(&start_usec);
     if (status != 0) {
         *eos_tls_errno_location() = status;
@@ -220,5 +231,10 @@ uint32_t eos_time_test_deadline_ticks(uint64_t now_usec,
                                       int32_t *expired) {
     return eos_time_deadline_ticks_internal(now_usec, deadline,
                                             ticks_per_second, expired);
+}
+
+int32_t eos_time_test_requested_usec(const eos_rust_timespec *requested,
+                                     uint64_t *usec) {
+    return eos_time_requested_usec(requested, usec);
 }
 #endif
