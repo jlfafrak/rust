@@ -104,6 +104,11 @@ After common projection was corrected, same-native split entries return ready co
 exact read/write results, while unrequested normal bits plus error/hangup return ready count one
 with exactly error/hangup. Behavioral poll/socket and both TSan targets passed 4/4.
 
+The final independent read-only recheck through `adb9d285` returned `APPROVED` with no actionable
+findings. It independently refreshed the host and MARTOS builds, focused 15/15 suite, exact
+113/113 exports, forbidden-undefined and production-seam scans, ARM ELF audit, diff check, and
+clean-status proof.
+
 ## Stable ABI, layouts, constants, and exports
 
 Only fixed-width scalars and fixed public layouts cross the ABI. Ordinary pointers remain
