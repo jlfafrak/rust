@@ -290,6 +290,32 @@ static int test_tcp_options_dup_and_partial_progress() {
                                    &pending_length) == 0 && pending == 0,
                "SO_ERROR must clear the pending error")) return 1;
 
+    eos_rust_fd_t retry_socket = eos_rust_socket(
+        EOS_RUST_AF_INET, EOS_RUST_SOCK_DGRAM, EOS_RUST_IPPROTO_UDP);
+    eos_host_test_fail_next_socket_connect(61);
+    if (expect(retry_socket >= 3 &&
+                   eos_rust_connect(
+                       retry_socket,
+                       reinterpret_cast<const eos_rust_sockaddr *>(
+                           &listener_address),
+                       sizeof(listener_address)) == -1 &&
+                   eos_rust_connect(
+                       retry_socket,
+                       reinterpret_cast<const eos_rust_sockaddr *>(
+                           &listener_address),
+                       sizeof(listener_address)) == 0,
+               "connectionless socket retry fixture must fail then succeed")) {
+        return 1;
+    }
+    pending = -1;
+    pending_length = sizeof(pending);
+    if (expect(eos_rust_getsockopt(retry_socket, EOS_RUST_SOL_SOCKET,
+                                   EOS_RUST_SO_ERROR, &pending,
+                                   &pending_length) == 0 && pending == 0,
+               "successful connect retry must clear an obsolete pending error")) {
+        return 1;
+    }
+
     uint32_t close_before = eos_host_test_socket_close_count();
     if (expect(eos_rust_close(client) == 0 &&
                    eos_host_test_socket_close_count() == close_before &&
@@ -303,6 +329,7 @@ static int test_tcp_options_dup_and_partial_progress() {
     if (expect(eos_rust_close(duplicate) == 0 &&
                    eos_host_test_socket_close_count() == close_before + 1 &&
                    eos_rust_close(error_socket) == 0 &&
+                   eos_rust_close(retry_socket) == 0 &&
                    eos_rust_close(accepted) == 0 &&
                    eos_rust_close(listener) == 0,
                "final duplicate and TCP descriptors must close exactly once")) return 1;

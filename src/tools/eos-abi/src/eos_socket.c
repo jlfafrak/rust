@@ -483,11 +483,9 @@ int32_t eos_rust_connect(eos_rust_fd_t descriptor,
     if (eos_socket_acquire(descriptor, &reference, &socket) != 0) return -1;
     if (socket->domain != converted.family) error = EOS_ERRNO_INVALID;
     else error = eos_port_socket_connect(socket->native, &converted);
-    if (error != 0) {
-        eos_socket_lock(socket);
-        socket->pending_error = error;
-        eos_socket_unlock(socket);
-    }
+    eos_socket_lock(socket);
+    socket->pending_error = error;
+    eos_socket_unlock(socket);
     return eos_socket_release(&reference,
                               error == 0 ? 0 : eos_socket_fail(error));
 }
