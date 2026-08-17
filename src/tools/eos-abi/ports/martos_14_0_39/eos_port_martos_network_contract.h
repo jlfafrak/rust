@@ -121,6 +121,18 @@ static int32_t eos_martos_timeout_option(uint32_t receive) {
     return receive != 0 ? OS_NET_SO_RCVTIMEO : OS_NET_SO_SNDTIMEO;
 }
 
+static int32_t eos_martos_socket_set_timeout(eos_port_socket socket,
+                                             uint32_t receive,
+                                             uint32_t timeout_ticks) {
+    uint32 native_timeout = (uint32)timeout_ticks;
+    return eos_martos_network_error(
+        os_net_setsockopt((os_net_socket)(uintptr_t)socket,
+                          OS_NET_SOL_SOCKET,
+                          eos_martos_timeout_option(receive),
+                          &native_timeout, (uint32)sizeof(native_timeout)),
+        EOS_MARTOS_NETWORK_OTHER);
+}
+
 static int32_t eos_martos_integer_option(int32_t compatibility_option) {
     if (compatibility_option == EOS_RUST_SO_SNDBUF) return OS_NET_SO_SNDBUF;
     if (compatibility_option == EOS_RUST_SO_RCVBUF) return OS_NET_SO_RCVBUF;
@@ -183,9 +195,8 @@ static int32_t eos_martos_socketset_poll(
     uint32_t index;
     int32_t native_result;
     set = os_net_socketset_create();
-    if (set == NULL || set == (os_net_socketset)OS_NET_INVALID_SOCKET) {
-        return EOS_ERRNO_NO_BUFFERS;
-    }
+    if (set == NULL) return EOS_ERRNO_NO_BUFFERS;
+    if (set == (os_net_socketset)OS_NET_INVALID_SOCKET) return EOS_ERRNO_IO;
     for (index = 0; index < socket_count; ++index) {
         os_net_select_event_bits bits = OS_NET_SELECT_EXCEPT |
                                        OS_NET_SELECT_INTR;

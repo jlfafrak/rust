@@ -871,13 +871,7 @@ static int32_t eos_port_socket_remote_address(
 static int32_t eos_port_socket_set_timeout(eos_port_socket socket,
                                            uint32_t receive,
                                            uint32_t timeout_ticks) {
-    uint32 native_timeout = (uint32)timeout_ticks;
-    return eos_martos_network_error(
-        os_net_setsockopt((os_net_socket)(uintptr_t)socket,
-                          OS_NET_SOL_SOCKET,
-                          eos_martos_timeout_option(receive),
-                          &native_timeout, (uint32)sizeof(native_timeout)),
-        EOS_MARTOS_NETWORK_OTHER);
+    return eos_martos_socket_set_timeout(socket, receive, timeout_ticks);
 }
 
 static int32_t eos_port_socket_set_nonblocking(eos_port_socket socket,

@@ -27,6 +27,7 @@ void eos_host_test_fail_alloc_after(uint32_t successful_allocations,
                                     int32_t status);
 int32_t eos_socket_test_ipv6_output(uint32_t scope_id,
                                     eos_rust_sockaddr_in6 *destination);
+int32_t eos_socket_test_hangup_eligible(eos_rust_fd_t descriptor);
 int32_t eos_host_test_network_error(int32_t native_error);
 }
 
@@ -113,7 +114,9 @@ static int test_tcp_options_dup_and_partial_progress() {
 
     const eos_rust_fd_t listener = eos_rust_socket(
         EOS_RUST_AF_INET, EOS_RUST_SOCK_STREAM, EOS_RUST_IPPROTO_TCP);
-    if (expect(listener >= 3, "TCP socket creation must publish a descriptor")) return 1;
+    if (expect(listener >= 3 &&
+                   eos_socket_test_hangup_eligible(listener) == 0,
+               "fresh TCP sockets must not be hangup-eligible")) return 1;
     if (expect(eos_rust_bind(listener,
                              reinterpret_cast<const eos_rust_sockaddr *>(&loopback),
                              sizeof(loopback)) == 0,
@@ -141,15 +144,19 @@ static int test_tcp_options_dup_and_partial_progress() {
                    eos_rust_connect(client,
                                     reinterpret_cast<const eos_rust_sockaddr *>(
                                         &listener_address),
-                                    sizeof(listener_address)) == 0,
+                                    sizeof(listener_address)) == 0 &&
+                   eos_socket_test_hangup_eligible(client) == 1,
                "TCP loopback connect must succeed")) return 1;
 
     eos_rust_sockaddr_in peer{};
     eos_rust_socklen_t peer_length = sizeof(peer);
     const eos_rust_fd_t accepted = eos_rust_accept(
         listener, reinterpret_cast<eos_rust_sockaddr *>(&peer), &peer_length);
-    if (expect(accepted >= 3 && peer_length == sizeof(peer),
-               "accept must publish a descriptor and peer address")) return 1;
+    if (expect(accepted >= 3 && peer_length == sizeof(peer) &&
+                   eos_socket_test_hangup_eligible(accepted) == 1,
+               "accept must publish a hangup-eligible descriptor and peer address")) {
+        return 1;
+    }
     eos_rust_sockaddr_in queried_peer{};
     eos_rust_socklen_t queried_peer_length = sizeof(queried_peer);
     if (expect(eos_rust_getpeername(
@@ -232,8 +239,11 @@ static int test_tcp_options_dup_and_partial_progress() {
     eos_rust_fd_t duplicate = eos_rust_dup(client);
     if (expect(duplicate >= 3 &&
                    (eos_rust_fcntl(duplicate, EOS_RUST_F_GETFL, 0) &
-                    EOS_RUST_O_NONBLOCK) != 0,
-               "duplicates must share nonblocking file-description state")) return 1;
+                    EOS_RUST_O_NONBLOCK) != 0 &&
+                   eos_socket_test_hangup_eligible(duplicate) == 1,
+               "duplicates must share nonblocking and hangup-eligibility state")) {
+        return 1;
+    }
     char byte = 0;
     if (expect(eos_rust_recv(client, &byte, 1, 0) == -1 &&
                    *eos_rust_errno_location() == 35,

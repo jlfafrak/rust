@@ -184,6 +184,17 @@ static uint32_t eos_socket_hangup_eligible(eos_socket *socket) {
     return eligible;
 }
 
+#ifdef EOS_RUST_HOST_TEST
+int32_t eos_socket_test_hangup_eligible(eos_rust_fd_t descriptor) {
+    eos_fd_reference reference;
+    eos_socket *socket;
+    int32_t eligible;
+    if (eos_socket_acquire(descriptor, &reference, &socket) != 0) return -1;
+    eligible = (int32_t)eos_socket_hangup_eligible(socket);
+    return eos_socket_release(&reference, eligible);
+}
+#endif
+
 static int32_t eos_socket_flags(int32_t flags, uint32_t nonblocking,
                                 int32_t *native_flags) {
     const int32_t allowed = EOS_RUST_MSG_OOB | EOS_RUST_MSG_PEEK |
