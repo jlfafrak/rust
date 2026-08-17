@@ -5,6 +5,14 @@
 
 #define EOS_SYNC_RWLOCK_MAGIC UINT32_C(0x45535231)
 
+typedef struct eos_rwlock_waiter {
+    eos_port_semaphore semaphore;
+    uint32_t write;
+    uint32_t selected;
+    uint32_t listed;
+    struct eos_rwlock_waiter *next;
+} eos_rwlock_waiter;
+
 typedef struct eos_rwlock_record {
     uint32_t identity;
     uint32_t active_operations;
@@ -14,8 +22,8 @@ typedef struct eos_rwlock_record {
     uint32_t writer_active;
     eos_rust_thread_t writer_owner;
     eos_port_mutex lock;
-    eos_port_semaphore readers_sem;
-    eos_port_semaphore writers_sem;
+    eos_rwlock_waiter *head;
+    eos_rwlock_waiter *tail;
     struct eos_rwlock_record *next;
 } eos_rwlock_record;
 
@@ -57,22 +65,9 @@ static int32_t eos_rwlock_allocate(eos_rwlock_record **output) {
     }
     (void)memset(record, 0, sizeof(*record));
     status = eos_port_mutex_create(UINT32_C(0), &record->lock);
-    if (status == 0) {
-        status = eos_port_semaphore_create(UINT32_MAX, UINT32_C(0),
-                                           &record->readers_sem);
-    }
-    if (status == 0) {
-        status = eos_port_semaphore_create(UINT32_C(1), UINT32_C(0),
-                                           &record->writers_sem);
-    }
     if (status != 0) {
-        if (record->readers_sem != 0 &&
-            eos_port_semaphore_destroy(record->readers_sem) != 0) {
+        if (record->lock != 0 && eos_port_mutex_destroy(record->lock) != 0)
             eos_rust_abort();
-        }
-        if (record->lock != 0 && eos_port_mutex_destroy(record->lock) != 0) {
-            eos_rust_abort();
-        }
         eos_sync_free(record);
         return eos_sync_status_error(status, "rwlock.create");
     }
@@ -81,9 +76,7 @@ static int32_t eos_rwlock_allocate(eos_rwlock_record **output) {
 }
 
 static void eos_rwlock_discard(eos_rwlock_record *record) {
-    if (eos_port_semaphore_destroy(record->writers_sem) != 0 ||
-        eos_port_semaphore_destroy(record->readers_sem) != 0 ||
-        eos_port_mutex_destroy(record->lock) != 0) {
+    if (eos_port_mutex_destroy(record->lock) != 0) {
         eos_rust_abort();
     }
     eos_sync_free(record);
@@ -148,6 +141,87 @@ static void eos_rwlock_release_operation(eos_rwlock_record *record) {
     eos_sync_registry_unlock();
 }
 
+static int32_t eos_rwlock_waiter_allocate(uint32_t write,
+                                           eos_rwlock_waiter **output) {
+    eos_rwlock_waiter *waiter = NULL;
+    int32_t status = eos_port_memory_alloc((uint32_t)sizeof(*waiter),
+                                           (void **)&waiter);
+    if (status != 0 || waiter == NULL) {
+        return eos_sync_status_error(status, "rwlock.waiter.allocate");
+    }
+    (void)memset(waiter, 0, sizeof(*waiter));
+    waiter->write = write;
+    status = eos_port_semaphore_create(UINT32_C(1), UINT32_C(0),
+                                       &waiter->semaphore);
+    if (status != 0) {
+        eos_sync_free(waiter);
+        return eos_sync_status_error(status, "rwlock.waiter.create");
+    }
+    *output = waiter;
+    return 0;
+}
+
+static void eos_rwlock_waiter_discard(eos_rwlock_waiter *waiter) {
+    if (eos_port_semaphore_destroy(waiter->semaphore) != 0) eos_rust_abort();
+    eos_sync_free(waiter);
+}
+
+static void eos_rwlock_waiter_append_locked(eos_rwlock_record *record,
+                                            eos_rwlock_waiter *waiter) {
+    waiter->listed = UINT32_C(1);
+    if (record->tail == NULL) {
+        record->head = waiter;
+    } else {
+        record->tail->next = waiter;
+    }
+    record->tail = waiter;
+    if (waiter->write != 0) {
+        ++record->waiting_writers;
+    } else {
+        ++record->waiting_readers;
+    }
+}
+
+static void eos_rwlock_waiter_remove_locked(eos_rwlock_record *record,
+                                            eos_rwlock_waiter *waiter) {
+    eos_rwlock_waiter **link = &record->head;
+    while (*link != NULL && *link != waiter) link = &(*link)->next;
+    if (*link != waiter || waiter->listed == 0) eos_rust_abort();
+    *link = waiter->next;
+    if (record->tail == waiter) {
+        eos_rwlock_waiter *tail = record->head;
+        while (tail != NULL && tail->next != NULL) tail = tail->next;
+        record->tail = tail;
+    }
+    waiter->listed = 0;
+    waiter->next = NULL;
+    if (waiter->write != 0) {
+        if (record->waiting_writers == 0) eos_rust_abort();
+        --record->waiting_writers;
+    } else {
+        if (record->waiting_readers == 0) eos_rust_abort();
+        --record->waiting_readers;
+    }
+}
+
+static int eos_rwlock_can_acquire_locked(const eos_rwlock_record *record,
+                                         uint32_t write) {
+    if (write != 0) {
+        return record->writer_active == 0 && record->readers == 0;
+    }
+    return record->writer_active == 0 && record->waiting_writers == 0;
+}
+
+static void eos_rwlock_acquire_immediate_locked(eos_rwlock_record *record,
+                                                uint32_t write) {
+    if (write != 0) {
+        record->writer_active = UINT32_C(1);
+        record->writer_owner = eos_rust_pthread_self();
+    } else {
+        ++record->readers;
+    }
+}
+
 int32_t eos_rust_pthread_rwlock_init(eos_rust_pthread_rwlock *rwlock) {
     eos_rwlock_record *record;
     int32_t status;
@@ -187,69 +261,79 @@ int32_t eos_rust_pthread_rwlock_init(eos_rust_pthread_rwlock *rwlock) {
 static int32_t eos_rwlock_lock_common(eos_rust_pthread_rwlock *rwlock,
                                       uint32_t write,
                                       uint32_t try_only) {
-    eos_rwlock_record *record;
+    eos_rwlock_record *record = NULL;
+    eos_rwlock_waiter *waiter = NULL;
     int32_t status = eos_rwlock_acquire(rwlock, UINT32_C(1), &record);
-    uint32_t wait = 0;
     if (status != 0) return status;
     status = eos_port_mutex_lock(record->lock, EOS_PORT_WAIT_FOREVER);
     if (status != 0) {
         eos_rwlock_release_operation(record);
         return eos_sync_status_error(status, "rwlock.lock");
     }
-    if (write != 0) {
-        if (record->writer_active == 0 && record->readers == 0) {
-            record->writer_active = UINT32_C(1);
-            record->writer_owner = eos_rust_pthread_self();
-        } else if (try_only != 0) {
-            status = EOS_ERRNO_BUSY;
-        } else {
-            ++record->waiting_writers;
-            wait = UINT32_C(1);
-        }
-    } else if (record->writer_active == 0 && record->waiting_writers == 0) {
-        ++record->readers;
-    } else if (try_only != 0) {
-        status = EOS_ERRNO_BUSY;
-    } else {
-        ++record->waiting_readers;
-        wait = UINT32_C(1);
+    if (eos_rwlock_can_acquire_locked(record, write)) {
+        eos_rwlock_acquire_immediate_locked(record, write);
+        if (eos_port_mutex_unlock(record->lock) != 0) eos_rust_abort();
+        eos_rwlock_release_operation(record);
+        return 0;
+    }
+    if (try_only != 0) {
+        if (eos_port_mutex_unlock(record->lock) != 0) eos_rust_abort();
+        eos_rwlock_release_operation(record);
+        return EOS_ERRNO_BUSY;
     }
     if (eos_port_mutex_unlock(record->lock) != 0) eos_rust_abort();
-    if (wait != 0) {
-#ifdef EOS_RUST_HOST_TEST
-        if (write != 0) {
-            atomic_store(&eos_rwlock_test_writer_wait_entered, UINT32_C(1));
-        }
-#endif
-        status = eos_port_semaphore_take(
-            write != 0 ? record->writers_sem : record->readers_sem,
-            EOS_PORT_WAIT_FOREVER);
-        if (status != 0) {
-            if (eos_port_mutex_lock(record->lock, EOS_PORT_WAIT_FOREVER) != 0) {
-                eos_rust_abort();
-            }
-            if (write != 0) {
-                if (record->waiting_writers == 0) eos_rust_abort();
-                --record->waiting_writers;
-            } else {
-                if (record->waiting_readers == 0) eos_rust_abort();
-                --record->waiting_readers;
-            }
-            if (eos_port_mutex_unlock(record->lock) != 0) eos_rust_abort();
-            status = eos_sync_status_error(status, "rwlock.wait");
-        }
-        if (status == 0 && write != 0) {
-            if (eos_port_mutex_lock(record->lock,
-                                    EOS_PORT_WAIT_FOREVER) != 0) {
-                eos_rust_abort();
-            }
-            if (record->writer_active == 0 || record->writer_owner != 0) {
-                eos_rust_abort();
-            }
-            record->writer_owner = eos_rust_pthread_self();
-            if (eos_port_mutex_unlock(record->lock) != 0) eos_rust_abort();
-        }
+
+    status = eos_rwlock_waiter_allocate(write, &waiter);
+    if (status != 0) {
+        eos_rwlock_release_operation(record);
+        return status;
     }
+    status = eos_port_mutex_lock(record->lock, EOS_PORT_WAIT_FOREVER);
+    if (status != 0) {
+        eos_rwlock_waiter_discard(waiter);
+        eos_rwlock_release_operation(record);
+        return eos_sync_status_error(status, "rwlock.lock");
+    }
+    if (eos_rwlock_can_acquire_locked(record, write)) {
+        eos_rwlock_acquire_immediate_locked(record, write);
+        if (eos_port_mutex_unlock(record->lock) != 0) eos_rust_abort();
+        eos_rwlock_waiter_discard(waiter);
+        eos_rwlock_release_operation(record);
+        return 0;
+    }
+    eos_rwlock_waiter_append_locked(record, waiter);
+    if (eos_port_mutex_unlock(record->lock) != 0) eos_rust_abort();
+
+#ifdef EOS_RUST_HOST_TEST
+    if (write != 0) {
+        atomic_store(&eos_rwlock_test_writer_wait_entered, UINT32_C(1));
+    }
+#endif
+
+    status = eos_port_semaphore_take(waiter->semaphore,
+                                     EOS_PORT_WAIT_FOREVER);
+    if (eos_port_mutex_lock(record->lock, EOS_PORT_WAIT_FOREVER) != 0) {
+        eos_rust_abort();
+    }
+    if (status == 0) {
+        if (waiter->selected == 0 || waiter->listed != 0) eos_rust_abort();
+    } else if (waiter->selected != 0) {
+        int32_t consume = eos_port_semaphore_take(waiter->semaphore,
+                                                  EOS_PORT_NO_WAIT);
+        if (consume != 0 && consume != 19) eos_rust_abort();
+        status = 0;
+    } else {
+        eos_rwlock_waiter_remove_locked(record, waiter);
+        status = eos_sync_status_error(status, "rwlock.wait");
+    }
+    if (status == 0 && write != 0) {
+        if (record->writer_active == 0 || record->writer_owner != 0) {
+            eos_rust_abort();
+        }
+        record->writer_owner = eos_rust_pthread_self();
+    }
+    if (eos_port_mutex_unlock(record->lock) != 0) eos_rust_abort();
+    eos_rwlock_waiter_discard(waiter);
     eos_rwlock_release_operation(record);
     return status;
 }
@@ -272,7 +356,7 @@ int32_t eos_rust_pthread_rwlock_trywrlock(eos_rust_pthread_rwlock *rwlock) {
 
 int32_t eos_rust_pthread_rwlock_unlock(eos_rust_pthread_rwlock *rwlock) {
     eos_rwlock_record *record;
-    uint32_t wake_readers = 0;
+    eos_rwlock_waiter *waiter;
     int32_t status = eos_rwlock_acquire(rwlock, UINT32_C(0), &record);
     if (status != 0) return status;
     status = eos_port_mutex_lock(record->lock, EOS_PORT_WAIT_FOREVER);
@@ -294,18 +378,25 @@ int32_t eos_rust_pthread_rwlock_unlock(eos_rust_pthread_rwlock *rwlock) {
     }
     if (status == 0 && record->writer_active == 0 && record->readers == 0) {
         if (record->waiting_writers != 0) {
-            --record->waiting_writers;
+            for (waiter = record->head;
+                 waiter != NULL && waiter->write == 0;
+                 waiter = waiter->next) {}
+            if (waiter == NULL) eos_rust_abort();
+            eos_rwlock_waiter_remove_locked(record, waiter);
+            waiter->selected = UINT32_C(1);
             record->writer_active = UINT32_C(1);
             record->writer_owner = 0; /* assigned by the woken writer below */
-            if (eos_port_semaphore_give(record->writers_sem) != 0) {
+            if (eos_port_semaphore_give(waiter->semaphore) != 0) {
                 eos_rust_abort();
             }
         } else if (record->waiting_readers != 0) {
-            wake_readers = record->waiting_readers;
-            record->readers += wake_readers;
-            record->waiting_readers = 0;
-            while (wake_readers-- != 0) {
-                if (eos_port_semaphore_give(record->readers_sem) != 0) {
+            while (record->head != NULL) {
+                waiter = record->head;
+                if (waiter->write != 0) eos_rust_abort();
+                eos_rwlock_waiter_remove_locked(record, waiter);
+                waiter->selected = UINT32_C(1);
+                ++record->readers;
+                if (eos_port_semaphore_give(waiter->semaphore) != 0) {
                     eos_rust_abort();
                 }
             }

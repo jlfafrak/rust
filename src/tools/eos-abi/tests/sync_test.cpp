@@ -27,6 +27,9 @@ void eos_host_test_fail_next_public_mutex_delete(int32_t status);
 void eos_host_test_fail_next_public_sem_create(int32_t status);
 void eos_host_test_fail_next_public_sem_take(int32_t status);
 void eos_host_test_spurious_next_public_sem_take(void);
+void eos_host_test_pause_public_sem_take_failure(int enabled);
+uint32_t eos_host_test_public_sem_take_failure_pause_entered(void);
+void eos_host_test_resume_public_sem_take_failure(void);
 void eos_host_test_fail_next_public_sem_give(int32_t status);
 void eos_host_test_fail_next_public_sem_delete(int32_t status);
 uint32_t eos_sync_test_last_mutex_kind(void);
@@ -621,10 +624,13 @@ void test_condition_retains_objects_through_reacquire() {
 
 void test_rwlock_faults_and_contention() {
     eos_rust_pthread_rwlock allocation_fault{};
+    expect(eos_rust_pthread_rwlock_wrlock(&allocation_fault) == 0,
+           "rwlock waiter-allocation setup failed");
     eos_host_test_fail_next_public_sem_create(15);
     expect(eos_rust_pthread_rwlock_rdlock(&allocation_fault) == kNoMemory &&
-               allocation_fault.words[0] == 0,
-           "rwlock semaphore creation failure must not publish");
+               eos_rust_pthread_rwlock_unlock(&allocation_fault) == 0 &&
+               eos_rust_pthread_rwlock_destroy(&allocation_fault) == 0,
+           "rwlock waiter semaphore creation failure must roll back");
 
     eos_rust_pthread_rwlock wait_fault{};
     expect(eos_rust_pthread_rwlock_rdlock(&wait_fault) == 0,
@@ -657,12 +663,17 @@ void test_rwlock_faults_and_contention() {
     }, "failed rwlock wake after ownership transfer must abort");
     expect_aborts([] {
         eos_rust_pthread_rwlock value{};
-        if (eos_rust_pthread_rwlock_rdlock(&value) != 0 ||
-            eos_rust_pthread_rwlock_unlock(&value) != 0) {
-            _exit(2);
+        if (eos_rust_pthread_rwlock_rdlock(&value) != 0) _exit(2);
+        eos_sync_test_reset_rwlock_wait_audit();
+        std::thread writer([&] {
+            (void)eos_rust_pthread_rwlock_wrlock(&value);
+        });
+        while (eos_sync_test_rwlock_writer_wait_entered() == 0) {
+            std::this_thread::yield();
         }
         eos_host_test_fail_next_public_sem_delete(25);
-        (void)eos_rust_pthread_rwlock_destroy(&value);
+        (void)eos_rust_pthread_rwlock_unlock(&value);
+        writer.join();
     }, "irreversible rwlock semaphore deletion failure must abort");
 #endif
 
@@ -713,6 +724,58 @@ void test_rwlock_faults_and_contention() {
     expect(violations.load() == 0 && writes.load() == 800 &&
                eos_rust_pthread_rwlock_destroy(&contended) == 0,
            "rwlock contention violated reader/writer exclusion");
+}
+
+void test_rwlock_grant_wins_wait_failure_race() {
+    eos_rust_pthread_rwlock writer_race{};
+    std::atomic<int32_t> writer_status{kInvalid};
+    expect(eos_rust_pthread_rwlock_rdlock(&writer_race) == 0,
+           "rwlock writer-race reader setup failed");
+    eos_host_test_pause_public_sem_take_failure(1);
+    eos_host_test_fail_next_public_sem_take(25);
+    std::thread writer([&] {
+        const int32_t status = eos_rust_pthread_rwlock_wrlock(&writer_race);
+        writer_status.store(status, std::memory_order_release);
+        if (status == 0) {
+            expect(eos_rust_pthread_rwlock_unlock(&writer_race) == 0,
+                   "rwlock writer-race grant unlock failed");
+        }
+    });
+    while (eos_host_test_public_sem_take_failure_pause_entered() == 0) {
+        std::this_thread::yield();
+    }
+    expect(eos_rust_pthread_rwlock_unlock(&writer_race) == 0,
+           "rwlock writer-race reader unlock failed");
+    eos_host_test_resume_public_sem_take_failure();
+    writer.join();
+    expect(writer_status.load(std::memory_order_acquire) == 0 &&
+               eos_rust_pthread_rwlock_destroy(&writer_race) == 0,
+           "an issued writer grant must win a semaphore-failure race");
+
+    eos_rust_pthread_rwlock reader_race{};
+    std::atomic<int32_t> reader_status{kInvalid};
+    expect(eos_rust_pthread_rwlock_wrlock(&reader_race) == 0,
+           "rwlock reader-race writer setup failed");
+    eos_host_test_pause_public_sem_take_failure(1);
+    eos_host_test_fail_next_public_sem_take(25);
+    std::thread reader([&] {
+        const int32_t status = eos_rust_pthread_rwlock_rdlock(&reader_race);
+        reader_status.store(status, std::memory_order_release);
+        if (status == 0) {
+            expect(eos_rust_pthread_rwlock_unlock(&reader_race) == 0,
+                   "rwlock reader-race grant unlock failed");
+        }
+    });
+    while (eos_host_test_public_sem_take_failure_pause_entered() == 0) {
+        std::this_thread::yield();
+    }
+    expect(eos_rust_pthread_rwlock_unlock(&reader_race) == 0,
+           "rwlock reader-race writer unlock failed");
+    eos_host_test_resume_public_sem_take_failure();
+    reader.join();
+    expect(reader_status.load(std::memory_order_acquire) == 0 &&
+               eos_rust_pthread_rwlock_destroy(&reader_race) == 0,
+           "an issued reader grant must win a semaphore-failure race");
 }
 
 std::atomic<uint32_t> once_calls{0};
@@ -818,6 +881,7 @@ int main() {
     test_condition_retains_objects_through_reacquire();
     test_rwlock_writer_preference();
     test_rwlock_faults_and_contention();
+    test_rwlock_grant_wins_wait_failure_race();
     test_once_and_exhaustion();
     expect(eos_sync_test_live_mutexes() == 0 &&
                eos_sync_test_live_conditions() == 0 &&

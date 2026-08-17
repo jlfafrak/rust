@@ -86,6 +86,9 @@ static int32_t eos_host_next_public_mutex_delete_status;
 static int32_t eos_host_next_public_sem_create_status;
 static int32_t eos_host_next_public_sem_take_status;
 static int eos_host_next_public_sem_spurious;
+static _Atomic uint32_t eos_host_public_sem_take_failure_pause;
+static _Atomic uint32_t eos_host_public_sem_take_failure_entered;
+static _Atomic uint32_t eos_host_public_sem_take_failure_release;
 static int32_t eos_host_next_public_sem_give_status;
 static int32_t eos_host_next_public_sem_delete_status;
 static pthread_mutex_t eos_host_time_guard = PTHREAD_MUTEX_INITIALIZER;
@@ -162,6 +165,9 @@ void eos_host_test_reset(void) {
     eos_host_next_public_sem_create_status = 0;
     eos_host_next_public_sem_take_status = 0;
     eos_host_next_public_sem_spurious = 0;
+    atomic_store(&eos_host_public_sem_take_failure_pause, UINT32_C(0));
+    atomic_store(&eos_host_public_sem_take_failure_entered, UINT32_C(0));
+    atomic_store(&eos_host_public_sem_take_failure_release, UINT32_C(1));
     eos_host_next_public_sem_give_status = 0;
     eos_host_next_public_sem_delete_status = 0;
     (void)strcpy(eos_host_hostname, "eos-host");
@@ -264,6 +270,20 @@ void eos_host_test_fail_next_public_sem_take(int32_t status) {
 }
 void eos_host_test_spurious_next_public_sem_take(void) {
     eos_host_next_public_sem_spurious = 1;
+}
+void eos_host_test_pause_public_sem_take_failure(int enabled) {
+    atomic_store(&eos_host_public_sem_take_failure_entered, UINT32_C(0));
+    atomic_store(&eos_host_public_sem_take_failure_release,
+                 enabled ? UINT32_C(0) : UINT32_C(1));
+    atomic_store(&eos_host_public_sem_take_failure_pause,
+                 enabled ? UINT32_C(1) : UINT32_C(0));
+}
+uint32_t eos_host_test_public_sem_take_failure_pause_entered(void) {
+    return atomic_load(&eos_host_public_sem_take_failure_entered);
+}
+void eos_host_test_resume_public_sem_take_failure(void) {
+    atomic_store(&eos_host_public_sem_take_failure_release, UINT32_C(1));
+    atomic_store(&eos_host_public_sem_take_failure_pause, UINT32_C(0));
 }
 void eos_host_test_fail_next_public_sem_give(int32_t status) {
     eos_host_next_public_sem_give_status = status;
@@ -919,6 +939,12 @@ static int32_t eos_port_semaphore_take(eos_port_semaphore semaphore,
     if (eos_host_next_public_sem_take_status != 0) {
         int32_t status = eos_host_next_public_sem_take_status;
         eos_host_next_public_sem_take_status = 0;
+        if (atomic_load(&eos_host_public_sem_take_failure_pause) != 0) {
+            atomic_store(&eos_host_public_sem_take_failure_entered,
+                         UINT32_C(1));
+            while (atomic_load(&eos_host_public_sem_take_failure_release) ==
+                   0) {}
+        }
         return status;
     }
 #endif
