@@ -27,3 +27,6 @@ Task 8: complete (commits 714ad85..7758a2e, review clean)
 Task 9: fix round 1/5 (5 addressed, 1 new open; commits ecda1aa..8a5d85b)
 Task 9: fix round 2/5 (1 addressed, 0 open; commits 8a5d85b..adb9d285)
 Task 9: complete (commits e18afb4..adb9d285, review clean)
+Task 10: minor (deferred): process tests do not mutate or release caller argv/env/cwd storage after spawn to prove deep-copy lifetime
+Task 10: fix round 1/5 (3 addressed, 0 open; commits 09ed298..b45ec8c)
+Task 10: complete (commits 212e5a5..b45ec8c, review clean)
