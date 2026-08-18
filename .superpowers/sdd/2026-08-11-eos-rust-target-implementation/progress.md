@@ -30,3 +30,7 @@ Task 9: complete (commits e18afb4..adb9d285, review clean)
 Task 10: minor (deferred): process tests do not mutate or release caller argv/env/cwd storage after spawn to prove deep-copy lifetime
 Task 10: fix round 1/5 (3 addressed, 0 open; commits 09ed298..b45ec8c)
 Task 10: complete (commits 212e5a5..b45ec8c, review clean)
+Task 11: plan correction (approved 2026-08-18): defer exact `./x check library/std --target armv7a-unknown-eos-eabi` gate to Task 12 because current failures are EOS PAL/generic-Unix call-site adaptations, not libc binding defects
+Task 11: fix round 1/5 (1 addressed, 1 new open; commits 426fb80..7f283b8)
+Task 11: fix round 2/5 (1 addressed, 0 open; commits 7f283b8..f5efc93)
+Task 11: complete (commits 1d856be..f5efc93, review clean; std gate deferred to Task 12)
