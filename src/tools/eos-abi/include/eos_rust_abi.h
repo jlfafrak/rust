@@ -8,6 +8,31 @@
 typedef int32_t eos_rust_fd_t;
 typedef uint32_t eos_rust_thread_t;
 typedef uint32_t eos_rust_tls_key_t;
+typedef uint32_t eos_rust_process_t;
+
+#define EOS_RUST_PROCESS_API_DEFINED UINT32_C(1)
+#define EOS_RUST_PROCESS_EXITED UINT32_C(1)
+#define EOS_RUST_PROCESS_TERMINATED UINT32_C(2)
+
+typedef struct eos_rust_spawn_request {
+    const char *program;
+    const char *const *argv;
+    uint32_t argc;
+    const char *const *envp;
+    uint32_t envc;
+    const char *cwd;
+    eos_rust_fd_t stdin_fd;
+    eos_rust_fd_t stdout_fd;
+    eos_rust_fd_t stderr_fd;
+    uint32_t flags;
+    uint32_t reserved[7];
+} eos_rust_spawn_request;
+
+typedef struct eos_rust_process_status {
+    uint32_t kind;
+    int32_t code;
+    uint32_t reserved[6];
+} eos_rust_process_status;
 
 typedef struct eos_rust_pthread_attr {
     uint32_t words[4];
@@ -379,6 +404,26 @@ EOS_RUST_EXPORT int32_t eos_rust_fchown(eos_rust_fd_t descriptor,
 EOS_RUST_EXPORT int32_t eos_rust_chmod(const char *path, uint32_t mode);
 EOS_RUST_EXPORT int32_t eos_rust_fchmod(eos_rust_fd_t descriptor,
                                         uint32_t mode);
+
+/*
+ * Process identities and statuses are fixed-width compatibility values; no
+ * native application, thread, or wait structure crosses this boundary.
+ * A stdio descriptor of -1 inherits descriptor 0, 1, or 2 respectively.
+ * Spawn copies arguments, environment, and cwd before returning. Wait is
+ * repeatable, try_wait returns 1 when complete and 0 while running, and close
+ * invalidates the identity without waiting. Current MARTOS-SMP 14.0.39
+ * supports isolated stdin/stdout bridging and inherited stderr, but returns
+ * ENOTSUP for an explicit environment, cwd, stderr redirection, or arbitrary
+ * non-CLOEXEC descriptor inheritance.
+ */
+EOS_RUST_EXPORT int32_t eos_rust_spawn(const eos_rust_spawn_request *request,
+                                       eos_rust_process_t *process);
+EOS_RUST_EXPORT int32_t eos_rust_process_wait(
+    eos_rust_process_t process, eos_rust_process_status *status);
+EOS_RUST_EXPORT int32_t eos_rust_process_try_wait(
+    eos_rust_process_t process, eos_rust_process_status *status);
+EOS_RUST_EXPORT int32_t eos_rust_process_kill(eos_rust_process_t process);
+EOS_RUST_EXPORT int32_t eos_rust_process_close(eos_rust_process_t process);
 
 /*
  * Thread and TLS calls use copyable, monotonic nonzero 32-bit identities.

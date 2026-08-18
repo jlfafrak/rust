@@ -30,8 +30,23 @@ static pthread_mutex_t eos_host_locks[EOS_PORT_LOCK_COUNT] = {
     PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER,
     PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER,
     PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER,
-    PTHREAD_MUTEX_INITIALIZER};
+    PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER};
 static pthread_mutex_t eos_host_console_guard = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t eos_host_process_guard = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t eos_host_process_condition = PTHREAD_COND_INITIALIZER;
+static uint32_t eos_host_process_started;
+static uint32_t eos_host_process_active;
+static uint32_t eos_host_process_release;
+static uint32_t eos_host_process_killed;
+static char eos_host_process_name[64];
+static char eos_host_process_program[256];
+static char eos_host_process_argv[16][128];
+static char eos_host_process_envp[16][128];
+static char eos_host_process_cwd[256];
+static int32_t eos_host_process_inherited[64];
+static uint32_t eos_host_process_argc;
+static uint32_t eos_host_process_envc;
+static uint32_t eos_host_process_inherited_count;
 #ifdef EOS_RUST_HOST_TEST
 static pthread_mutex_t eos_host_closedir_guard = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t eos_host_closedir_condition = PTHREAD_COND_INITIALIZER;
@@ -69,6 +84,9 @@ static uint32_t eos_host_file_partial_write_bytes;
 static int32_t eos_host_file_partial_write_status;
 static int32_t eos_host_next_file_close_status;
 static int32_t eos_host_next_sync_wait_status;
+static int32_t eos_host_next_sync_create_status;
+static int32_t eos_host_next_process_kill_status;
+static int32_t eos_host_next_process_unload_status;
 static uint32_t eos_host_seek_successes_before_failure;
 static int32_t eos_host_delayed_seek_status;
 static int32_t eos_host_next_thread_create_status;
@@ -168,6 +186,9 @@ void eos_host_test_reset(void) {
     eos_host_file_partial_write_status = 0;
     eos_host_next_file_close_status = 0;
     eos_host_next_sync_wait_status = 0;
+    eos_host_next_sync_create_status = 0;
+    eos_host_next_process_kill_status = 0;
+    eos_host_next_process_unload_status = 0;
     eos_host_seek_successes_before_failure = UINT32_MAX;
     eos_host_delayed_seek_status = 0;
     eos_host_next_thread_create_status = 0;
@@ -225,6 +246,19 @@ void eos_host_test_reset(void) {
     eos_host_closedir_resume = 1;
     (void)pthread_cond_broadcast(&eos_host_closedir_condition);
     (void)pthread_mutex_unlock(&eos_host_closedir_guard);
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    eos_host_process_started = UINT32_C(0);
+    eos_host_process_active = UINT32_C(0);
+    eos_host_process_release = UINT32_C(0);
+    eos_host_process_killed = UINT32_C(0);
+    eos_host_process_name[0] = '\0';
+    eos_host_process_program[0] = '\0';
+    eos_host_process_cwd[0] = '\0';
+    eos_host_process_argc = UINT32_C(0);
+    eos_host_process_envc = UINT32_C(0);
+    eos_host_process_inherited_count = UINT32_C(0);
+    (void)pthread_cond_broadcast(&eos_host_process_condition);
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
 }
 void eos_host_test_fail_next_alloc(int32_t status) { eos_host_next_alloc_status = status; }
 void eos_host_test_fail_alloc_after(uint32_t successful_allocations,
@@ -272,6 +306,15 @@ void eos_host_test_fail_next_file_close(int32_t status) {
 }
 void eos_host_test_fail_next_sync_wait(int32_t status) {
     eos_host_next_sync_wait_status = status;
+}
+void eos_host_test_fail_next_sync_create(int32_t status) {
+    eos_host_next_sync_create_status = status;
+}
+void eos_host_test_fail_next_process_kill(int32_t status) {
+    eos_host_next_process_kill_status = status;
+}
+void eos_host_test_fail_next_process_unload(int32_t status) {
+    eos_host_next_process_unload_status = status;
 }
 void eos_host_test_fail_seek_after(uint32_t successful_seeks, int32_t status) {
     eos_host_seek_successes_before_failure = successful_seeks;
@@ -471,6 +514,47 @@ void eos_host_test_hostname(const char *name) {
     eos_host_hostname[sizeof(eos_host_hostname) - 1U] = '\0';
     (void)pthread_mutex_unlock(&eos_host_console_guard);
 }
+
+void eos_host_test_process_release(void) {
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    eos_host_process_release = UINT32_C(1);
+    (void)pthread_cond_broadcast(&eos_host_process_condition);
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+}
+uint32_t eos_host_test_process_started(void) {
+    uint32_t value;
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    value = eos_host_process_started;
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return value;
+}
+uint32_t eos_host_test_process_active(void) {
+    uint32_t value;
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    value = eos_host_process_active;
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return value;
+}
+uint32_t eos_host_test_process_argc(void) { return eos_host_process_argc; }
+uint32_t eos_host_test_process_envc(void) { return eos_host_process_envc; }
+uint32_t eos_host_test_process_inherited_count(void) {
+    return eos_host_process_inherited_count;
+}
+const char *eos_host_test_process_program(void) {
+    return eos_host_process_program;
+}
+const char *eos_host_test_process_argument(uint32_t index) {
+    return index < eos_host_process_argc ? eos_host_process_argv[index] : "";
+}
+const char *eos_host_test_process_environment(uint32_t index) {
+    return index < eos_host_process_envc ? eos_host_process_envp[index] : "";
+}
+const char *eos_host_test_process_cwd(void) { return eos_host_process_cwd; }
+int32_t eos_host_test_process_inherited_fd(uint32_t index) {
+    return index < eos_host_process_inherited_count
+               ? eos_host_process_inherited[index]
+               : -1;
+}
 void eos_host_test_pause_closedir_after_validation(void) {
     (void)pthread_mutex_lock(&eos_host_closedir_guard);
     eos_host_closedir_pause = 1;
@@ -622,6 +706,148 @@ static int32_t eos_port_thread_create(const char *name,
         eos_host_start_thread_then_fail_status = 0;
         return status;
     }
+#endif
+    return 0;
+}
+
+static uint32_t eos_port_process_capabilities(void) {
+    return EOS_PORT_PROCESS_CAP_ENVIRONMENT | EOS_PORT_PROCESS_CAP_CWD |
+           EOS_PORT_PROCESS_CAP_STDERR |
+           EOS_PORT_PROCESS_CAP_DESCRIPTOR_INHERITANCE;
+}
+
+static int32_t eos_port_process_validate(
+    const eos_port_process_request *request) {
+    return request == NULL || request->name == NULL || request->program == NULL
+               ? 1 : 0;
+}
+
+static int32_t eos_port_process_load(const eos_port_process_request *request) {
+    if (request == NULL || request->program == NULL) {
+        return 1;
+    }
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    eos_host_process_started = UINT32_C(0);
+    eos_host_process_active = UINT32_C(0);
+    eos_host_process_release = UINT32_C(0);
+    eos_host_process_killed = UINT32_C(0);
+    eos_host_process_name[0] = '\0';
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return strcmp(request->program, "/host/missing") == 0
+               ? 12 : 0;
+}
+
+static void eos_host_process_copy(char *destination, size_t capacity,
+                                  const char *source) {
+    if (capacity == 0) return;
+    if (source == NULL) {
+        destination[0] = '\0';
+        return;
+    }
+    (void)strncpy(destination, source, capacity - 1U);
+    destination[capacity - 1U] = '\0';
+}
+
+static int32_t eos_port_process_run(const eos_port_process_request *request,
+                                    int32_t *exit_code) {
+    uint32_t index;
+    if (request == NULL || exit_code == NULL) {
+        return 1;
+    }
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    eos_host_process_copy(eos_host_process_name,
+                          sizeof(eos_host_process_name), request->name);
+    eos_host_process_copy(eos_host_process_program,
+                          sizeof(eos_host_process_program), request->program);
+    eos_host_process_argc = request->argc < UINT32_C(16)
+                                ? request->argc : UINT32_C(16);
+    eos_host_process_envc = request->envc < UINT32_C(16)
+                                ? request->envc : UINT32_C(16);
+    eos_host_process_inherited_count =
+        request->inherited_count < UINT32_C(64)
+            ? request->inherited_count : UINT32_C(64);
+    for (index = 0; index < eos_host_process_argc; ++index) {
+        eos_host_process_copy(eos_host_process_argv[index],
+                              sizeof(eos_host_process_argv[index]),
+                              request->argv[index]);
+    }
+    for (index = 0; index < eos_host_process_envc; ++index) {
+        eos_host_process_copy(eos_host_process_envp[index],
+                              sizeof(eos_host_process_envp[index]),
+                              request->envp[index]);
+    }
+    eos_host_process_copy(eos_host_process_cwd, sizeof(eos_host_process_cwd),
+                          request->cwd);
+    for (index = 0; index < eos_host_process_inherited_count; ++index) {
+        eos_host_process_inherited[index] = request->inherited[index].descriptor;
+    }
+    eos_host_process_started = UINT32_C(1);
+    eos_host_process_active = UINT32_C(1);
+    (void)pthread_cond_broadcast(&eos_host_process_condition);
+    if (strcmp(request->program, "/host/block") == 0 ||
+        strcmp(request->program, "/host/block-copy3") == 0) {
+        while (eos_host_process_release == UINT32_C(0) &&
+               eos_host_process_killed == UINT32_C(0)) {
+            (void)pthread_cond_wait(&eos_host_process_condition,
+                                    &eos_host_process_guard);
+        }
+    }
+    eos_host_process_active = UINT32_C(0);
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+
+    if (strcmp(request->program, "/host/run-error") == 0) {
+        return 25;
+    }
+    if (strcmp(request->program, "/host/copy3") == 0 ||
+        strcmp(request->program, "/host/block-copy3") == 0) {
+        char bytes[3];
+        int32_t count = request->io.read(request->io.context, bytes,
+                                         (uint32_t)sizeof(bytes));
+        if (count < 0) return 26;
+        if (count != 0 && request->io.write_out(request->io.context, bytes,
+                                                (uint32_t)count) != count) {
+            return 27;
+        }
+    } else if (strcmp(request->program, "/host/stdout") == 0) {
+        if (request->io.write_out(request->io.context, "out", 3) != 3) {
+            return 27;
+        }
+    } else if (strcmp(request->program, "/host/stderr") == 0) {
+        if (request->io.write_err(request->io.context, "err", 3) != 3) {
+            return 27;
+        }
+    }
+    *exit_code = strcmp(request->program, "/host/capture") == 0
+                     ? INT32_C(23) : INT32_C(0);
+    return 0;
+}
+
+static int32_t eos_port_process_kill(const char *name, uint32_t *matched) {
+    if (name == NULL || matched == NULL) return 1;
+    *matched = UINT32_C(0);
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_next_process_kill_status != 0) {
+        int32_t status = eos_host_next_process_kill_status;
+        eos_host_next_process_kill_status = 0;
+        return status;
+    }
+#endif
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    if (eos_host_process_active != UINT32_C(0) &&
+        strcmp(name, eos_host_process_name) == 0) {
+        eos_host_process_killed = UINT32_C(1);
+        eos_host_process_release = UINT32_C(1);
+        *matched = UINT32_C(1);
+        (void)pthread_cond_broadcast(&eos_host_process_condition);
+    }
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return 0;
+}
+
+static int32_t eos_port_process_unload(const char *name) {
+    if (name == NULL) return 1;
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_next_process_unload_status != 0) eos_rust_abort();
 #endif
     return 0;
 }
@@ -840,6 +1066,14 @@ typedef struct eos_host_sync {
 static int32_t eos_port_sync_create(eos_port_sync *sync) {
     eos_host_sync *created;
     if (sync == NULL) return 1;
+#ifdef EOS_RUST_HOST_TEST
+    if (eos_host_next_sync_create_status != 0) {
+        int32_t status = eos_host_next_sync_create_status;
+        eos_host_next_sync_create_status = 0;
+        *sync = (eos_port_sync)0;
+        return status;
+    }
+#endif
     created = (eos_host_sync *)malloc(sizeof(*created));
     if (created == NULL) return 15;
     if (pthread_mutex_init(&created->mutex, NULL) != 0) {

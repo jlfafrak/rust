@@ -56,6 +56,10 @@ eos_rust_opendir
 eos_rust_pipe
 eos_rust_posix_memalign
 eos_rust_pread
+eos_rust_process_close
+eos_rust_process_kill
+eos_rust_process_try_wait
+eos_rust_process_wait
 eos_rust_pthread_attr_destroy
 eos_rust_pthread_attr_getstacksize
 eos_rust_pthread_attr_init
@@ -107,6 +111,7 @@ eos_rust_rmdir
 eos_rust_runtime_init
 eos_rust_setenv
 eos_rust_stat_path
+eos_rust_spawn
 eos_rust_symlink
 eos_rust_unlink
 eos_rust_unsetenv

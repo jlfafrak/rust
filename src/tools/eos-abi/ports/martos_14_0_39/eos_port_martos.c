@@ -9,6 +9,8 @@
 #include <stdatomic.h>
 #include <string.h>
 
+#include "eos_port_martos_process_contract.h"
+
 /* Authoritative EOS libc/include/stdio.h declarations; kept private here. */
 extern int rename(const char *old_name, const char *new_name);
 extern int rmdir(const char *filename);
@@ -913,4 +915,174 @@ static int32_t eos_port_socket_poll(const eos_port_socket *sockets,
                                     uint32_t timeout_ticks) {
     return eos_martos_socketset_poll(sockets, requested, observed,
                                      socket_count, timeout_ticks);
+}
+
+static uint32_t eos_port_process_capabilities(void) {
+    return UINT32_C(0);
+}
+
+static int eos_martos_process_string_fits(const char *value,
+                                          uint32_t capacity) {
+    uint32_t index;
+    if (value == NULL) return 0;
+    for (index = 0; index < capacity; ++index) {
+        if (value[index] == '\0') return 1;
+    }
+    return 0;
+}
+
+static int32_t eos_port_process_validate(
+    const eos_port_process_request *request) {
+    uint32_t index;
+    if (request == NULL || request->name == NULL || request->program == NULL) {
+        return OS_STS_INVALID_PARAM1;
+    }
+    if (!eos_martos_process_options_supported(
+            request->envc, request->cwd != NULL ? UINT32_C(1) : UINT32_C(0),
+            UINT32_C(0), request->inherited_count)) {
+        return OS_STS_NOT_CALLABLE_FROM_ISR;
+    }
+    if (request->argc > OS_APP_MAX_ARG_COUNT) return OS_STS_INVALID_PARAM3;
+    for (index = 0; index < request->argc; ++index) {
+        if (!eos_martos_process_string_fits(request->argv[index],
+                                            OS_APP_MAX_ARG_LENGTH)) {
+            return OS_STS_INVALID_PARAM3;
+        }
+    }
+    return OS_STS_OK;
+}
+
+static int32_t eos_port_process_load(const eos_port_process_request *request) {
+    return (int32_t)os_app_load_elf(request->name, request->program,
+                                    UINT32_C(0), UINT32_C(0));
+}
+
+static os_status eos_martos_process_read_byte(char *byte, void *opaque,
+                                               uint32 timeout_ticks) {
+    const eos_port_process_request *request =
+        (const eos_port_process_request *)opaque;
+    int32_t count;
+    (void)timeout_ticks;
+    count = request->io.read(request->io.context, byte, UINT32_C(1));
+    return (os_status)eos_martos_process_read_result(
+        count, OS_STS_OK, OS_STS_END_OF_OBJECT, OS_STS_DEVICE_READ_ERROR);
+}
+
+static os_status eos_martos_process_write_byte(char byte, void *opaque,
+                                                uint32 timeout_ticks) {
+    const eos_port_process_request *request =
+        (const eos_port_process_request *)opaque;
+    (void)timeout_ticks;
+    return (os_status)eos_martos_process_write_result(
+        request->io.write_out(request->io.context, &byte, UINT32_C(1)),
+        OS_STS_OK, OS_STS_DEVICE_WRITE_ERROR);
+}
+
+static os_status eos_martos_process_redirection_end(void *opaque) {
+    (void)opaque;
+    return OS_STS_OK;
+}
+
+static int32_t eos_port_process_run(const eos_port_process_request *request,
+                                    int32_t *exit_code) {
+    os_stdio_redirection redirection;
+    os_app_context context;
+    uint32_t index;
+    os_status status;
+    if (request == NULL || exit_code == NULL) return OS_STS_INVALID_PARAM1;
+    (void)memset(&redirection, 0, sizeof(redirection));
+    redirection.read = eos_martos_process_read_byte;
+    redirection.write = eos_martos_process_write_byte;
+    redirection.readEnd = eos_martos_process_redirection_end;
+    redirection.writeEnd = eos_martos_process_redirection_end;
+    redirection.rdParam = (void *)request;
+    redirection.wrParam = (void *)request;
+    (void)memset(&context, 0, sizeof(context));
+    context.argc = (int32)request->argc;
+    for (index = 0; index < request->argc; ++index) {
+        context.argv[index] = request->argv[index];
+    }
+    context.stdio = &redirection;
+    status = os_app_run(request->name, "main", &context);
+    if (status == OS_STS_OK) *exit_code = (int32_t)context.returnValue;
+    return (int32_t)status;
+}
+
+static int32_t eos_martos_process_get_name_adapter(
+    uintptr_t thread, char *name, uint32_t capacity, void *context) {
+    (void)context;
+    return (int32_t)os_thread_get_app_name((os_thread *)thread, name,
+                                           (uint32)capacity);
+}
+
+static int32_t eos_martos_process_delete_adapter(uintptr_t thread,
+                                                  void *context) {
+    (void)context;
+    return (int32_t)os_thread_delete((os_thread *)thread);
+}
+
+static int32_t eos_martos_process_count_adapter(uint32_t *count,
+                                                 void *context) {
+    (void)context;
+    return (int32_t)os_thread_get_count((uint32 *)count);
+}
+
+static int32_t eos_martos_process_allocate_adapter(uint32_t bytes,
+                                                    void **memory,
+                                                    void *context) {
+    (void)context;
+    return eos_port_memory_alloc(bytes, memory);
+}
+
+static int32_t eos_martos_process_snapshot_adapter(
+    void *storage, uint32_t capacity, uintptr_t *threads,
+    uint32_t *count, void *context) {
+    os_thread_status *statuses = (os_thread_status *)storage;
+    uint32 actual = 0;
+    uint32 usable = 0;
+    uint32 index;
+    int32_t status;
+    (void)context;
+    status = (int32_t)os_thread_get_status(statuses, (uint32)capacity,
+                                           &actual);
+    if (status != OS_STS_OK) return status;
+    if (actual > capacity) return OS_STS_DEVICE_ERROR;
+    for (index = 0; index < actual; ++index) {
+        if (statuses[index].thread != NULL) {
+            threads[usable++] = (uintptr_t)statuses[index].thread;
+        }
+    }
+    *count = usable;
+    return OS_STS_OK;
+}
+
+static int32_t eos_martos_process_release_adapter(void *memory,
+                                                   void *context) {
+    (void)context;
+    return eos_port_memory_free(memory);
+}
+
+static void eos_martos_process_fail_fast_adapter(void *context) {
+    (void)context;
+    eos_rust_abort();
+}
+
+static int32_t eos_port_process_kill(const char *name, uint32_t *matched) {
+    if (name == NULL || matched == NULL) return OS_STS_INVALID_PARAM1;
+    return eos_martos_process_enumerate_and_kill(
+        name, OS_NAME_LEN, (uint32_t)sizeof(os_thread_status), OS_STS_OK,
+        OS_STS_OBJECT_NOT_FOUND, OS_STS_ALLOC_ERROR,
+        eos_martos_process_count_adapter, eos_martos_process_allocate_adapter,
+        eos_martos_process_snapshot_adapter, eos_martos_process_release_adapter,
+        eos_martos_process_get_name_adapter,
+        eos_martos_process_delete_adapter,
+        eos_martos_process_fail_fast_adapter, NULL, matched);
+}
+
+static int32_t eos_port_process_unload(const char *name) {
+    int32_t status = (int32_t)os_app_unload(name, true);
+    if (eos_martos_process_cleanup_failed(status, OS_STS_OK)) {
+        eos_rust_abort();
+    }
+    return OS_STS_OK;
 }

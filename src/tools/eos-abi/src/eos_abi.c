@@ -31,6 +31,7 @@
 #include "eos_dir.c"
 #include "eos_pipe.c"
 #include "eos_stdio.c"
+#include "eos_process.c"
 #include "eos_thread.c"
 #include "eos_mutex.c"
 #include "eos_time.c"

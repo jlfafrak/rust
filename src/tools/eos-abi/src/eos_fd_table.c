@@ -157,6 +157,100 @@ static void eos_fd_finish_destroy(eos_fd_pending_destroy pending) {
     }
 }
 
+static int32_t eos_fd_process_pin_descriptor(int32_t descriptor,
+                                             eos_fd_process_pin *pin) {
+    eos_fd_slot *slot;
+    if (pin == NULL) return eos_fd_fail_errno(EOS_ERRNO_FAULT);
+    (void)memset(pin, 0, sizeof(*pin));
+    if (descriptor < 0 || (uint32_t)descriptor >= EOS_FD_TABLE_CAPACITY) {
+        return eos_fd_fail_errno(EOS_ERRNO_BAD_DESCRIPTOR);
+    }
+    if (eos_fd_lock() != 0) return -1;
+    slot = &eos_fd_slots[(uint32_t)descriptor];
+    if (slot->occupied == UINT32_C(0) || slot->object == NULL ||
+        slot->object->references == UINT64_MAX) {
+        eos_fd_unlock();
+        return eos_fd_fail_errno(slot->occupied == UINT32_C(0)
+                                     ? EOS_ERRNO_BAD_DESCRIPTOR
+                                     : EOS_ERRNO_TOO_MANY_OPEN_FILES);
+    }
+    ++slot->object->references;
+    pin->descriptor = descriptor;
+    pin->active = UINT32_C(1);
+    pin->kind = slot->kind;
+    pin->native = slot->native;
+    pin->object = (uintptr_t)slot->object;
+    eos_fd_unlock();
+    return 0;
+}
+
+static void eos_fd_process_unpin(eos_fd_process_pin *pin) {
+    eos_fd_pending_destroy pending;
+    if (pin == NULL || pin->active == UINT32_C(0)) return;
+    if (eos_fd_lock() != 0) eos_rust_abort();
+    pending = eos_fd_drop_object_locked((eos_fd_object *)pin->object);
+    pin->active = UINT32_C(0);
+    pin->object = (uintptr_t)0;
+    eos_fd_unlock();
+    eos_fd_finish_destroy(pending);
+}
+
+static int eos_fd_process_is_excluded(int32_t descriptor,
+                                      const int32_t *excluded,
+                                      uint32_t excluded_count) {
+    uint32_t index;
+    for (index = 0; index < excluded_count; ++index) {
+        if (excluded[index] == descriptor) return 1;
+    }
+    return 0;
+}
+
+static int32_t eos_fd_process_snapshot_inheritable(
+    eos_fd_process_pin *pins, uint32_t capacity, uint32_t *count,
+    const int32_t *excluded, uint32_t excluded_count) {
+    uint32_t slot_index;
+    uint32_t used = 0;
+    if (pins == NULL || count == NULL) {
+        return eos_fd_fail_errno(EOS_ERRNO_FAULT);
+    }
+    *count = 0;
+    if (eos_fd_lock() != 0) return -1;
+    for (slot_index = UINT32_C(3); slot_index < EOS_FD_TABLE_CAPACITY;
+         ++slot_index) {
+        eos_fd_slot *slot = &eos_fd_slots[slot_index];
+        if (slot->occupied == UINT32_C(0) ||
+            (slot->flags & EOS_FD_FLAG_CLOEXEC) != 0 ||
+            eos_fd_process_is_excluded((int32_t)slot_index, excluded,
+                                       excluded_count)) {
+            continue;
+        }
+        if (used == capacity || slot->object == NULL ||
+            slot->object->references == UINT64_MAX) {
+            uint32_t rollback;
+            for (rollback = 0; rollback < used; ++rollback) {
+                eos_fd_object *object = (eos_fd_object *)pins[rollback].object;
+                if (object == NULL || object->references <= UINT64_C(1)) {
+                    eos_rust_abort();
+                }
+                --object->references;
+                pins[rollback].active = UINT32_C(0);
+            }
+            eos_fd_unlock();
+            return eos_fd_fail_errno(EOS_ERRNO_TOO_MANY_OPEN_FILES);
+        }
+        ++slot->object->references;
+        pins[used].descriptor = (int32_t)slot_index;
+        pins[used].active = UINT32_C(1);
+        pins[used].kind = slot->kind;
+        pins[used].native = slot->native;
+        pins[used].object = (uintptr_t)slot->object;
+        ++used;
+    }
+    eos_fd_unlock();
+    *count = used;
+    return 0;
+}
+
 static eos_fd_pending_destroy eos_fd_remove_slot_locked(uint32_t slot_index) {
     eos_fd_slot *slot = &eos_fd_slots[slot_index];
     eos_fd_pending_destroy pending = eos_fd_drop_object_locked(slot->object);

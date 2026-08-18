@@ -26,7 +26,8 @@ typedef struct eos_hash_seed_sources {
 #define EOS_PORT_LOCK_TLS_KEYS UINT32_C(6)
 #define EOS_PORT_LOCK_SYNC_REGISTRY UINT32_C(7)
 #define EOS_PORT_LOCK_TIME UINT32_C(8)
-#define EOS_PORT_LOCK_COUNT UINT32_C(9)
+#define EOS_PORT_LOCK_PROCESS_REGISTRY UINT32_C(9)
+#define EOS_PORT_LOCK_COUNT UINT32_C(10)
 
 #define EOS_PORT_NO_WAIT UINT32_C(0)
 #define EOS_PORT_WAIT_FOREVER UINT32_MAX
@@ -93,6 +94,41 @@ typedef struct eos_port_socket_io_result {
 } eos_port_socket_io_result;
 typedef void (*eos_port_thread_start)(void *argument);
 
+#define EOS_PORT_PROCESS_CAP_ENVIRONMENT UINT32_C(0x01)
+#define EOS_PORT_PROCESS_CAP_CWD UINT32_C(0x02)
+#define EOS_PORT_PROCESS_CAP_STDERR UINT32_C(0x04)
+#define EOS_PORT_PROCESS_CAP_DESCRIPTOR_INHERITANCE UINT32_C(0x08)
+
+typedef int32_t (*eos_port_process_read)(void *context, void *buffer,
+                                         uint32_t byte_count);
+typedef int32_t (*eos_port_process_write)(void *context, const void *buffer,
+                                          uint32_t byte_count);
+
+typedef struct eos_port_process_io {
+    eos_port_process_read read;
+    eos_port_process_write write_out;
+    eos_port_process_write write_err;
+    void *context;
+} eos_port_process_io;
+
+typedef struct eos_port_process_inherited {
+    int32_t descriptor;
+    uint32_t kind;
+} eos_port_process_inherited;
+
+typedef struct eos_port_process_request {
+    const char *name;
+    const char *program;
+    char *const *argv;
+    uint32_t argc;
+    char *const *envp;
+    uint32_t envc;
+    const char *cwd;
+    eos_port_process_io io;
+    const eos_port_process_inherited *inherited;
+    uint32_t inherited_count;
+} eos_port_process_request;
+
 /* Implemented with internal linkage by the one C source selected by CMake. */
 static int32_t eos_port_thread_tls_get(uint32_t slot, uintptr_t *value);
 static int32_t eos_port_thread_tls_set(uint32_t slot, uintptr_t value);
@@ -100,6 +136,13 @@ static int32_t eos_port_thread_create(const char *name,
                                       eos_port_thread_start start,
                                       void *argument,
                                       uint32_t stack_size);
+static uint32_t eos_port_process_capabilities(void);
+static int32_t eos_port_process_validate(const eos_port_process_request *request);
+static int32_t eos_port_process_load(const eos_port_process_request *request);
+static int32_t eos_port_process_run(const eos_port_process_request *request,
+                                    int32_t *exit_code);
+static int32_t eos_port_process_kill(const char *name, uint32_t *matched);
+static int32_t eos_port_process_unload(const char *name);
 static int32_t eos_port_memory_alloc(uint32_t byte_count, void **memory);
 static int32_t eos_port_memory_alloc_aligned(uint32_t byte_count,
                                              uint32_t alignment,

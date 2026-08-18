@@ -29,6 +29,21 @@ static_assert(offsetof(eos_rust_pthread_rwlock, words) == 0);
 static_assert(sizeof(eos_rust_pthread_once_t) == 8);
 static_assert(alignof(eos_rust_pthread_once_t) == alignof(uint32_t));
 static_assert(offsetof(eos_rust_pthread_once_t, words) == 0);
+static_assert(sizeof(eos_rust_process_t) == 4);
+static_assert(sizeof(eos_rust_process_status) == 32);
+static_assert(alignof(eos_rust_process_status) == alignof(uint32_t));
+static_assert(offsetof(eos_rust_process_status, kind) == 0);
+static_assert(offsetof(eos_rust_process_status, code) == 4);
+static_assert(offsetof(eos_rust_process_status, reserved) == 8);
+static_assert(sizeof(eos_rust_spawn_request) ==
+              (sizeof(void *) == 8 ? 96 : 68));
+static_assert(offsetof(eos_rust_spawn_request, program) == 0);
+static_assert(offsetof(eos_rust_spawn_request, stdin_fd) ==
+              (sizeof(void *) == 8 ? 48 : 24));
+static_assert(offsetof(eos_rust_spawn_request, flags) ==
+              (sizeof(void *) == 8 ? 60 : 36));
+static_assert(offsetof(eos_rust_spawn_request, reserved) ==
+              (sizeof(void *) == 8 ? 64 : 40));
 
 namespace {
 

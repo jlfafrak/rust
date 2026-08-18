@@ -40,6 +40,14 @@ typedef struct eos_fd_reference {
     eos_fd_native native;
 } eos_fd_reference;
 
+typedef struct eos_fd_process_pin {
+    int32_t descriptor;
+    uint32_t active;
+    eos_fd_kind kind;
+    eos_fd_native native;
+    uintptr_t object;
+} eos_fd_process_pin;
+
 #ifdef EOS_RUST_HOST_TEST
 #  ifdef __cplusplus
 extern "C" {

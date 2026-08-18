@@ -75,5 +75,30 @@ _Static_assert(offsetof(eos_rust_addrinfo, ai_canonname) == 24,
                "addrinfo canonical pointer offset");
 _Static_assert(offsetof(eos_rust_addrinfo, ai_next) == 28,
                "addrinfo next pointer offset");
+_Static_assert(sizeof(eos_rust_process_t) == 4, "process identity size");
+_Static_assert(sizeof(eos_rust_process_status) == 32,
+               "process status size");
+_Static_assert(_Alignof(eos_rust_process_status) == 4,
+               "process status alignment");
+_Static_assert(offsetof(eos_rust_process_status, code) == 4,
+               "process status code offset");
+_Static_assert(offsetof(eos_rust_process_status, reserved) == 8,
+               "process status reserved offset");
+_Static_assert(sizeof(eos_rust_spawn_request) == 68,
+               "spawn request ARM size");
+_Static_assert(_Alignof(eos_rust_spawn_request) == 4,
+               "spawn request ARM alignment");
+_Static_assert(offsetof(eos_rust_spawn_request, argv) == 4,
+               "spawn argv offset");
+_Static_assert(offsetof(eos_rust_spawn_request, envp) == 12,
+               "spawn envp offset");
+_Static_assert(offsetof(eos_rust_spawn_request, cwd) == 20,
+               "spawn cwd offset");
+_Static_assert(offsetof(eos_rust_spawn_request, stdin_fd) == 24,
+               "spawn stdin offset");
+_Static_assert(offsetof(eos_rust_spawn_request, flags) == 36,
+               "spawn flags offset");
+_Static_assert(offsetof(eos_rust_spawn_request, reserved) == 40,
+               "spawn reserved offset");
 
 eos_rust_pthread_mutex eos_arm_layout_probe;
