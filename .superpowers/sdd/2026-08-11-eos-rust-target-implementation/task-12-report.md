@@ -275,10 +275,45 @@ Production changes are limited to the reviewed EOS Unix PAL/call sites, the EOS
 libc module, the two authorized native services and corrected hash signature,
 their host/MARTOS mappings and tests, and the two authorized bootstrap target
 integration lines. Test additions are the std-smoke crate, PAL cfg audit,
-bootstrap regressions, and independent native service contracts. No progress
-ledger or Task 13+ source is touched.
+bootstrap regressions, and independent native service contracts.
+
+Task 12 intentionally pulled forward the narrow process routing in
+`sys/process/unix/common.rs`, `sys/process/unix/mod.rs`, and
+`os/unix/process.rs`, plus the new `sys/process/unix/eos.rs` backend, from the
+Task 13 file list. That was required to satisfy Task 12's exact std compile gate
+and the std-smoke `Command` type-check without inventing POSIX process symbols.
+This does not complete or start the remaining Task 13 validation and
+deliverables; they are untouched. No progress ledger is changed.
 
 The only external completion dependency is Task 15's `eos-rust-link`: until it
 exists, an exact std artifact link and `--run never` no-run test link cannot
 complete. The explicit v1 unsupported capabilities above remain visible to Rust
 callers. There is no request to widen the native ABI beyond 120 exports.
+
+## Review fix — branch-local stable-service comments
+
+Review verified that the original cfg audit checked only seven hard-coded
+service/file pairs and accepted a matching comment anywhere in the file. A
+controlled fixture containing the two real EOS `fcntl` branch shapes first
+failed with `2 != 0 : []`, proving the audit's false negative before its
+implementation changed.
+
+The replacement derives Rust callable names and exact `eos_rust_*` link names
+from the EOS libc module, extracts each positive EOS cfg/cfg-select region and
+each function in the EOS-only process/random modules, and accepts an exact
+service comment only inside or immediately adjacent to that branch. The exact
+random body remains unchanged; its stable-service comment is checked in the
+adjacent EOS module-selection arm. The special errno link-name declaration is
+checked only against its adjacent source context, not the whole file.
+
+After the control turned GREEN, the production audit honestly reported 18
+missing branch-local names: four allocation services, PAL abort/fcntl, two fd
+fcntl branches, fs fcntl/opendir, process kill/wait/try-wait/close/abort, and
+three pthread paths. Adding only exact adjacent comments made the focused audit
+pass 7/7. The full libc-link/provenance/toolchain-lock/PAL-cfg/bootstrap suite
+then passed 16/16 in 62.096 seconds. A fresh exact no-bypass
+`./x check library/std --target armv7a-unknown-eos-eabi` passed in 1:03, and the
+std-smoke metadata check against its freshly updated
+`libstd-bc0ddd2c2a05fcf2.rmeta` passed with output
+`/tmp/eos-task12-review-std-smoke.rmeta`. These review changes do not alter PAL
+behavior or the 120-symbol ABI.

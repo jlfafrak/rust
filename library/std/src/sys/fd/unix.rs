@@ -589,6 +589,7 @@ impl FileDesc {
     }
     #[cfg(target_os = "eos")]
     pub fn set_cloexec(&self) -> io::Result<()> {
+        // EOS updates descriptor flags through the stable eos_rust_fcntl service.
         unsafe {
             let previous = cvt(libc::fcntl(self.as_raw_fd(), libc::F_GETFD, 0))?;
             let new = previous | libc::FD_CLOEXEC;
@@ -661,6 +662,7 @@ impl FileDesc {
 
     #[cfg(target_os = "eos")]
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        // EOS updates status flags through the stable eos_rust_fcntl service.
         unsafe {
             let previous = cvt(libc::fcntl(self.as_raw_fd(), libc::F_GETFL, 0))?;
             let new = if nonblocking {

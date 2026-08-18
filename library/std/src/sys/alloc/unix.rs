@@ -4,6 +4,7 @@ use crate::ptr;
 
 #[cfg(target_os = "eos")]
 unsafe fn system_malloc(size: usize) -> *mut libc::c_void {
+    // EOS allocates through the stable eos_rust_malloc service.
     match u32::try_from(size) {
         Ok(size) => unsafe { libc::malloc(size) },
         Err(_) => ptr::null_mut(),
@@ -17,6 +18,7 @@ unsafe fn system_malloc(size: usize) -> *mut libc::c_void {
 
 #[cfg(target_os = "eos")]
 unsafe fn system_calloc(size: usize) -> *mut libc::c_void {
+    // EOS zero-allocates through the stable eos_rust_calloc service.
     match u32::try_from(size) {
         Ok(size) => unsafe { libc::calloc(size, 1) },
         Err(_) => ptr::null_mut(),
@@ -30,6 +32,7 @@ unsafe fn system_calloc(size: usize) -> *mut libc::c_void {
 
 #[cfg(target_os = "eos")]
 unsafe fn system_realloc(memory: *mut libc::c_void, size: usize) -> *mut libc::c_void {
+    // EOS reallocates through the stable eos_rust_realloc service.
     match u32::try_from(size) {
         Ok(size) => unsafe { libc::realloc(memory, size) },
         Err(_) => ptr::null_mut(),
@@ -109,6 +112,7 @@ cfg_select! {
     target_os = "eos" => {
         #[inline]
         unsafe fn aligned_malloc(layout: &Layout) -> *mut u8 {
+            // EOS aligns allocations through the stable eos_rust_posix_memalign service.
             let Ok(align) = u32::try_from(layout.align()) else {
                 return ptr::null_mut();
             };

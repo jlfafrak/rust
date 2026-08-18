@@ -339,6 +339,7 @@ fn debug_path_fd<'a, 'b>(
 
 #[cfg(target_os = "eos")]
 unsafe fn fcntl_no_arg(fd: c_int, command: c_int) -> c_int {
+    // EOS queries descriptors through the stable eos_rust_fcntl service.
     unsafe { libc::fcntl(fd, command, 0) }
 }
 
@@ -2168,6 +2169,7 @@ pub fn readdir(path: &Path) -> io::Result<ReadDir> {
 
 #[cfg(target_os = "eos")]
 pub fn readdir(path: &Path) -> io::Result<ReadDir> {
+    // EOS opens directory streams through the stable eos_rust_opendir service.
     let descriptor = run_path_with_cstr(path, &|p| unsafe { Ok(libc::opendir(p.as_ptr())) })?;
     if descriptor < 0 {
         Err(Error::last_os_error())

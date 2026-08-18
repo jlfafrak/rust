@@ -86,6 +86,7 @@ impl Process {
         if self.status.is_some() {
             return Ok(());
         }
+        // EOS terminates a child through the stable eos_rust_process_kill service.
         if unsafe { libc::eos_process_kill(self.handle) } == 0 {
             Ok(())
         } else {
@@ -116,6 +117,7 @@ impl Process {
             code: 0,
             reserved: [0; 6],
         };
+        // EOS waits through the stable eos_rust_process_wait service.
         if unsafe { libc::eos_process_wait(self.handle, &mut status) } != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -133,6 +135,7 @@ impl Process {
             code: 0,
             reserved: [0; 6],
         };
+        // EOS polls through the stable eos_rust_process_try_wait service.
         match unsafe { libc::eos_process_try_wait(self.handle, &mut status) } {
             0 => Ok(None),
             1 => {
@@ -147,6 +150,8 @@ impl Process {
 
 impl Drop for Process {
     fn drop(&mut self) {
+        // EOS releases handles through eos_rust_process_close; irreversible
+        // failure terminates through the stable eos_rust_abort service.
         if unsafe { libc::eos_process_close(self.handle) } != 0 {
             unsafe { libc::abort() }
         }

@@ -3,10 +3,12 @@
 import re
 import unittest
 from pathlib import Path
+from typing import Optional
 
 
 ROOT = Path(__file__).resolve().parents[3]
 STD = ROOT / "library" / "std" / "src"
+EOS_LIBC = ROOT / "src" / "tools" / "eos-libc" / "src" / "eos" / "mod.rs"
 
 PAL_FILES = (
     STD / "sys" / "alloc" / "unix.rs",
@@ -34,19 +36,154 @@ PAL_FILES = (
     STD / "os" / "unix" / "process.rs",
 )
 
-REQUIRED_SHIM_COMMENTS = {
-    "eos_rust_abi_require": STD / "sys" / "pal" / "unix" / "mod.rs",
-    "eos_rust_runtime_init": STD / "sys" / "pal" / "unix" / "mod.rs",
-    "eos_rust_runtime_cleanup": STD / "sys" / "pal" / "unix" / "mod.rs",
-    "eos_rust_errno_location": STD / "sys" / "io" / "error" / "unix.rs",
-    "eos_rust_environ": STD / "sys" / "env" / "unix.rs",
-    "eos_rust_cpu_count": STD / "sys" / "thread" / "unix.rs",
-    "eos_rust_hash_seed": STD / "sys" / "random" / "mod.rs",
+SPECIAL_SHIM_DECLARATIONS = {
+    "eos_rust_errno_location": (
+        STD / "sys" / "io" / "error" / "unix.rs",
+        'link_name = "eos_rust_errno_location"',
+    ),
+}
+
+EOS_ONLY_FILES = {
+    STD / "sys" / "process" / "unix" / "eos.rs",
+    STD / "sys" / "random" / "eos.rs",
+}
+
+EOS_ONLY_ADJACENT_BRANCHES = {
+    STD / "sys" / "random" / "eos.rs": (STD / "sys" / "random" / "mod.rs", "mod eos;"),
 }
 
 
 def cfg_attributes(source: str) -> list[str]:
     return re.findall(r"#\s*!?\s*\[cfg(?:_attr)?\((.*?)\)\]", source, re.DOTALL)
+
+
+def eos_libc_stable_links() -> dict[str, str]:
+    source = EOS_LIBC.read_text(encoding="utf-8")
+    return {
+        rust_name: link_name
+        for link_name, rust_name in re.findall(
+            r'#\[link_name\s*=\s*"(eos_rust_[^"]+)"\]\s*'
+            r"pub\s+fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+            source,
+            re.MULTILINE,
+        )
+    }
+
+
+def balanced_block_end(source: str, opening_brace: int) -> int:
+    depth = 0
+    for index in range(opening_brace, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    raise AssertionError(f"unclosed Rust block at byte {opening_brace}")
+
+
+def item_region(source: str, start: int) -> Optional[tuple[int, int]]:
+    opening_brace = source.find("{", start)
+    semicolon = source.find(";", start)
+    if opening_brace == -1 or (semicolon != -1 and semicolon < opening_brace):
+        return None
+    return start, balanced_block_end(source, opening_brace)
+
+
+def adjacent_comment_start(source: str, start: int) -> int:
+    line_start = source.rfind("\n", 0, start) + 1
+    cursor = line_start
+    while cursor > 0:
+        previous_end = cursor - 1
+        previous_start = source.rfind("\n", 0, previous_end) + 1
+        previous = source[previous_start:previous_end].strip()
+        if previous.startswith("//") or previous.startswith("#["):
+            cursor = previous_start
+            continue
+        break
+    return cursor
+
+
+def eos_branch_regions(source: str, *, eos_only: bool) -> list[tuple[int, int]]:
+    regions = []
+    if eos_only:
+        starts = (
+            match.start()
+            for match in re.finditer(
+                r"(?m)^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?"
+                r"(?:unsafe[ \t]+)?fn[ \t]+[A-Za-z_][A-Za-z0-9_]*[^;{]*\{",
+                source,
+            )
+        )
+    else:
+        cfg_starts = (
+            match.start()
+            for match in re.finditer(
+                r'#\s*\[cfg\(\s*target_os\s*=\s*"eos"\s*\)\s*\]',
+                source,
+            )
+        )
+        arm_starts = (
+            match.start()
+            for match in re.finditer(
+                r'target_os\s*=\s*"eos"\s*=>\s*\{',
+                source,
+            )
+        )
+        starts = (*cfg_starts, *arm_starts)
+
+    for start in starts:
+        region = item_region(source, start)
+        if region is not None and region not in regions:
+            regions.append(region)
+    return regions
+
+
+def eos_branch_comment_violations(
+    source: str,
+    path: Path,
+    stable_links: dict[str, str],
+    *,
+    eos_only: bool = False,
+    adjacent_context: str = "",
+) -> list[str]:
+    violations = []
+    for start, end in eos_branch_regions(source, eos_only=eos_only):
+        branch = source[adjacent_comment_start(source, start):end]
+        comment_scope = f"{adjacent_context}\n{branch}"
+        calls = {
+            name: stable_links[name]
+            for name in re.findall(r"\blibc::([A-Za-z_][A-Za-z0-9_]*)\s*\(", branch)
+            if name in stable_links
+        }
+        function = re.search(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)", branch)
+        label = function.group(1) if function else "cfg block"
+        line = source.count("\n", 0, start) + 1
+        for rust_name, link_name in sorted(calls.items()):
+            if not re.search(rf"//[^\n]*\b{re.escape(link_name)}\b", comment_scope):
+                violations.append(
+                    f"{path}:{line}: EOS {label} calls libc::{rust_name} "
+                    f"without a nearby comment naming {link_name}"
+                )
+    return violations
+
+
+def adjacent_eos_route(path: Path) -> str:
+    route = EOS_ONLY_ADJACENT_BRANCHES.get(path)
+    if route is None:
+        return ""
+    route_path, marker = route
+    source = route_path.read_text(encoding="utf-8")
+    matches = [
+        source[start:end]
+        for start, end in eos_branch_regions(source, eos_only=False)
+        if marker in source[start:end]
+    ]
+    if len(matches) != 1:
+        raise AssertionError(
+            f"expected one adjacent EOS route containing {marker!r} in {route_path}"
+        )
+    return matches[0]
 
 
 class PalCfgScopeTest(unittest.TestCase):
@@ -72,18 +209,62 @@ class PalCfgScopeTest(unittest.TestCase):
                     offenders.append(str(path.relative_to(ROOT)))
         self.assertEqual(offenders, [], "Linux-only source must not mention EOS")
 
-    def test_required_eos_routes_name_the_stable_shim_service(self) -> None:
+    def test_special_eos_declaration_names_its_adjacent_stable_service(self) -> None:
         missing = []
-        for service, path in REQUIRED_SHIM_COMMENTS.items():
+        for service, (path, marker) in SPECIAL_SHIM_DECLARATIONS.items():
             if not path.exists():
                 missing.append(f"{path.relative_to(ROOT)} is missing")
                 continue
             source = path.read_text(encoding="utf-8")
-            if not re.search(rf"//[^\n]*\b{re.escape(service)}\b", source):
+            marker_line = source.find(marker)
+            if marker_line == -1:
+                missing.append(f"{path.relative_to(ROOT)} lacks {marker}")
+                continue
+            context_start = source.rfind("\n", 0, source.rfind("\n", 0, marker_line)) + 1
+            context_end = source.find("\n", source.find("\n", marker_line) + 1)
+            context = source[context_start:context_end]
+            if not re.search(rf"//[^\n]*\b{re.escape(service)}\b", context):
                 missing.append(
-                    f"{path.relative_to(ROOT)} lacks an EOS comment naming {service}"
+                    f"{path.relative_to(ROOT)} lacks an adjacent EOS comment naming {service}"
                 )
         self.assertEqual(missing, [], "\n".join(missing))
+
+    def test_branch_comment_audit_rejects_uncommented_eos_fcntl_routes(self) -> None:
+        fixture = '''
+#[cfg(target_os = "eos")]
+pub fn set_cloexec(fd: i32) {
+    libc::fcntl(fd, libc::F_GETFD, 0);
+    libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+}
+
+#[cfg(target_os = "eos")]
+pub fn set_nonblocking(fd: i32) {
+    libc::fcntl(fd, libc::F_GETFL, 0);
+    libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
+}
+'''
+        violations = eos_branch_comment_violations(
+            fixture,
+            Path("library/std/src/sys/fd/unix.rs"),
+            {"fcntl": "eos_rust_fcntl"},
+        )
+        self.assertEqual(2, len(violations), violations)
+        self.assertTrue(all("eos_rust_fcntl" in item for item in violations))
+
+    def test_every_eos_shim_branch_names_its_exact_stable_service(self) -> None:
+        stable_links = eos_libc_stable_links()
+        violations = []
+        for path in PAL_FILES:
+            violations.extend(
+                eos_branch_comment_violations(
+                    path.read_text(encoding="utf-8"),
+                    path.relative_to(ROOT),
+                    stable_links,
+                    eos_only=path in EOS_ONLY_FILES,
+                    adjacent_context=adjacent_eos_route(path),
+                )
+            )
+        self.assertEqual([], violations, "\n".join(violations))
 
     def test_eos_random_policy_is_literal_and_separate(self) -> None:
         path = STD / "sys" / "random" / "eos.rs"

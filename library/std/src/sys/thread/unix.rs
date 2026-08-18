@@ -98,6 +98,7 @@ impl Thread {
 
         #[cfg(target_os = "eos")]
         {
+            // EOS configures stacks through the stable eos_rust_pthread_attr_setstacksize service.
             let stack_size = cmp::max(stack, min_stack_size(attr.as_ptr()));
             let stack_size = u32::try_from(stack_size).map_err(|_| {
                 io::const_error!(io::ErrorKind::InvalidInput, "invalid stack size")
@@ -462,7 +463,8 @@ pub fn set_name(name: &CStr) {
     for (src, dst) in name.to_bytes().iter().zip(&mut truncated[..NAME_WITH_NUL_MAX - 1]) {
         *dst = *src as libc::c_char;
     }
-    // EOS names threads through the stable eos_rust_pthread_setname_np service.
+    // EOS obtains the current thread through eos_rust_pthread_self and names it
+    // through the stable eos_rust_pthread_setname_np service.
     let result = unsafe { libc::pthread_setname_np(libc::pthread_self(), truncated.as_ptr()) };
     debug_assert_eq!(result, 0);
 }
@@ -818,6 +820,7 @@ pub fn sleep_until(deadline: crate::time::Instant) {
 
 pub fn yield_now() {
     #[cfg(target_os = "eos")]
+    // EOS yields through the stable eos_rust_pthread_yield service.
     let ret = unsafe { libc::pthread_yield() };
     #[cfg(not(target_os = "eos"))]
     let ret = unsafe { libc::sched_yield() };

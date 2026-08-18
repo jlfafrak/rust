@@ -28,6 +28,7 @@ pub unsafe fn init(argc: isize, argv: *const *const u8, sigpipe: u8) {
         // EOS validates and initializes the stable eos_rust_abi_require and
         // eos_rust_runtime_init services before any PAL call can reach them.
         if libc::eos_abi_require(1, 0) != 0 {
+            // An ABI mismatch terminates through the stable eos_rust_abort service.
             libc::abort();
         }
         libc::eos_runtime_init(argc as i32, argv.cast());
@@ -155,6 +156,7 @@ pub unsafe fn init(argc: isize, argv: *const *const u8, sigpipe: u8) {
         #[cfg(target_os = "eos")]
         {
             use crate::sys::io::errno;
+            // EOS queries descriptors through the stable eos_rust_fcntl service.
             for fd in 0..3 {
                 if libc::fcntl(fd, libc::F_GETFD, 0) == -1 && errno() == libc::EBADF {
                     open_devnull();
