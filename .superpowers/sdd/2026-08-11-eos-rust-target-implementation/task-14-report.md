@@ -183,3 +183,136 @@ script, and then run the literal final executable gates:
 
 Those results are deliberately not claimed here. Hardware execution of ARM EHABI catch/drop,
 ordinary-FFI containment, and backtrace behavior also remains part of the manual board matrix.
+
+## Fix Round 1 — review hardening
+
+This follow-up addresses the review findings without changing the Task 15 boundary or widening
+the native ABI. It is a separate fix commit from the implementation commit recorded above. The
+closure, lint, verification, and scope statements in this Fix Round 1 section supersede the
+corresponding historical statements from the initial implementation run.
+
+### Independent RED controls
+
+The policy test was first extended only with mutation/control cases and the missing crate-policy
+assertion. The initial run was:
+
+```text
+python3 -m unittest -v tests.eos.host.test_ffi_unwind_policy
+Ran 13 tests ... FAILED (failures=9)
+```
+
+The independent failure records demonstrated that the old checks accepted each of these defects:
+
+- an injected `extern "C-unwind"` declaration in shared Unix `std` personality code;
+- omission of `library/unwind/src/libunwind.rs` and silent omission of the wasm backend;
+- removal of the target's Unix-family fact while a disconnected `mod gcc` substring remained;
+- replacement of the lifecycle `catch_unwind` while a disconnected marker remained;
+- removal of the OS TLS destructor abort wrapper while a disconnected marker remained;
+- an additional defined dynamic export beside `eos_ffi_containment_probe`;
+- absence of the production lint policy from `library/unwind` and both Task 14 crates.
+
+The production GNU unwinder contract and the real host unwind/containment behavior continued to
+pass during RED. Thus the failures were specific to the review gaps, not regressions in the
+original runtime behavior. A further GREEN mutation control now also rejects changing the GCC
+personality's ARM EHABI cfg branch to a non-ARM branch.
+
+### Hardened production closure and internal unwind audit
+
+The EOS entry-surface scan now covers a conservative superset of the relevant production closure:
+all Rust sources under `library/std`, `library/panic_unwind`, and the vendored libc crate, together
+with the EOS target. The entry allowlist remains exactly empty. The scanner removes comments,
+extracts named `extern "C-unwind"` blocks, and rejects other `C-unwind`/ABI tokens rather than
+accepting a path because it lacks an explicit EOS substring.
+
+Unwinder internals are audited separately rather than silently omitted. The complete
+`library/unwind/src/libunwind.rs` declaration set is pinned by path and symbol:
+
+- active for EOS: `_Unwind_Resume` and `_Unwind_RaiseException`;
+- excluded for EOS by the pinned Apple/ARM SjLj cfg branch:
+  `_Unwind_SjLj_RaiseException`.
+
+The target's `families: cvs!["unix"]` fact is coupled to the `library/unwind` Unix branch selecting
+`mod libunwind`. The wasm branch is separately required to be guarded by
+`target_family = "wasm"`, and its sole `C-unwind` intrinsic `wasm_throw` is pinned while being
+excluded from the EOS closure by that cfg evidence.
+
+The vendored libc crate was evaluated as requested. It has no `C-unwind` declaration or call, and
+its source is included in the empty entry-surface scan, so adding a crate-root lint there would
+not protect an actual unwind call and was not justified. `panic_unwind` necessarily raises Rust
+panics through the audited unwinder-internal `_Unwind_RaiseException`; it is not an ordinary FFI
+entry surface and is not incorrectly denied from performing that required operation.
+
+### Production lint and SDK boundary
+
+`std` already had the stronger unconditional `#![deny(ffi_unwind_calls)]`. Fix Round 1 adds
+`#![cfg_attr(target_os = "eos", deny(ffi_unwind_calls))]` to the `unwind` crate root and both Task
+14 fixture crate roots. Host fixture compilation continues to pass an explicit
+`-Dffi-unwind-calls`, so the lint is exercised even while the behavioral binaries run on the host.
+
+The exact no-bypass EOS std check compiled `unwind`, `panic_unwind`, and `std` with the source-level
+policy active:
+
+```text
+./x check library/std --target armv7a-unknown-eos-eabi
+Build completed successfully in 0:02:33
+
+./x check library/unwind --target armv7a-unknown-eos-eabi
+Build completed successfully in 0:01:05
+```
+
+Both Task 14 sources also compile against the freshly checked EOS metadata with
+`-Cpanic=unwind -Dffi-unwind-calls -Dwarnings`. The unwind app was compiled as an rlib only to
+obtain meaningful pre-link metadata, with crate-kind-only dead code disabled; its rmeta is 7,552
+bytes. The containment rmeta is 4,771 bytes. An initial direct invocation omitted the explicit
+matching `panic_unwind` metadata and stopped with E0463. Supplying the checked
+`std`/`panic_unwind`/`unwind` metadata resolved that artifact-selection issue, after which both
+linted compiles passed.
+
+Task 14 does not impose a compiler flag on arbitrary downstream user crates. Shipping
+`-Dffi-unwind-calls` through the EOS SDK/Cargo configuration is the Task 16 user-application
+policy boundary. Task 14 enforces the production runtime crates and all of its own EOS Rust
+fixtures now; it does not pull Task 16 packaging into this commit.
+
+### Coupled root, cleanup, and export checks
+
+The personality policy now couples the target's Unix family, unwind panic strategy, and ARM arch
+to the Unix `mod gcc` selection and then extracts the actual ARM/not-Apple/not-NetBSD EHABI branch,
+requiring its `_Unwind_State` signature and `__gnu_unwind_frame` dependency.
+
+The root policy extracts bounded bodies rather than accepting disconnected substrings:
+
+- the lifecycle `rust_start` closure's `catch_unwind` body contains hooks and the user closure,
+  and the result is published before the packet is dropped;
+- the Unix `thread_start` is exactly ordinary `extern "C"`, reconstructs/initializes the Rust
+  closure, calls it, and returns null in order, so panics outside the inner lifecycle catch abort
+  at the ordinary-C root;
+- `has_thread_local: false` is coupled to the OS TLS selection and Unix key backend;
+- the actual OS `destroy_value` body runs sentinel set, destructor drop, null reset, and cleanup
+  re-enable in order inside `abort_on_dtor_unwind`;
+- the EOS native trampoline performs TLS identity, callback, TLS cleanup, and completion publish
+  in order; native TLS cleanup invokes each destructor before releasing its ownership and clears
+  the TLS slot before freeing the root.
+
+The existing subprocess still observes exact `SIGABRT` for a Rust TLS cleanup panic. The dynamic
+host library assertion now requires the entire defined dynamic symbol set to equal
+`{eos_ffi_containment_probe}`; a synthetic surplus-export control proves this is not a membership
+check.
+
+### Fix-round verification and unchanged deferred gates
+
+- Focused final policy/behavior suite: 14/14 passed, including all mutation controls, real C and
+  C++ callers, drop unwind, and exact cleanup `SIGABRT`.
+- Non-EOS preservation: `./x check library/unwind --target x86_64-unknown-linux-gnu` passed in
+  2:32.
+- Targeted native roots/cleanup regression: 10/10 passed after rebuilding the existing native
+  tree. It covers runtime services, thread, TLS, TLS destructors, MARTOS thread/runtime contracts,
+  the host consumer, and the thread/TLS/destructor TSan executables.
+- Consolidated unwind policy, bootstrap, PAL, libc link/provenance, and toolchain-lock suite:
+  32/32 passed in 21.133 seconds. No target selector, native source, header, or export manifest
+  changed.
+
+The initial ARM Rust/C object metadata and symbol evidence remains applicable. This fix changes
+only lint policy and policy-test precision; it does not manufacture a linkable sysroot. The exact
+artifact endpoint remains the missing target-spec `eos-rust-link`. Literal final-ELF
+`.ARM.exidx`/`.ARM.extab` retention and resolved `_Unwind_*`/`__aeabi_unwind*` gates remain
+Task 15-dependent and are not claimed here. No Task 15 file or progress ledger is changed.

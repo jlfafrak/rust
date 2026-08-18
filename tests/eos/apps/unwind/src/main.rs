@@ -1,4 +1,5 @@
 #![feature(restricted_std)]
+#![cfg_attr(target_os = "eos", deny(ffi_unwind_calls))]
 
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};

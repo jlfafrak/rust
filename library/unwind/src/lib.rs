@@ -3,6 +3,7 @@
 #![feature(cfg_emscripten_wasm_eh)]
 #![feature(link_cfg)]
 #![feature(staged_api)]
+#![cfg_attr(target_os = "eos", deny(ffi_unwind_calls))]
 #![cfg_attr(
     all(target_family = "wasm", any(not(target_os = "emscripten"), emscripten_wasm_eh)),
     feature(link_llvm_intrinsics, simd_wasm64, asm_experimental_arch)
