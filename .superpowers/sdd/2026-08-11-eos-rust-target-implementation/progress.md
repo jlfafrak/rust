@@ -34,3 +34,10 @@ Task 11: plan correction (approved 2026-08-18): defer exact `./x check library/s
 Task 11: fix round 1/5 (1 addressed, 1 new open; commits 426fb80..7f283b8)
 Task 11: fix round 2/5 (1 addressed, 0 open; commits 7f283b8..f5efc93)
 Task 11: complete (commits 1d856be..f5efc93, review clean; std gate deferred to Task 12)
+Task 12: ABI correction (approved 2026-08-18): change unreleased v1 `eos_rust_hash_seed` from `void` to `int32_t` so the exact Rust random policy can observe initialization failure
+Task 12: plan correction: the literal Rust 1.97.1 bootstrap `--no-run` option does not exist; use the documented equivalent `--run never`
+Task 12: dependency deferral: exact std build and `--run never` compile all target sources, then stop only at the missing `eos-rust-link`; final link gates remain owned by Task 15
+Task 12: scope pull-forward: the EOS process routing/backend needed for Task 12 std/`Command` checking was implemented here; remaining Task 13 validation and deliverables are untouched
+Task 12: fix round 1/5 (2 addressed, 1 new open; commits 2df329f..d6fbbbe)
+Task 12: fix round 2/5 (1 addressed, 0 open; commits d6fbbbe..abb2d6e)
+Task 12: complete (commits edec4e3..abb2d6e, review clean; linker gates deferred to Task 15)
