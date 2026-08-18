@@ -918,7 +918,8 @@ static int32_t eos_port_socket_poll(const eos_port_socket *sockets,
 }
 
 static uint32_t eos_port_process_capabilities(void) {
-    return UINT32_C(0);
+    return eos_martos_process_capabilities(
+        EOS_PORT_PROCESS_CAP_NATIVE_STDERR);
 }
 
 static int eos_martos_process_string_fits(const char *value,

@@ -35,6 +35,7 @@ int32_t eos_host_test_process_inherited_fd(uint32_t);
 uint32_t eos_host_test_process_started(void);
 void eos_host_test_process_release(void);
 uint32_t eos_process_test_live_records(void);
+void eos_host_test_use_martos_process_capabilities(void);
 }
 
 namespace {
@@ -203,6 +204,44 @@ void test_inheritance_filter_and_stderr_pipe() {
         expect(eos_rust_close(fd) == 0, "inheritance fixture cleanup failed");
     }
 }
+
+void test_martos_inherited_stderr_requires_native_standard_error() {
+    reset_fixture();
+    eos_rust_fd_t saved_stderr = eos_rust_dup(2);
+    eos_rust_fd_t errors[2]{-1, -1};
+    expect(saved_stderr >= 3 &&
+               eos_rust_pipe(errors, EOS_RUST_O_CLOEXEC) == 0,
+           "MARTOS inherited-stderr fixture creation failed");
+    expect(eos_rust_dup2(errors[1], 2) == 2,
+           "MARTOS inherited-stderr fixture could not replace fd 2");
+    eos_host_test_use_martos_process_capabilities();
+
+    auto req = request("/host/exit0");
+    eos_rust_process_t process = 0;
+    const int32_t remapped_result = eos_rust_spawn(&req, &process);
+    const int32_t remapped_errno = *eos_rust_errno_location();
+    if (remapped_result == 0) {
+        eos_rust_process_status status{};
+        (void)eos_rust_process_wait(process, &status);
+        (void)eos_rust_process_close(process);
+    }
+
+    expect(eos_rust_dup2(saved_stderr, 2) == 2 &&
+               eos_rust_close(saved_stderr) == 0,
+           "MARTOS inherited-stderr fixture did not restore fd 2");
+    expect(remapped_result == -1 && remapped_errno == 45 && process == 0,
+           "MARTOS must reject inherited stderr after compatibility fd 2 is remapped");
+
+    process = 0;
+    expect(eos_rust_spawn(&req, &process) == 0,
+           "MARTOS must allow its original native/default inherited stderr");
+    eos_rust_process_status status{};
+    expect(eos_rust_process_wait(process, &status) == 0 &&
+               eos_rust_process_close(process) == 0,
+           "native/default inherited stderr process failed");
+    expect(eos_rust_close(errors[0]) == 0 && eos_rust_close(errors[1]) == 0,
+           "MARTOS inherited-stderr fixture cleanup failed");
+}
 } // namespace
 
 int main() {
@@ -211,5 +250,6 @@ int main() {
     test_loader_rollback_releases_pipe_pins();
     test_redirection_failures_surface_from_wait();
     test_inheritance_filter_and_stderr_pipe();
+    test_martos_inherited_stderr_requires_native_standard_error();
     return 0;
 }

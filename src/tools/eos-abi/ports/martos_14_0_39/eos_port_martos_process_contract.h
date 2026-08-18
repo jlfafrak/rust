@@ -17,6 +17,10 @@ typedef int32_t (*eos_martos_process_snapshot)(
 typedef int32_t (*eos_martos_process_release)(void *memory, void *context);
 typedef void (*eos_martos_process_fail_fast)(void *context);
 
+static uint32_t eos_martos_process_capabilities(uint32_t native_stderr) {
+    return native_stderr;
+}
+
 static int eos_martos_process_options_supported(uint32_t environment_count,
                                                 uint32_t has_cwd,
                                                 uint32_t redirects_stderr,

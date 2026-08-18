@@ -184,6 +184,12 @@ static int32_t eos_fd_process_pin_descriptor(int32_t descriptor,
     return 0;
 }
 
+static int eos_fd_process_pin_is_native_standard(
+    const eos_fd_process_pin *pin, uint32_t stream) {
+    return pin != NULL && pin->active != UINT32_C(0) &&
+           pin->kind == EOS_FD_KIND_CONSOLE && pin->native.word == stream;
+}
+
 static void eos_fd_process_unpin(eos_fd_process_pin *pin) {
     eos_fd_pending_destroy pending;
     if (pin == NULL || pin->active == UINT32_C(0)) return;

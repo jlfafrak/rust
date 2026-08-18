@@ -286,3 +286,40 @@ return `ENOTSUP` rather than mutating process-global state or pretending that re
 succeeded. Target app execution still requires device-level validation on the XC7Z030/XC7Z045
 board families; this task verifies the real pinned SDK compile and deterministic primitive
 mapping but does not deploy to hardware.
+
+## Fix Round 1 — inherited native stderr identity
+
+Independent review found a Critical false-success path: `stderr_fd == -1` promises to inherit
+compatibility fd 2, but `dup2` can replace that slot, while the pinned MARTOS application path
+does not invoke the stdout redirection callback for native error-byte output. The finding was
+verified against the fd table, MARTOS port, header, and binary evidence before editing.
+
+The new real fd-table/process test saves fd 2 with compatibility `dup`, creates a compatibility
+pipe, replaces fd 2 with its writer using compatibility `dup2`, selects the real MARTOS process
+capability set in the host executable, and attempts an ordinary `stderr_fd == -1` spawn. It
+always restores fd 2 from the saved descriptor before asserting the result, then proves the
+restored original stderr is accepted and closes every fixture fd. Independent MARTOS mapping
+coverage requires the real port's shared capability function to publish only native-stderr
+inheritance.
+
+RED evidence:
+
+- `process_redirection_test` first failed to link with undefined
+  `eos_host_test_use_martos_process_capabilities` (exit 2).
+- `martos_process_contract_test` independently failed to compile with implicit declaration of
+  `eos_martos_process_capabilities` (exit 2).
+- After adding only the test selector and real target capability mapping, the unchanged common
+  spawn logic ran the real fd-table fixture and failed with exit 1:
+  `MARTOS must reject inherited stderr after compatibility fd 2 is remapped`.
+
+The fix adds a private native-stderr capability bit. Host production retains full callback
+stderr support. MARTOS publishes only native stderr. After fd2 is pinned, common code accepts
+that native-only capability only when the pin is the console object whose native stream word is
+exactly 2; a pipe writer or stdout console remapped into slot 2 is not representable and returns
+compatibility `ENOTSUP` (45). This uses only private fd/port state and does not change the public
+ABI. A diagnostic rerun exposed that the first test expectation had incorrectly used host errno
+95; the observed compatibility result was correctly 45, so the test literal was corrected and
+the temporary diagnostic removed.
+
+Focused GREEN: strict O3 rebuilt `process_redirection_test`,
+`martos_process_contract_test`, and `process_test`; all three executables returned exit 0.

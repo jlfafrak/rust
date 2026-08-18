@@ -460,6 +460,14 @@ int32_t eos_rust_spawn(const eos_rust_spawn_request *input,
                           input->stderr_fd == -1 && index == 2 ? -1 :
                           descriptors[index];
     }
+    if (input->stderr_fd == -1 &&
+        (capabilities & EOS_PORT_PROCESS_CAP_STDERR) == 0 &&
+        ((capabilities & EOS_PORT_PROCESS_CAP_NATIVE_STDERR) == 0 ||
+         !eos_fd_process_pin_is_native_standard(&record->stdio[2],
+                                                UINT32_C(2)))) {
+        eos_process_destroy(record);
+        return eos_process_fail_errno(EOS_ERRNO_NOT_SUPPORTED);
+    }
     if (eos_fd_process_snapshot_inheritable(
             record->inherited_pins, EOS_FD_TABLE_CAPACITY,
             &record->inherited_count, excluded, UINT32_C(3)) != 0) {

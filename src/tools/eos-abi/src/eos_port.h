@@ -98,6 +98,7 @@ typedef void (*eos_port_thread_start)(void *argument);
 #define EOS_PORT_PROCESS_CAP_CWD UINT32_C(0x02)
 #define EOS_PORT_PROCESS_CAP_STDERR UINT32_C(0x04)
 #define EOS_PORT_PROCESS_CAP_DESCRIPTOR_INHERITANCE UINT32_C(0x08)
+#define EOS_PORT_PROCESS_CAP_NATIVE_STDERR UINT32_C(0x10)
 
 typedef int32_t (*eos_port_process_read)(void *context, void *buffer,
                                          uint32_t byte_count);

@@ -87,6 +87,7 @@ static int32_t eos_host_next_sync_wait_status;
 static int32_t eos_host_next_sync_create_status;
 static int32_t eos_host_next_process_kill_status;
 static int32_t eos_host_next_process_unload_status;
+static _Atomic uint32_t eos_host_process_test_capabilities;
 static uint32_t eos_host_seek_successes_before_failure;
 static int32_t eos_host_delayed_seek_status;
 static int32_t eos_host_next_thread_create_status;
@@ -189,6 +190,11 @@ void eos_host_test_reset(void) {
     eos_host_next_sync_create_status = 0;
     eos_host_next_process_kill_status = 0;
     eos_host_next_process_unload_status = 0;
+    atomic_store(&eos_host_process_test_capabilities,
+                 EOS_PORT_PROCESS_CAP_ENVIRONMENT |
+                     EOS_PORT_PROCESS_CAP_CWD |
+                     EOS_PORT_PROCESS_CAP_STDERR |
+                     EOS_PORT_PROCESS_CAP_DESCRIPTOR_INHERITANCE);
     eos_host_seek_successes_before_failure = UINT32_MAX;
     eos_host_delayed_seek_status = 0;
     eos_host_next_thread_create_status = 0;
@@ -315,6 +321,10 @@ void eos_host_test_fail_next_process_kill(int32_t status) {
 }
 void eos_host_test_fail_next_process_unload(int32_t status) {
     eos_host_next_process_unload_status = status;
+}
+void eos_host_test_use_martos_process_capabilities(void) {
+    atomic_store(&eos_host_process_test_capabilities,
+                 EOS_PORT_PROCESS_CAP_NATIVE_STDERR);
 }
 void eos_host_test_fail_seek_after(uint32_t successful_seeks, int32_t status) {
     eos_host_seek_successes_before_failure = successful_seeks;
@@ -711,9 +721,13 @@ static int32_t eos_port_thread_create(const char *name,
 }
 
 static uint32_t eos_port_process_capabilities(void) {
+#ifdef EOS_RUST_HOST_TEST
+    return atomic_load(&eos_host_process_test_capabilities);
+#else
     return EOS_PORT_PROCESS_CAP_ENVIRONMENT | EOS_PORT_PROCESS_CAP_CWD |
            EOS_PORT_PROCESS_CAP_STDERR |
            EOS_PORT_PROCESS_CAP_DESCRIPTOR_INHERITANCE;
+#endif
 }
 
 static int32_t eos_port_process_validate(

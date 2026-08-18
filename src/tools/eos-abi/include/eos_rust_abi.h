@@ -412,7 +412,7 @@ EOS_RUST_EXPORT int32_t eos_rust_fchmod(eos_rust_fd_t descriptor,
  * Spawn copies arguments, environment, and cwd before returning. Wait is
  * repeatable, try_wait returns 1 when complete and 0 while running, and close
  * invalidates the identity without waiting. Current MARTOS-SMP 14.0.39
- * supports isolated stdin/stdout bridging and inherited stderr, but returns
+ * supports isolated stdin/stdout bridging and its original native stderr, but returns
  * ENOTSUP for an explicit environment, cwd, stderr redirection, or arbitrary
  * non-CLOEXEC descriptor inheritance.
  */

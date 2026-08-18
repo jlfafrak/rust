@@ -92,6 +92,9 @@ static void fail_fast(void *opaque) {
 }
 
 static void test_capability_gate(void) {
+    expect(eos_martos_process_capabilities(UINT32_C(0x10)) ==
+               UINT32_C(0x10),
+           "real MARTOS capability selection must publish native stderr only");
     expect(eos_martos_process_options_supported(0, 0, 0, 0),
            "plain stdio-inheriting spawn must be supported");
     expect(!eos_martos_process_options_supported(1, 0, 0, 0),
