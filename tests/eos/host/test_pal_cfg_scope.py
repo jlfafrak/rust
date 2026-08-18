@@ -85,9 +85,41 @@ def balanced_block_end(source: str, opening_brace: int) -> int:
 def item_region(source: str, start: int) -> Optional[tuple[int, int]]:
     opening_brace = source.find("{", start)
     semicolon = source.find(";", start)
-    if opening_brace == -1 or (semicolon != -1 and semicolon < opening_brace):
+    if semicolon != -1 and (opening_brace == -1 or semicolon < opening_brace):
+        statement = source[start : semicolon + 1]
+        if not re.search(r"\blet\b", statement):
+            return None
+        following_semicolon = source.find(";", semicolon + 1)
+        if following_semicolon == -1:
+            return None
+        return start, following_semicolon + 1
+    if opening_brace == -1:
         return None
     return start, balanced_block_end(source, opening_brace)
+
+
+def eos_libc_alias_links(source: str, stable_links: dict[str, str]) -> dict[str, str]:
+    aliases = {}
+    imports = [
+        match.group(1)
+        for match in re.finditer(r"use\s+libc::\{(.*?)\};", source, re.DOTALL)
+    ]
+    imports.extend(
+        f"{match.group(1)} as {match.group(2)}"
+        for match in re.finditer(
+            r"use\s+libc::([A-Za-z_][A-Za-z0-9_]*)\s+as\s+"
+            r"([A-Za-z_][A-Za-z0-9_]*)\s*;",
+            source,
+        )
+    )
+    for imported in imports:
+        for rust_name, alias in re.findall(
+            r"\b([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)",
+            imported,
+        ):
+            if rust_name in stable_links:
+                aliases[alias] = stable_links[rust_name]
+    return aliases
 
 
 def adjacent_comment_start(source: str, start: int) -> int:
@@ -148,6 +180,7 @@ def eos_branch_comment_violations(
     adjacent_context: str = "",
 ) -> list[str]:
     violations = []
+    aliases = eos_libc_alias_links(source, stable_links)
     for start, end in eos_branch_regions(source, eos_only=eos_only):
         branch = source[adjacent_comment_start(source, start):end]
         comment_scope = f"{adjacent_context}\n{branch}"
@@ -156,6 +189,13 @@ def eos_branch_comment_violations(
             for name in re.findall(r"\blibc::([A-Za-z_][A-Za-z0-9_]*)\s*\(", branch)
             if name in stable_links
         }
+        calls.update(
+            {
+                alias: link_name
+                for alias, link_name in aliases.items()
+                if re.search(rf"\b{re.escape(alias)}\s*\(", branch)
+            }
+        )
         function = re.search(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)", branch)
         label = function.group(1) if function else "cfg block"
         line = source.count("\n", 0, start) + 1
@@ -250,6 +290,28 @@ pub fn set_nonblocking(fd: i32) {
         )
         self.assertEqual(2, len(violations), violations)
         self.assertTrue(all("eos_rust_fcntl" in item for item in violations))
+
+    def test_branch_comment_audit_rejects_misnamed_statement_route(self) -> None:
+        fixture = '''
+#[cfg(target_os = "eos")]
+use libc::open as open64;
+
+fn open_c(path: *const u8, flags: i32, opts: &Options) {
+    #[cfg(not(target_os = "eos"))]
+    let mode = opts.mode as i32;
+    // EOS routes open through the fixed-signature eos_rust_read service.
+    #[cfg(target_os = "eos")]
+    let mode = opts.mode as u32;
+    let fd = cvt_r(|| unsafe { open64(path, flags, mode) });
+}
+'''
+        violations = eos_branch_comment_violations(
+            fixture,
+            Path("library/std/src/sys/fs/unix.rs"),
+            {"open": "eos_rust_open"},
+        )
+        self.assertEqual(1, len(violations), violations)
+        self.assertIn("eos_rust_open", violations[0])
 
     def test_every_eos_shim_branch_names_its_exact_stable_service(self) -> None:
         stable_links = eos_libc_stable_links()

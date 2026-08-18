@@ -299,9 +299,12 @@ failed with `2 != 0 : []`, proving the audit's false negative before its
 implementation changed.
 
 The replacement derives Rust callable names and exact `eos_rust_*` link names
-from the EOS libc module, extracts each positive EOS cfg/cfg-select region and
-each function in the EOS-only process/random modules, and accepts an exact
-service comment only inside or immediately adjacent to that branch. The exact
+from the EOS libc module. It extracts block-bodied positive EOS cfg/cfg-select
+regions and functions in the EOS-only process/random modules. For a positive
+EOS cfg applied to a `let` statement, it associates only that statement and the
+immediately following shared statement; imported libc aliases in that route are
+resolved from their actual `use libc` declarations. It accepts an exact service
+comment only inside or immediately adjacent to the resulting region. The exact
 random body remains unchanged; its stable-service comment is checked in the
 adjacent EOS module-selection arm. The special errno link-name declaration is
 checked only against its adjacent source context, not the whole file.
@@ -317,3 +320,17 @@ std-smoke metadata check against its freshly updated
 `libstd-bc0ddd2c2a05fcf2.rmeta` passed with output
 `/tmp/eos-task12-review-std-smoke.rmeta`. These review changes do not alter PAL
 behavior or the 120-symbol ABI.
+
+A re-review then found that the first replacement still skipped cfg-applied
+statement form when its semicolon preceded the next opening brace. An exact
+fixture matching the real `open64` route—EOS `let mode`, followed by the shared
+call, with its comment corrupted from `eos_rust_open` to `eos_rust_read`—was RED
+with `1 != 0 : []`, proving that the audit found zero regions and violations.
+The narrow fix described above models cfg-applied `let` statements plus only
+their immediately following shared statement and derives `open as open64` from
+the actual libc import. The control turned GREEN 1/1; the focused PAL cfg audit
+passed 8/8, the consolidated host guard suite passed 17/17 in 13.557 seconds,
+and a fresh exact no-bypass
+`./x check library/std --target armv7a-unknown-eos-eabi` passed in 1:01. This
+second review fix changes only the audit and this report; it does not change PAL
+production code, native runtime behavior, or the ABI.
