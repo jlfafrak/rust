@@ -316,3 +316,68 @@ only lint policy and policy-test precision; it does not manufacture a linkable s
 artifact endpoint remains the missing target-spec `eos-rust-link`. Literal final-ELF
 `.ARM.exidx`/`.ARM.extab` retention and resolved `_Unwind_*`/`__aeabi_unwind*` gates remain
 Task 15-dependent and are not claimed here. No Task 15 file or progress ledger is changed.
+
+## Fix Round 2 — root-closure and code-only structural checks
+
+This second review follow-up changes policy-test implementation only. The production runtime,
+native ABI/runtime, target, Task 15 inputs, and controller-owned progress ledger are unchanged.
+
+### Exact RED controls
+
+Three mutations were added before changing the scanner or structural helpers:
+
+```text
+python3 -m unittest -v tests.eos.host.test_ffi_unwind_policy
+Ran 17 tests ... FAILED (failures=3)
+```
+
+The failures reproduced the two root causes precisely:
+
+- injecting `unsafe extern "C-unwind" { fn injected_unwind_root(); }` into
+  `library/unwind/src/lib.rs` was not rejected because the entry-surface source set omitted the
+  unwind crate root;
+- replacing the native callback with an in-place block comment plus `result = NULL`, or commenting
+  out `eos_tls_cleanup_current()`, was not rejected because raw substring ordering counted text in
+  comments as executable calls.
+
+The other fourteen policy controls and behavioral fixtures remained green in this RED run.
+
+### GREEN implementation
+
+`library/unwind/src/lib.rs` is now part of `eos_entry_production_rust_sources()`, so its EOS entry
+surface participates in the same literally empty `C-unwind` allowlist as `std`, `panic_unwind`,
+libc, and the target. The separate GNU contract test continues to allow only the exact zero-symbol
+ordinary-C block selected by `#[cfg(target_os = "eos")] #[link(name = "gcc")]`. The separately
+audited libunwind set is unchanged: EOS activates only `_Unwind_Resume` and
+`_Unwind_RaiseException`; Apple SjLj and wasm remain excluded by their pinned cfg evidence.
+
+The structural policy now lexically masks line comments, nested block comments, normal/raw string
+literals, and character literals while preserving byte offsets and newlines. Bounded Rust/C body
+extraction balances braces only in executable code. Every marker-order assertion searches this
+code-only representation, so neither comments nor diagnostic strings can stand in for calls.
+Cfg/source assertions ignore comments while retaining semantically relevant string literals.
+
+For `C-unwind` declarations, the exact ABI literal is first converted to a length-preserving token
+and every other comment/literal is masked. This keeps real ABI declarations auditable without
+accepting explanatory text or raw strings as declarations. A cheap exact-token prefilter avoids
+lexing vendored files that cannot contain the ABI.
+
+The native trampoline check therefore requires actual bounded call expressions for
+`record->start_routine(record->argument)` followed by `eos_tls_cleanup_current()`, then result and
+completion publication. The exact callback and cleanup comment-out controls are both GREEN, as
+are the pre-existing lifecycle, TLS destructor, cleanup-order, personality, export, C, and C++
+controls.
+
+### Verification and unchanged boundary
+
+- Focused unwind/FFI policy and behavior: 17/17 passed in 22.554 seconds.
+- Consolidated unwind policy, bootstrap, PAL, libc link/provenance, and toolchain-lock suite:
+  35/35 passed in 24.098 seconds.
+- Fresh exact no-bypass EOS std lint check:
+  `./x check library/std --target armv7a-unknown-eos-eabi` passed in 1:22.
+- Fresh standalone EOS unwind lint check:
+  `./x check library/unwind --target armv7a-unknown-eos-eabi` passed in 2:35.
+
+No production source changed in Fix Round 2. The missing target-spec `eos-rust-link` remains the
+honest build endpoint, and final ELF EHABI retention and resolved unwind-symbol checks remain Task
+15 gates. No final link result is claimed.

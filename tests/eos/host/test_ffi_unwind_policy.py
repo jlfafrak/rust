@@ -67,8 +67,12 @@ EOS_LIBUNWIND_C_UNWIND = frozenset(
     }
 )
 WASM_C_UNWIND = frozenset({("library/unwind/src/wasm.rs", "wasm_throw")})
-C_UNWIND_BLOCK = re.compile(r'\bunsafe\s+extern\s+"C-unwind"\s*\{')
-C_UNWIND_TOKEN = re.compile(r'\bextern\s+"C-unwind"|\babi\s*=\s*"C-unwind"')
+C_UNWIND_BLOCK = re.compile(r"\bunsafe\s+extern\s+C_unwind\s*\{")
+C_UNWIND_TOKEN = re.compile(r"\bextern\s+C_unwind|\babi\s*=\s*C_unwind")
+RAW_STRING_START = re.compile(r'(?:b|c)?r(?P<hashes>#{0,255})"')
+CHARACTER_LITERAL = re.compile(
+    r"'(?:\\(?:x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f_]+\}|[^\n])|[^'\\\n])'"
+)
 
 
 def run(command, *, env=None):
@@ -90,14 +94,95 @@ def rustc():
     return Path(compiler)
 
 
+def source_without_non_code(source, *, mask_literals):
+    """Mask comments and optionally literals while preserving byte offsets."""
+    masked = list(source)
+
+    def mask(start, end):
+        for index in range(start, end):
+            if masked[index] != "\n":
+                masked[index] = " "
+
+    index = 0
+    while index < len(source):
+        if source.startswith("//", index):
+            end = source.find("\n", index + 2)
+            end = len(source) if end < 0 else end
+            mask(index, end)
+            index = end
+            continue
+
+        if source.startswith("/*", index):
+            depth = 1
+            end = index + 2
+            while end < len(source) and depth:
+                if source.startswith("/*", end):
+                    depth += 1
+                    end += 2
+                elif source.startswith("*/", end):
+                    depth -= 1
+                    end += 2
+                else:
+                    end += 1
+            mask(index, end)
+            index = end
+            continue
+
+        raw = RAW_STRING_START.match(source, index)
+        if raw is not None:
+            delimiter = '"' + raw.group("hashes")
+            end = source.find(delimiter, raw.end())
+            end = len(source) if end < 0 else end + len(delimiter)
+            if mask_literals:
+                mask(index, end)
+            index = end
+            continue
+
+        if source[index] == '"':
+            end = index + 1
+            while end < len(source):
+                if source[end] == "\\":
+                    end += 2
+                elif source[end] == '"':
+                    end += 1
+                    break
+                else:
+                    end += 1
+            if mask_literals:
+                mask(index, min(end, len(source)))
+            index = end
+            continue
+
+        character = CHARACTER_LITERAL.match(source, index)
+        if character is not None:
+            end = character.end()
+            if mask_literals:
+                mask(index, end)
+            index = end
+            continue
+
+        index += 1
+
+    return "".join(masked)
+
+
+def source_code_only(source):
+    return source_without_non_code(source, mask_literals=True)
+
+
+def source_without_comments(source):
+    return source_without_non_code(source, mask_literals=False)
+
+
 def braced_body(source, opening):
-    if source[opening] != "{":
+    code = source_code_only(source)
+    if code[opening] != "{":
         raise AssertionError("expected opening brace")
     depth = 0
-    for index in range(opening, len(source)):
-        if source[index] == "{":
+    for index in range(opening, len(code)):
+        if code[index] == "{":
             depth += 1
-        elif source[index] == "}":
+        elif code[index] == "}":
             depth -= 1
             if depth == 0:
                 return source[opening + 1 : index]
@@ -105,17 +190,21 @@ def braced_body(source, opening):
 
 
 def body_after_marker(source, marker):
-    marker_index = source.find(marker)
+    code = source_code_only(source)
+    code_marker = source_code_only(marker)
+    marker_index = code.find(code_marker)
     if marker_index < 0:
         raise AssertionError(f"source marker was not found: {marker}")
-    opening = source.find("{", marker_index + len(marker))
+    opening = code.find("{", marker_index + len(code_marker))
     if opening < 0:
         raise AssertionError(f"source marker has no braced body: {marker}")
     return braced_body(source, opening)
 
 
 def branch_after_pattern(source, pattern):
-    match = re.search(pattern + r"\s*=>\s*\{", source, re.DOTALL)
+    match = re.search(
+        pattern + r"\s*=>\s*\{", source_without_comments(source), re.DOTALL
+    )
     if match is None:
         raise AssertionError(f"cfg branch was not found: {pattern}")
     return braced_body(source, match.end() - 1)
@@ -124,12 +213,11 @@ def branch_after_pattern(source, pattern):
 def c_unwind_declarations(path, source=None):
     if source is None:
         source = path.read_text(encoding="utf-8")
-    source = re.sub(
-        r"//[^\n]*|/\*.*?\*/",
-        lambda match: "\n" * match.group(0).count("\n"),
-        source,
-        flags=re.DOTALL,
-    )
+    if "C-unwind" not in source:
+        return set()
+    # Preserve only the ABI literal as a token before masking all other
+    # comments and literals. The replacement is length-preserving.
+    source = source_code_only(source.replace('"C-unwind"', " C_unwind "))
     relative = path.relative_to(ROOT).as_posix()
     declarations = set()
     accounted_ranges = []
@@ -144,7 +232,7 @@ def c_unwind_declarations(path, source=None):
         if any(start <= match.start() < end for start, end in accounted_ranges):
             continue
         direct = re.match(
-            r'extern\s+"C-unwind"\s+fn\s+([A-Za-z_][A-Za-z0-9_]*)',
+            r"extern\s+C_unwind\s+fn\s+([A-Za-z_][A-Za-z0-9_]*)",
             source[match.start() :],
         )
         name = (
@@ -157,7 +245,7 @@ def c_unwind_declarations(path, source=None):
 
 
 def eos_entry_production_rust_sources():
-    paths = {TARGET, EOS_LIBC}
+    paths = {TARGET, EOS_LIBC, UNWIND}
     paths.update(STD.rglob("*.rs"))
     paths.update(PANIC_UNWIND.rglob("*.rs"))
     paths.update(EOS_LIBC_ROOT.rglob("*.rs"))
@@ -201,10 +289,12 @@ class FfiUnwindPolicyTests(unittest.TestCase):
                 getattr(case, test_name)()
 
     def assert_markers_in_order(self, source, markers):
+        code = source_code_only(source)
         offsets = []
         for marker in markers:
-            self.assertIn(marker, source)
-            offsets.append(source.index(marker))
+            code_marker = source_code_only(marker)
+            self.assertIn(code_marker, code)
+            offsets.append(code.index(code_marker))
         self.assertEqual(sorted(offsets), offsets)
 
     def test_eos_owned_production_has_no_c_unwind_declaration(self):
@@ -214,7 +304,7 @@ class FfiUnwindPolicyTests(unittest.TestCase):
         self.assertEqual(EOS_ENTRY_C_UNWIND_ALLOWLIST, offenders)
 
     def test_eos_links_the_arm_gnu_unwinder_contract(self):
-        source = UNWIND.read_text(encoding="utf-8")
+        source = source_without_comments(UNWIND.read_text(encoding="utf-8"))
         self.assertRegex(
             source,
             re.compile(
@@ -226,14 +316,14 @@ class FfiUnwindPolicyTests(unittest.TestCase):
         )
 
     def test_eos_keeps_the_unix_gcc_personality(self):
-        target = TARGET.read_text(encoding="utf-8")
+        target = source_without_comments(TARGET.read_text(encoding="utf-8"))
         self.assertRegex(target, r'families:\s*cvs!\["unix"\]')
         self.assertRegex(target, r'panic_strategy:\s*PanicStrategy::Unwind')
         self.assertRegex(target, r'arch:\s*Arch::Arm')
         self.assertRegex(target, r'llvm_target:\s*"armv7a-unknown-none-eabi"')
         self.assertRegex(target, r'os:\s*Os::Eos')
 
-        personality = PERSONALITY.read_text(encoding="utf-8")
+        personality = source_without_comments(PERSONALITY.read_text(encoding="utf-8"))
         unix_gcc = branch_after_pattern(
             personality,
             r'(?m)^\s*any\(\s*all\(target_family\s*=\s*"windows".*?'
@@ -242,21 +332,23 @@ class FfiUnwindPolicyTests(unittest.TestCase):
             r'not\(target_os\s*=\s*"l4re"\)\s*,\s*'
             r'not\(target_os\s*=\s*"nuttx"\)\s*\).*?\)',
         )
-        self.assertRegex(unix_gcc, r"^\s*mod\s+gcc\s*;\s*$")
+        self.assertRegex(source_without_comments(unix_gcc), r"^\s*mod\s+gcc\s*;\s*$")
 
-        gcc = PERSONALITY_GCC.read_text(encoding="utf-8")
+        gcc = source_without_comments(PERSONALITY_GCC.read_text(encoding="utf-8"))
         arm_ehabi = branch_after_pattern(
             gcc,
             r'(?m)^\s*all\(\s*target_arch\s*=\s*"arm"\s*,\s*'
             r'not\(target_vendor\s*=\s*"apple"\)\s*,\s*'
             r'not\(target_os\s*=\s*"netbsd"\)\s*,\s*\)',
         )
-        for marker in (
-            '#[lang = "eh_personality"]',
-            "state: uw::_Unwind_State",
-            "fn __gnu_unwind_frame",
-        ):
-            self.assertIn(marker, arm_ehabi)
+        self.assert_markers_in_order(
+            arm_ehabi,
+            (
+                '#[lang = "eh_personality"]',
+                "state: uw::_Unwind_State",
+                "fn __gnu_unwind_frame",
+            ),
+        )
 
     def test_personality_policy_rejects_disconnected_target_facts(self):
         self.assert_source_mutation_is_rejected(
@@ -292,19 +384,17 @@ class FfiUnwindPolicyTests(unittest.TestCase):
         caught_user_work = body_after_marker(
             rust_start, "panic::catch_unwind(panic::AssertUnwindSafe(||"
         )
-        self.assertLess(
-            caught_user_work.index("hooks.run()"), caught_user_work.index("backtrace(f)")
+        self.assert_markers_in_order(
+            caught_user_work, ("hooks.run()", "backtrace(f)")
         )
-        self.assertLess(
-            rust_start.index("panic::catch_unwind"),
-            rust_start.index("Some(try_result)"),
-        )
-        self.assertLess(
-            rust_start.index("Some(try_result)"), rust_start.index("drop(their_packet)")
+        self.assert_markers_in_order(
+            rust_start,
+            ("panic::catch_unwind", "Some(try_result)", "drop(their_packet)"),
         )
 
         signature = re.search(
-            r'extern\s+"(?P<abi>[^"]+)"\s+fn\s+thread_start', thread
+            r'extern\s+"(?P<abi>[^"]+)"\s+fn\s+thread_start',
+            source_without_comments(thread),
         )
         self.assertIsNotNone(signature)
         self.assertEqual("C", signature.group("abi"))
@@ -317,10 +407,10 @@ class FfiUnwindPolicyTests(unittest.TestCase):
             "ptr::null_mut()",
         )
         self.assert_markers_in_order(thread_start, thread_markers)
-        self.assertNotIn("catch_unwind", thread_start)
+        self.assertNotIn("catch_unwind", source_code_only(thread_start))
 
         self.assertRegex(
-            thread_local,
+            source_without_comments(thread_local),
             re.compile(
                 r'target_thread_local\s*=>\s*\{\s*mod\s+native\s*;.*?\}\s*'
                 r'_\s*=>\s*\{\s*mod\s+os\s*;\s*pub\s+use\s+os::',
@@ -328,21 +418,21 @@ class FfiUnwindPolicyTests(unittest.TestCase):
             ),
         )
         self.assertRegex(
-            thread_local,
+            source_without_comments(thread_local),
             re.compile(
                 r'target_family\s*=\s*"unix"\s*,\s*\).*?=>\s*\{\s*'
                 r'mod\s+racy\s*;\s*mod\s+unix\s*;',
                 re.DOTALL,
             ),
         )
-        target = TARGET.read_text(encoding="utf-8")
+        target = source_without_comments(TARGET.read_text(encoding="utf-8"))
         self.assertRegex(target, r"has_thread_local:\s*false")
         abort_helper = body_after_marker(thread_local, "fn abort_on_dtor_unwind")
         self.assert_markers_in_order(
             abort_helper, ("let guard = DtorUnwindGuard", "f();", "forget(guard)")
         )
         guard_drop = body_after_marker(abort_helper, "fn drop")
-        self.assertIn('rtabort!("thread local panicked on drop")', guard_drop)
+        self.assert_markers_in_order(guard_drop, ("rtabort!(",))
         destroy_value = body_after_marker(
             thread_local_os, 'unsafe extern "C" fn destroy_value'
         )
@@ -399,13 +489,36 @@ class FfiUnwindPolicyTests(unittest.TestCase):
             + "\n// abort_on_dtor_unwind is intentionally disconnected.\n",
         )
 
+    def test_thread_policy_rejects_commented_out_native_callback(self):
+        self.assert_source_mutation_is_rejected(
+            "test_thread_roots_and_cleanup_have_containment_guards",
+            NATIVE_THREAD,
+            lambda source: source.replace(
+                "    result = record->start_routine(record->argument);",
+                "    /* result = record->start_routine(record->argument); */\n"
+                "    result = NULL;",
+                1,
+            ),
+        )
+
+    def test_thread_policy_rejects_commented_out_native_cleanup(self):
+        self.assert_source_mutation_is_rejected(
+            "test_thread_roots_and_cleanup_have_containment_guards",
+            NATIVE_THREAD,
+            lambda source: source.replace(
+                "    eos_tls_cleanup_current();",
+                "    /* eos_tls_cleanup_current(); */",
+                1,
+            ),
+        )
+
     def test_c_unwind_policy_scans_shared_std_and_libunwind_sources(self):
         sources = set(eos_owned_production_rust_sources())
         self.assertIn(PERSONALITY_GCC, sources)
         self.assertIn(UNWIND_LIBUNWIND, sources)
         self.assertNotIn(UNWIND_WASM, sources)
 
-        target = TARGET.read_text(encoding="utf-8")
+        target = source_without_comments(TARGET.read_text(encoding="utf-8"))
         self.assertRegex(target, r'families:\s*cvs!\["unix"\]')
         unwind = UNWIND.read_text(encoding="utf-8")
         unix_backend = branch_after_pattern(
@@ -414,14 +527,14 @@ class FfiUnwindPolicyTests(unittest.TestCase):
             r'all\(target_os\s*=\s*"wasi"\s*,\s*panic\s*=\s*"unwind"\s*\)\s*,?\s*\)',
         )
         self.assertRegex(
-            unix_backend,
+            source_without_comments(unix_backend),
             r"^\s*mod\s+libunwind\s*;\s*pub\s+use\s+libunwind::\*\s*;\s*$",
         )
         wasm_backend = branch_after_pattern(
             unwind, r'(?m)^\s*target_family\s*=\s*"wasm"'
         )
         self.assertRegex(
-            wasm_backend,
+            source_without_comments(wasm_backend),
             r"^\s*mod\s+wasm\s*;\s*pub\s+use\s+wasm::\*\s*;\s*$",
         )
 
@@ -452,6 +565,14 @@ class FfiUnwindPolicyTests(unittest.TestCase):
             + '\nunsafe extern "C-unwind" { fn unaudited_shared_std(); }\n',
         )
 
+    def test_c_unwind_policy_rejects_unwind_root_declarations(self):
+        self.assert_source_mutation_is_rejected(
+            "test_eos_owned_production_has_no_c_unwind_declaration",
+            UNWIND,
+            lambda source: source
+            + '\nunsafe extern "C-unwind" { fn injected_unwind_root(); }\n',
+        )
+
     def test_production_and_fixture_crates_deny_ffi_unwind_calls(self):
         expected = {
             STD_ROOT: "#![deny(ffi_unwind_calls)]",
@@ -461,7 +582,10 @@ class FfiUnwindPolicyTests(unittest.TestCase):
         }
         for path, deny in expected.items():
             with self.subTest(path=path.relative_to(ROOT)):
-                self.assertIn(deny, path.read_text(encoding="utf-8"))
+                self.assertIn(
+                    deny,
+                    source_without_comments(path.read_text(encoding="utf-8")),
+                )
 
     def test_unwind_probe_catches_panic_and_cleanup_panic_aborts(self):
         with tempfile.TemporaryDirectory(prefix="eos-unwind-host-") as temp:
