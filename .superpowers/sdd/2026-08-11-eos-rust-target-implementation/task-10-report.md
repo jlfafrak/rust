@@ -395,3 +395,47 @@ Focused GREEN: strict O3 rebuilt and ran `process_test`, `process_redirection_te
 The reviewer also reported a Minor missing proof that caller argv/env/cwd storage may be
 mutated/freed immediately after spawn. Per the five-round SDD workflow this Minor is deliberately
 deferred and controller-owned in the progress ledger; this fix round does not edit that ledger.
+
+## Fix Round 1 final verification and commits
+
+All full matrices below were freshly configured after the three blocking fixes:
+
+- normal Release host build in `build/eos-abi-task10-fix1-normal`: 43/43 passed, 0 failed,
+  128.52 seconds;
+- strict Debug host build in `build/eos-abi-task10-fix1-o0`, with C and C++ flags
+  `-O0 -Wall -Wextra -Werror -pedantic`: 43/43 passed, 0 failed, 166.89 seconds;
+- strict Release host build in `build/eos-abi-task10-fix1-o3`, with C and C++ flags
+  `-O3 -Wall -Wextra -Werror -pedantic`: 43/43 passed, 0 failed, 145.56 seconds.
+
+Every matrix passed `process`, `process_redirection`, `martos_process_contract`, and the expanded
+fully instrumented `process_tsan`; no race report occurred. The full socket tests used the same
+scoped sandbox elevation recorded earlier.
+
+The real pinned target command was freshly configured in
+`build/eos-abi-task10-fix1-martos` with `BUILD_TESTING=OFF`,
+`EOS_RUST_PORT=martos_14_0_39`, SDK root
+`/home/dev/code/gpt-test/lib/martos-smp-14.0.39`, Release, and C flags
+`-Wall -Wextra -Werror`. It built the archive successfully with exit 0. CMake noted only that
+`CMAKE_CXX_FLAGS` was unused because the target archive is C-only.
+
+The independent export checker passed for the fresh strict O3 host and MARTOS archives; direct
+`nm` counts were exactly 118/118. The MARTOS forbidden-undefined scan remained empty for global
+errno, pthread/process creation/wait, environment/cwd mutation, command strings, and
+`os_thread_wait`. The required audited app load/run/unload, thread count/status/name/delete, and
+stdio symbols were present. Production test-seam scans were empty. A fresh direct
+`BUILD_TESTING=OFF` consumer configured, compiled, and linked with exit 0. The ARM Cortex-A9
+softfp/PIC fixed-layout probe compiled with exit 0 and remained ELF32 little-endian ARM,
+relocatable, v7 Application profile, Thumb-2, VFPv3.
+
+Fix commits:
+
+- `14b2d97f1716eb984802d611ee15f9c6ab876d15` —
+  `fix: validate inherited MARTOS stderr`;
+- `7db6b8259f0961b09a78ffa834ab672e6cbcffde` —
+  `fix: preserve partial kill delivery`;
+- `9be0dcee7d360e8c91d3e031149275e5fa3abd63` —
+  `fix: isolate concurrent host processes`.
+
+The exact Task 10 source/report diff check produced no output. All seven Task 10-created files
+remain mode 100644 in `HEAD`. The only unrelated worktree status is the controller-owned
+`progress.md` Minor-review line; it is intentionally not staged or committed by this task.
