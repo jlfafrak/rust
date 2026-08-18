@@ -1,0 +1,11 @@
+[package]
+name = "ffi-containment"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "ffi_containment"
+crate-type = ["staticlib"]
+
+[workspace]

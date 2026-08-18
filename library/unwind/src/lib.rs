@@ -156,6 +156,10 @@ unsafe extern "C" {}
 #[link(name = "gcc_s", cfg(not(target_feature = "crt-static")))]
 unsafe extern "C" {}
 
+#[cfg(target_os = "eos")]
+#[link(name = "gcc")]
+unsafe extern "C" {}
+
 #[cfg(all(target_vendor = "fortanix", target_env = "sgx"))]
 #[link(name = "unwind", kind = "static", modifiers = "-bundle")]
 unsafe extern "C" {}
