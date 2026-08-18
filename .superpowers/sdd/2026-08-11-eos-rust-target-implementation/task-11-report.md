@@ -26,10 +26,9 @@ crates.io package payload.
   resolved `FETCH_HEAD` exactly to `71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8`; `git cat-file`
   identified it as a commit and `git fsck --full` found no corruption.
 - The commit's tree object is `68d565ea31258a8056ada681c1e0ec90dcb23988` and contains 508
-  tracked blobs. The deterministic git-archive SHA-256 is
-  `6a16cc74f09fd7914b4c1e14ebe84b9ab335a62917a9200e29b2aba4122f0b2c`.
+  tracked blobs.
 - `tests/eos/fixtures/libc-0.2.185-71d5bfcc.sha256` records all 508 tracked paths and content
-  digests plus source, commit, tree, and archive metadata for future offline verification.
+  digests plus source, commit, tree, and file-count metadata for future offline verification.
 - The final vendor contains exactly those 508 tracked files plus `src/eos/mod.rs`. The only
   modified tracked files are `build.rs`, `src/lib.rs`, and `src/new/mod.rs`; their exact final
   digests and the EOS addition's digest are allowlisted by the provenance test.
@@ -258,3 +257,39 @@ only those three modified files and the `src/eos` addition.
 
 The separate fix commit uses subject `library: correct EOS libc source provenance`; its full hash
 is recorded in the handoff because a commit cannot contain its own hash.
+
+## Fix Round 2 — remove unreproducible archive metadata (2026-08-18)
+
+Re-review found that the fixture, test, and initial provenance narrative called
+`6a16cc74f09fd7914b4c1e14ebe84b9ab335a62917a9200e29b2aba4122f0b2c` a deterministic git-archive
+digest, but the test merely compared that fixture value with the same hardcoded value. It did
+not—and could not from the vendored files alone—independently validate the tar byte stream.
+
+The retained authenticated repository still has official origin
+`https://github.com/rust-lang/libc.git`; `FETCH_HEAD` resolves exactly to
+`71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8`, and `git cat-file -t` identifies that object as a
+commit. The exact reproduction command is:
+
+```text
+git -C /tmp/eos-libc-upstream-71d5bfcc archive --format=tar 71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8 | sha256sum
+```
+
+It produced
+`0df13342fa65b048f63bb8c5e5671320debf5ca5c6b8dea48dd850ef35ab4179`, confirming that the old
+metadata was inaccurate. Rather than retain a redundant archive checksum that an offline test
+cannot reconstruct, the checksum field and its tautological hardcoded expectation were removed.
+The durable offline proof remains the authoritative source URL, commit and tree identities,
+exact 508-file set, and independently recomputed SHA-256 for every vendored path, with only the
+four intended EOS contents separately allowlisted.
+
+For TDD, `EXPECTED_METADATA` first stopped accepting the archive field while the fixture still
+contained it. The provenance test exited 1 with an `AssertionError` showing the unexpected
+`git_archive_sha256=6a16cc74...` entry. Removing that single fixture entry was the production
+change; the immediate GREEN rerun passed 1/1. No vendor, binding, std/PAL, or ledger content was
+changed in this round.
+
+The focused final command combined the provenance test with `test_libc_links.py` and passed 6/6
+(provenance 1/1 and binding compile/link/runtime 5/5). `git diff --check` exited 0 with no output.
+The round changes exactly three existing paths: this report, the provenance fixture, and its host
+test; all remain mode `100644`. The separate fix commit uses subject
+`library: correct libc provenance metadata`.

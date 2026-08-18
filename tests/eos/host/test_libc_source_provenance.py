@@ -13,7 +13,6 @@ EXPECTED_METADATA = {
     "source": "https://github.com/rust-lang/libc.git",
     "commit": "71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8",
     "tree": "68d565ea31258a8056ada681c1e0ec90dcb23988",
-    "git_archive_sha256": "6a16cc74f09fd7914b4c1e14ebe84b9ab335a62917a9200e29b2aba4122f0b2c",
     "files": "508",
 }
 
