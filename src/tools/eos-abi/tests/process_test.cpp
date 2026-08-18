@@ -52,6 +52,7 @@ void eos_host_test_fail_next_alloc(int32_t);
 void eos_host_test_fail_alloc_after(uint32_t, int32_t);
 void eos_host_test_fail_next_sync_create(int32_t);
 void eos_host_test_fail_next_process_kill(int32_t);
+void eos_host_test_fail_process_kill_after_match(int32_t);
 void eos_host_test_fail_next_process_unload(int32_t);
 void eos_host_test_fail_next_sync_wait(int32_t);
 void eos_host_test_fail_next_thread_create(int32_t);
@@ -325,6 +326,26 @@ void test_kill_failure_leaves_child_waitable() {
            "child did not recover after a failed kill");
 }
 
+void test_partial_kill_failure_preserves_termination() {
+    reset_fixture();
+    auto req = request("/host/block");
+    eos_rust_process_t process = 0;
+    eos_rust_process_status status{};
+    expect(eos_rust_spawn(&req, &process) == 0,
+           "partial-kill process spawn failed");
+    wait_started();
+    eos_host_test_fail_process_kill_after_match(25);
+    expect(eos_rust_process_kill(process) == -1 &&
+               *eos_rust_errno_location() == kIo,
+           "partial kill must report its later native operation error");
+    expect(eos_rust_process_wait(process, &status) == 0 &&
+               status.kind == EOS_RUST_PROCESS_TERMINATED &&
+               status.code == 1,
+           "wait lost a delivered termination after a later kill error");
+    expect(eos_rust_process_close(process) == 0,
+           "partial-kill process close failed");
+}
+
 void test_unload_failure_surfaces_from_wait() {
 #ifndef EOS_RUST_TSAN_TEST
     reset_fixture();
@@ -347,6 +368,7 @@ int main() {
     test_try_wait_kill_close_reuse_and_concurrency();
     test_run_error_and_fault_rollback();
     test_kill_failure_leaves_child_waitable();
+    test_partial_kill_failure_preserves_termination();
     test_unload_failure_surfaces_from_wait();
     return 0;
 }

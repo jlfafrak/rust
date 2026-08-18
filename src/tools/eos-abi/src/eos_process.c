@@ -646,7 +646,7 @@ int32_t eos_rust_process_kill(eos_rust_process_t identity) {
         }
         matched = UINT32_C(0);
         status = eos_port_process_kill(record->name, &matched);
-        if (status == EOS_PORT_STATUS_OK && matched != UINT32_C(0)) {
+        if (matched != UINT32_C(0)) {
             record->kill_delivered = UINT32_C(1);
         }
         if (eos_port_sync_unlock(record->completion) != EOS_PORT_STATUS_OK) {

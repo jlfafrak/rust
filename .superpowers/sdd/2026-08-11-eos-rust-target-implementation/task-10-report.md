@@ -323,3 +323,32 @@ the temporary diagnostic removed.
 
 Focused GREEN: strict O3 rebuilt `process_redirection_test`,
 `martos_process_contract_test`, and `process_test`; all three executables returned exit 0.
+
+## Fix Round 1 — partial kill delivery
+
+Independent review found an Important result-precedence defect. The MARTOS exact-name helper can
+delete one matching live thread, increment `matched`, then receive a real error deleting a later
+exact match. Common process code previously remembered delivery only when the overall adapter
+status was OK. It correctly returned the later kill error, but a subsequent wait could therefore
+report ordinary exit or run failure instead of the termination already delivered.
+
+The requested target case was added with two exact names, a successful first delete, and status
+55 from the second. Against the pre-fix code it returned status 55 with `matched == 1` and both
+delete calls observed, so this target-only half was honestly a characterization GREEN rather
+than a RED: the target helper already preserved both facts. The actual defect was at the common
+integration boundary. The real process test initially failed to link with undefined
+`eos_host_test_fail_process_kill_after_match` (exit 2). After adding only a deterministic host
+adapter seam that delivers a kill, wakes the blocked child, sets `matched == 1`, and then returns
+native status 25, `process_test` failed at runtime with exit 1:
+`wait lost a delivered termination after a later kill error`.
+
+The one-line common fix records `kill_delivered` whenever `matched` is nonzero, independent of
+the overall adapter status. `eos_rust_process_kill` still maps and returns the later status 25 as
+compatibility I/O error, while completion and wait observe the protected delivery bit and return
+`EOS_RUST_PROCESS_TERMINATED`, code 1. Not-found name/delete races still leave matched zero;
+completion wins. A complete no-match operation still retries until completion. A failure before
+any delete still reports the error and leaves the child waitable.
+
+Focused GREEN: strict O3 rebuilt and ran `martos_process_contract_test`, `process_test`,
+`process_redirection_test`, and fully instrumented `process_tsan`; all returned exit 0 with no
+ThreadSanitizer report.

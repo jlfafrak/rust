@@ -160,6 +160,21 @@ static void test_completion_races_and_error(void) {
            "non-race delete failure must propagate deterministically");
 }
 
+static void test_partial_delete_failure_preserves_delivery(void) {
+    const uintptr_t threads[] = {0, 1};
+    fixture state = {0};
+    uint32_t matched = 99;
+    state.names[0] = "eos.rust.11";
+    state.names[1] = "eos.rust.11";
+    state.delete_status[1] = 55;
+    expect(eos_martos_process_kill_matching(
+               threads, 2, "eos.rust.11", 64, 0, 42, get_name,
+               delete_thread, &state, &matched) == 55 && matched == 1,
+           "a later delete failure must not erase an earlier delivered kill");
+    expect(state.delete_calls[0] == 1 && state.delete_calls[1] == 1,
+           "partial-delete fixture did not exercise both exact matches");
+}
+
 static int32_t enumerate(fixture *state, uint32_t *matched) {
     return eos_martos_process_enumerate_and_kill(
         "eos.rust.7", 64, 8, 0, 12, 15, get_count, allocate_snapshot,
@@ -217,6 +232,7 @@ int main(void) {
     test_redirection_result_mapping();
     test_exact_match_and_decoys();
     test_completion_races_and_error();
+    test_partial_delete_failure_preserves_delivery();
     test_snapshot_faults_and_cleanup();
     test_unload_cleanup_policy();
     return 0;

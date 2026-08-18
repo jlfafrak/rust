@@ -87,6 +87,7 @@ static int32_t eos_host_next_sync_wait_status;
 static int32_t eos_host_next_sync_create_status;
 static int32_t eos_host_next_process_kill_status;
 static int32_t eos_host_next_process_unload_status;
+static int32_t eos_host_process_kill_after_match_status;
 static _Atomic uint32_t eos_host_process_test_capabilities;
 static uint32_t eos_host_seek_successes_before_failure;
 static int32_t eos_host_delayed_seek_status;
@@ -190,6 +191,7 @@ void eos_host_test_reset(void) {
     eos_host_next_sync_create_status = 0;
     eos_host_next_process_kill_status = 0;
     eos_host_next_process_unload_status = 0;
+    eos_host_process_kill_after_match_status = 0;
     atomic_store(&eos_host_process_test_capabilities,
                  EOS_PORT_PROCESS_CAP_ENVIRONMENT |
                      EOS_PORT_PROCESS_CAP_CWD |
@@ -318,6 +320,11 @@ void eos_host_test_fail_next_sync_create(int32_t status) {
 }
 void eos_host_test_fail_next_process_kill(int32_t status) {
     eos_host_next_process_kill_status = status;
+}
+void eos_host_test_fail_process_kill_after_match(int32_t status) {
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    eos_host_process_kill_after_match_status = status;
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
 }
 void eos_host_test_fail_next_process_unload(int32_t status) {
     eos_host_next_process_unload_status = status;
@@ -837,6 +844,7 @@ static int32_t eos_port_process_run(const eos_port_process_request *request,
 }
 
 static int32_t eos_port_process_kill(const char *name, uint32_t *matched) {
+    int32_t result = 0;
     if (name == NULL || matched == NULL) return 1;
     *matched = UINT32_C(0);
 #ifdef EOS_RUST_HOST_TEST
@@ -853,9 +861,13 @@ static int32_t eos_port_process_kill(const char *name, uint32_t *matched) {
         eos_host_process_release = UINT32_C(1);
         *matched = UINT32_C(1);
         (void)pthread_cond_broadcast(&eos_host_process_condition);
+        if (eos_host_process_kill_after_match_status != 0) {
+            result = eos_host_process_kill_after_match_status;
+            eos_host_process_kill_after_match_status = 0;
+        }
     }
     (void)pthread_mutex_unlock(&eos_host_process_guard);
-    return 0;
+    return result;
 }
 
 static int32_t eos_port_process_unload(const char *name) {
