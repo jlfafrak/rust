@@ -352,6 +352,18 @@ fn open_c(path: *const u8, flags: i32, opts: &Options) {
         )
         self.assertIn("open64(path.as_ptr(), flags, mode)", source)
 
+    def test_eos_does_not_expose_lossy_unix_raw_process_status(self) -> None:
+        source = (STD / "os" / "unix" / "process.rs").read_text(encoding="utf-8")
+        for implementor in ("process::ExitStatus", "process::ExitStatusError"):
+            self.assertRegex(
+                source,
+                rf'#\[cfg\(not\(target_os = "eos"\)\)\]\s*'
+                rf'(?:#\[[^\n]+\]\s*)*'
+                rf'impl ExitStatusExt for {re.escape(implementor)}',
+                f"{implementor} must retain its non-EOS Unix raw-status implementation "
+                "without pretending the 32-byte EOS status is a c_int wait status",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

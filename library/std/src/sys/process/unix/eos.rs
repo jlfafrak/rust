@@ -1,5 +1,3 @@
-use libc::c_int;
-
 use super::common::*;
 use crate::fmt;
 use crate::io;
@@ -61,6 +59,10 @@ impl Command {
         if unsafe { libc::eos_spawn(&request, &mut handle) } != 0 {
             return Err(io::Error::last_os_error());
         }
+        // eos_rust_spawn has synchronously copied argv/env/cwd and pinned the
+        // child descriptors. Only now may the Rust-owned request and child
+        // sides be dropped while the returned Process keeps the native handle.
+        drop(theirs);
         Ok((Process { handle, status: None }, ours))
     }
 
@@ -158,17 +160,20 @@ impl Drop for Process {
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Default)]
-pub struct ExitStatus {
-    kind: u32,
-    code: i32,
-}
+#[derive(Clone, Copy)]
+pub struct ExitStatus(libc::eos_rust_process_status);
+
+// EOS wait statuses retain the complete fixed ABI record, including reserved
+// fields added for forward-compatible status information.
+const _: () = assert!(
+    core::mem::size_of::<ExitStatus>() == core::mem::size_of::<libc::eos_rust_process_status>()
+);
 
 impl ExitStatus {
     fn from_eos(status: libc::eos_rust_process_status) -> io::Result<Self> {
         match status.kind {
             libc::EOS_RUST_PROCESS_EXITED | libc::EOS_RUST_PROCESS_TERMINATED => {
-                Ok(Self { kind: status.kind, code: status.code })
+                Ok(Self(status))
             }
             _ => Err(io::const_error!(
                 io::ErrorKind::InvalidData,
@@ -178,7 +183,7 @@ impl ExitStatus {
     }
 
     pub fn exit_ok(&self) -> Result<(), ExitStatusError> {
-        if self.kind == libc::EOS_RUST_PROCESS_EXITED && self.code == 0 {
+        if self.0.kind == libc::EOS_RUST_PROCESS_EXITED && self.0.code == 0 {
             Ok(())
         } else {
             Err(ExitStatusError(*self))
@@ -186,55 +191,42 @@ impl ExitStatus {
     }
 
     pub fn code(&self) -> Option<i32> {
-        (self.kind == libc::EOS_RUST_PROCESS_EXITED).then_some(self.code)
-    }
-
-    pub fn signal(&self) -> Option<i32> {
-        None
-    }
-
-    pub fn core_dumped(&self) -> bool {
-        false
-    }
-
-    pub fn stopped_signal(&self) -> Option<i32> {
-        None
-    }
-
-    pub fn continued(&self) -> bool {
-        false
-    }
-
-    pub fn into_raw(&self) -> c_int {
-        if self.kind == libc::EOS_RUST_PROCESS_EXITED {
-            (self.code & 0xff) << 8
-        } else {
-            self.code
-        }
+        (self.0.kind == libc::EOS_RUST_PROCESS_EXITED).then_some(self.0.code)
     }
 }
 
-impl From<c_int> for ExitStatus {
-    fn from(raw: c_int) -> Self {
-        Self { kind: libc::EOS_RUST_PROCESS_EXITED, code: (raw >> 8) & 0xff }
+impl PartialEq for ExitStatus {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.kind == other.0.kind
+            && self.0.code == other.0.code
+            && self.0.reserved == other.0.reserved
+    }
+}
+
+impl Eq for ExitStatus {}
+
+impl Default for ExitStatus {
+    fn default() -> Self {
+        Self(libc::eos_rust_process_status { kind: 0, code: 0, reserved: [0; 6] })
     }
 }
 
 impl fmt::Debug for ExitStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("eos_process_status")
-            .field("kind", &self.kind)
-            .field("code", &self.code)
+            .field("kind", &self.0.kind)
+            .field("code", &self.0.code)
+            .field("reserved", &self.0.reserved)
             .finish()
     }
 }
 
 impl fmt::Display for ExitStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.kind == libc::EOS_RUST_PROCESS_EXITED {
-            write!(f, "exit status: {}", self.code)
+        if self.0.kind == libc::EOS_RUST_PROCESS_EXITED {
+            write!(f, "exit status: {}", self.0.code)
         } else {
-            write!(f, "terminated with EOS status: {}", self.code)
+            write!(f, "terminated with EOS status: {}", self.0.code)
         }
     }
 }

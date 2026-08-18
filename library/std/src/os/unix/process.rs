@@ -290,6 +290,10 @@ impl CommandExt for process::Command {
 ///
 /// This trait is sealed: it cannot be implemented outside the standard library.
 /// This is so that future additional methods are not breaking changes.
+///
+/// This trait is not implemented for EOS. EOS wait status is a fixed 32-byte
+/// record whose kind, full exit code, and reserved fields cannot be represented
+/// losslessly by the `i32` raw Unix wait status required by this interface.
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait ExitStatusExt: Sealed {
     /// Creates a new `ExitStatus` or `ExitStatusError` from the raw underlying integer status
@@ -336,6 +340,7 @@ pub trait ExitStatusExt: Sealed {
     fn into_raw(self) -> i32;
 }
 
+#[cfg(not(target_os = "eos"))]
 #[stable(feature = "rust1", since = "1.0.0")]
 impl ExitStatusExt for process::ExitStatus {
     fn from_raw(raw: i32) -> Self {
@@ -363,6 +368,7 @@ impl ExitStatusExt for process::ExitStatus {
     }
 }
 
+#[cfg(not(target_os = "eos"))]
 #[unstable(feature = "exit_status_error", issue = "84908")]
 impl ExitStatusExt for process::ExitStatusError {
     fn from_raw(raw: i32) -> Self {
