@@ -19,8 +19,9 @@ pub fn getcwd() -> io::Result<PathBuf> {
 }
 
 #[cfg(not(target_os = "espidf"))]
+#[cfg(not(target_os = "eos"))]
 pub fn getcwd() -> io::Result<PathBuf> {
-    let mut buf = Vec::with_capacity(512);
+    let mut buf = Vec::<u8>::with_capacity(512);
     loop {
         unsafe {
             let ptr = buf.as_mut_ptr() as *mut libc::c_char;
@@ -42,6 +43,28 @@ pub fn getcwd() -> io::Result<PathBuf> {
             buf.set_len(cap);
             buf.reserve(1);
         }
+    }
+}
+
+#[cfg(target_os = "eos")]
+pub fn getcwd() -> io::Result<PathBuf> {
+    let mut buf = Vec::<u8>::with_capacity(512);
+    loop {
+        let capacity = u32::try_from(buf.capacity()).unwrap_or(u32::MAX);
+        // EOS retrieves cwd through the stable eos_rust_getcwd service.
+        if unsafe { libc::getcwd(buf.as_mut_ptr().cast(), capacity) } == 0 {
+            let len = unsafe { CStr::from_ptr(buf.as_ptr().cast()) }.to_bytes().len();
+            unsafe { buf.set_len(len) };
+            buf.shrink_to_fit();
+            return Ok(PathBuf::from(OsString::from_vec(buf)));
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ERANGE) {
+            return Err(error);
+        }
+        let cap = buf.capacity();
+        unsafe { buf.set_len(cap) };
+        buf.reserve(1);
     }
 }
 
@@ -357,6 +380,14 @@ pub fn current_exe() -> io::Result<PathBuf> {
     Err(io::const_error!(io::ErrorKind::Unsupported, "not yet implemented!"))
 }
 
+#[cfg(target_os = "eos")]
+pub fn current_exe() -> io::Result<PathBuf> {
+    Err(io::const_error!(
+        io::ErrorKind::Unsupported,
+        "EOS v1 does not expose the current executable path",
+    ))
+}
+
 #[cfg(target_os = "vxworks")]
 pub fn current_exe() -> io::Result<PathBuf> {
     #[cfg(test)]
@@ -429,6 +460,7 @@ pub fn home_dir() -> Option<PathBuf> {
         target_os = "horizon",
         target_os = "vita",
         target_os = "nuttx",
+        target_os = "eos",
         all(target_vendor = "apple", not(target_os = "macos")),
     ))]
     unsafe fn fallback() -> Option<OsString> {
@@ -443,6 +475,7 @@ pub fn home_dir() -> Option<PathBuf> {
         target_os = "horizon",
         target_os = "vita",
         target_os = "nuttx",
+        target_os = "eos",
         all(target_vendor = "apple", not(target_os = "macos")),
     )))]
     unsafe fn fallback() -> Option<OsString> {

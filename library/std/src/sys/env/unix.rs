@@ -56,12 +56,18 @@ pub unsafe fn environ() -> *mut *const *const c_char {
 }
 
 // Use the `environ` static which is part of POSIX.
-#[cfg(not(any(target_os = "freebsd", target_vendor = "apple")))]
+#[cfg(not(any(target_os = "eos", target_os = "freebsd", target_vendor = "apple")))]
 pub unsafe fn environ() -> *mut *const *const c_char {
     unsafe extern "C" {
         static mut environ: *const *const c_char;
     }
     &raw mut environ
+}
+
+#[cfg(target_os = "eos")]
+pub unsafe fn environ() -> *mut *const *const c_char {
+    // EOS obtains the current immutable snapshot through eos_rust_environ.
+    unsafe { libc::environ().cast() }
 }
 
 static ENV_LOCK: RwLock<()> = RwLock::new(());

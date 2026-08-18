@@ -82,7 +82,8 @@ eos_hash_seed_test_sources fixed_sources() {
 
 Seed next_seed() {
     Seed seed{};
-    eos_rust_hash_seed(&seed.first, &seed.second);
+    expect(eos_rust_hash_seed(&seed.first, &seed.second) == 0,
+           "hash seed generation unexpectedly failed");
     return seed;
 }
 
@@ -115,16 +116,19 @@ void test_null_outputs_are_ignored_but_advance_state() {
     eos_hash_seed_test_reset(&sources);
 
     uint64_t second_only = 0;
-    eos_rust_hash_seed(nullptr, &second_only);
+    expect(eos_rust_hash_seed(nullptr, &second_only) == 0,
+           "hash seed generation with null first output failed");
     expect(second_only == UINT64_C(0x98d46b55b7f3f40f),
            "a null first output must not suppress the second key");
 
     uint64_t first_only = 0;
-    eos_rust_hash_seed(&first_only, nullptr);
+    expect(eos_rust_hash_seed(&first_only, nullptr) == 0,
+           "hash seed generation with null second output failed");
     expect(first_only == UINT64_C(0x4952107efd705702),
            "a null second output must not suppress the first key");
 
-    eos_rust_hash_seed(nullptr, nullptr);
+    expect(eos_rust_hash_seed(nullptr, nullptr) == 0,
+           "hash seed generation with null outputs failed");
     const Seed fourth = next_seed();
     expect(fourth == Seed{UINT64_C(0xbefb53bbf672c78b),
                           UINT64_C(0xa852706b925f1917)},
@@ -137,7 +141,8 @@ void test_lock_failure_preserves_outputs_and_sequence() {
     uint64_t first = UINT64_C(0x1111111111111111);
     uint64_t second = UINT64_C(0x2222222222222222);
     eos_host_test_fail_next_lock(INT32_C(17));
-    eos_rust_hash_seed(&first, &second);
+    expect(eos_rust_hash_seed(&first, &second) == -1,
+           "hash lock failure must be observable by the caller");
     expect(first == UINT64_C(0x1111111111111111) &&
                second == UINT64_C(0x2222222222222222),
            "hash lock failure must preserve caller outputs");

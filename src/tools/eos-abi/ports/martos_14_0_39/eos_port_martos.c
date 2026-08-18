@@ -103,6 +103,7 @@ _Static_assert(EDEADLK == EOS_ERRNO_DEADLOCK, "unexpected EOS EDEADLK value");
 #include "eos_port_martos_thread_contract.h"
 #include "eos_port_martos_sync_contract.h"
 #include "eos_port_martos_network_contract.h"
+#include "eos_port_martos_runtime_contract.h"
 
 /* The SDK convenience macro must not rewrite the stable ABI's field name. */
 #ifdef sin_addr
@@ -184,6 +185,10 @@ static int32_t eos_port_thread_tls_get(uint32_t slot, uintptr_t *value) {
 
 static int32_t eos_port_thread_tls_set(uint32_t slot, uintptr_t value) {
     return eos_martos_thread_tls_set_native(slot, value);
+}
+
+static uint32_t eos_port_cpu_count(void) {
+    return eos_martos_cpu_count_native();
 }
 
 static int32_t eos_port_thread_create(const char *name,

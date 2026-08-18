@@ -23,6 +23,16 @@ pub fn init(_argc: isize, _argv: *const *const u8, _sigpipe: u8) {}
 // NOTE: this is not guaranteed to run, for example when Rust code is called externally.
 // See `fn init()` in `library/std/src/rt.rs` for docs on `sigpipe`.
 pub unsafe fn init(argc: isize, argv: *const *const u8, sigpipe: u8) {
+    #[cfg(target_os = "eos")]
+    {
+        // EOS validates and initializes the stable eos_rust_abi_require and
+        // eos_rust_runtime_init services before any PAL call can reach them.
+        if libc::eos_abi_require(1, 0) != 0 {
+            libc::abort();
+        }
+        libc::eos_runtime_init(argc as i32, argv.cast());
+    }
+
     // The standard streams might be closed on application startup. To prevent
     // std::io::{stdin, stdout,stderr} objects from using other unrelated file
     // resources opened later, we reopen standards streams when they are closed.
@@ -125,6 +135,7 @@ pub unsafe fn init(argc: isize, argv: *const *const u8, sigpipe: u8) {
 
         // fallback in case poll isn't available or limited by RLIMIT_NOFILE
         #[cfg(not(any(
+            target_os = "eos",
             target_os = "emscripten",
             target_os = "fuchsia",
             target_os = "vxworks",
@@ -140,10 +151,21 @@ pub unsafe fn init(argc: isize, argv: *const *const u8, sigpipe: u8) {
                 }
             }
         }
+
+        #[cfg(target_os = "eos")]
+        {
+            use crate::sys::io::errno;
+            for fd in 0..3 {
+                if libc::fcntl(fd, libc::F_GETFD, 0) == -1 && errno() == libc::EBADF {
+                    open_devnull();
+                }
+            }
+        }
     }
 
     unsafe fn reset_sigpipe(#[allow(unused_variables)] sigpipe: u8) {
         #[cfg(not(any(
+            target_os = "eos",
             target_os = "emscripten",
             target_os = "fuchsia",
             target_os = "horizon",
@@ -196,6 +218,7 @@ pub unsafe fn init(argc: isize, argv: *const *const u8, sigpipe: u8) {
     target_os = "horizon",
     target_os = "vxworks",
     target_os = "vita",
+    target_os = "eos",
 )))]
 static ON_BROKEN_PIPE_USED: crate::sync::atomic::Atomic<bool> =
     crate::sync::atomic::AtomicBool::new(false);
@@ -208,6 +231,7 @@ static ON_BROKEN_PIPE_USED: crate::sync::atomic::Atomic<bool> =
     target_os = "vxworks",
     target_os = "vita",
     target_os = "nuttx",
+    target_os = "eos",
 )))]
 pub(crate) fn on_broken_pipe_used() -> bool {
     ON_BROKEN_PIPE_USED.load(crate::sync::atomic::Ordering::Relaxed)
@@ -217,9 +241,15 @@ pub(crate) fn on_broken_pipe_used() -> bool {
 // NOTE: this is not guaranteed to run, for example when the program aborts.
 pub unsafe fn cleanup() {
     stack_overflow::cleanup();
+    #[cfg(target_os = "eos")]
+    {
+        // eos_rust_runtime_cleanup releases the current thread's shim TLS root.
+        libc::eos_runtime_cleanup();
+    }
 }
 
 #[allow(unused_imports)]
+#[cfg(not(target_os = "eos"))]
 pub use libc::signal;
 
 #[doc(hidden)]

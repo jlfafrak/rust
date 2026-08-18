@@ -2,6 +2,45 @@ use super::{MIN_ALIGN, realloc_fallback};
 use crate::alloc::{GlobalAlloc, Layout, System};
 use crate::ptr;
 
+#[cfg(target_os = "eos")]
+unsafe fn system_malloc(size: usize) -> *mut libc::c_void {
+    match u32::try_from(size) {
+        Ok(size) => unsafe { libc::malloc(size) },
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+#[cfg(not(target_os = "eos"))]
+unsafe fn system_malloc(size: usize) -> *mut libc::c_void {
+    unsafe { libc::malloc(size) }
+}
+
+#[cfg(target_os = "eos")]
+unsafe fn system_calloc(size: usize) -> *mut libc::c_void {
+    match u32::try_from(size) {
+        Ok(size) => unsafe { libc::calloc(size, 1) },
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+#[cfg(not(target_os = "eos"))]
+unsafe fn system_calloc(size: usize) -> *mut libc::c_void {
+    unsafe { libc::calloc(size, 1) }
+}
+
+#[cfg(target_os = "eos")]
+unsafe fn system_realloc(memory: *mut libc::c_void, size: usize) -> *mut libc::c_void {
+    match u32::try_from(size) {
+        Ok(size) => unsafe { libc::realloc(memory, size) },
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+#[cfg(not(target_os = "eos"))]
+unsafe fn system_realloc(memory: *mut libc::c_void, size: usize) -> *mut libc::c_void {
+    unsafe { libc::realloc(memory, size) }
+}
+
 #[stable(feature = "alloc_system_type", since = "1.28.0")]
 unsafe impl GlobalAlloc for System {
     #[inline]
@@ -11,7 +50,7 @@ unsafe impl GlobalAlloc for System {
         // Also see <https://github.com/rust-lang/rust/issues/45955> and
         // <https://github.com/rust-lang/rust/issues/62251#issuecomment-507580914>.
         if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
-            unsafe { libc::malloc(layout.size()) as *mut u8 }
+            unsafe { system_malloc(layout.size()) as *mut u8 }
         } else {
             // `posix_memalign` returns a non-aligned value if supplied a very
             // large alignment on older versions of Apple's platforms (unknown
@@ -33,7 +72,7 @@ unsafe impl GlobalAlloc for System {
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         // See the comment above in `alloc` for why this check looks the way it does.
         if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
-            unsafe { libc::calloc(layout.size(), 1) as *mut u8 }
+            unsafe { system_calloc(layout.size()) as *mut u8 }
         } else {
             let ptr = unsafe { self.alloc(layout) };
             if !ptr.is_null() {
@@ -51,7 +90,7 @@ unsafe impl GlobalAlloc for System {
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if layout.align() <= MIN_ALIGN && layout.align() <= new_size {
-            unsafe { libc::realloc(ptr as *mut libc::c_void, new_size) as *mut u8 }
+            unsafe { system_realloc(ptr as *mut libc::c_void, new_size) as *mut u8 }
         } else {
             unsafe { realloc_fallback(self, ptr, layout, new_size) }
         }
@@ -65,6 +104,20 @@ cfg_select! {
         #[inline]
         unsafe fn aligned_malloc(layout: &Layout) -> *mut u8 {
             unsafe { libc::memalign(layout.align(), layout.size()) as *mut u8 }
+        }
+    }
+    target_os = "eos" => {
+        #[inline]
+        unsafe fn aligned_malloc(layout: &Layout) -> *mut u8 {
+            let Ok(align) = u32::try_from(layout.align()) else {
+                return ptr::null_mut();
+            };
+            let Ok(size) = u32::try_from(layout.size()) else {
+                return ptr::null_mut();
+            };
+            let mut out = ptr::null_mut();
+            let ret = unsafe { libc::posix_memalign(&mut out, align, size) };
+            if ret != 0 { ptr::null_mut() } else { out.cast() }
         }
     }
     _ => {

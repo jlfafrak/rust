@@ -12,6 +12,13 @@ pub fn pipe() -> io::Result<(Pipe, Pipe)> {
     // to use the `pipe2` syscall. This was added to Linux in 2.6.27, glibc 2.9
     // and musl 0.9.3, and some other targets also have it.
     cfg_select! {
+        target_os = "eos" => {
+            unsafe {
+                // EOS creates both descriptors atomically through eos_rust_pipe.
+                cvt(libc::pipe(fds.as_mut_ptr(), libc::O_CLOEXEC as u32))?;
+                Ok((Pipe::from_raw_fd(fds[0]), Pipe::from_raw_fd(fds[1])))
+            }
+        }
         any(
             target_os = "android",
             target_os = "dragonfly",

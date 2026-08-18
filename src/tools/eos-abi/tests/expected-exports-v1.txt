@@ -28,6 +28,7 @@ eos_rust_chown
 eos_rust_clock_gettime
 eos_rust_close
 eos_rust_closedir
+eos_rust_cpu_count
 eos_rust_dup
 eos_rust_dup2
 eos_rust_environ
@@ -108,6 +109,7 @@ eos_rust_realloc
 eos_rust_realpath
 eos_rust_rename
 eos_rust_rmdir
+eos_rust_runtime_cleanup
 eos_rust_runtime_init
 eos_rust_setenv
 eos_rust_stat_path

@@ -1,4 +1,6 @@
-use libc::{MSG_PEEK, c_int, c_void, size_t, sockaddr, socklen_t};
+use libc::{MSG_PEEK, c_int, c_void, sockaddr, socklen_t};
+#[cfg(not(target_os = "eos"))]
+use libc::size_t;
 
 #[cfg(not(any(target_os = "espidf", target_os = "nuttx")))]
 use crate::ffi::CStr;
@@ -27,7 +29,11 @@ use super::{socket_addr_from_c, socket_addr_to_c};
 pub use crate::sys::{cvt, cvt_r};
 
 #[expect(non_camel_case_types)]
+#[cfg(not(target_os = "eos"))]
 pub type wrlen_t = size_t;
+#[expect(non_camel_case_types)]
+#[cfg(target_os = "eos")]
+pub type wrlen_t = u32;
 
 pub struct Socket(FileDesc);
 
@@ -107,7 +113,7 @@ impl Socket {
         }
     }
 
-    #[cfg(not(any(target_os = "vxworks", target_os = "wasi")))]
+    #[cfg(not(any(target_os = "eos", target_os = "vxworks", target_os = "wasi")))]
     pub fn new_pair(fam: c_int, ty: c_int) -> io::Result<(Socket, Socket)> {
         unsafe {
             let mut fds = [0, 0];
@@ -275,7 +281,7 @@ impl Socket {
         self.0.duplicate().map(Socket)
     }
 
-    #[cfg(not(target_os = "wasi"))]
+    #[cfg(not(any(target_os = "eos", target_os = "wasi")))]
     pub fn send_with_flags(&self, buf: &[u8], flags: c_int) -> io::Result<usize> {
         let len = cmp::min(buf.len(), <wrlen_t>::MAX as usize) as wrlen_t;
         let ret = cvt(unsafe {
@@ -289,7 +295,7 @@ impl Socket {
             libc::recv(
                 self.as_raw_fd(),
                 buf.as_mut().as_mut_ptr() as *mut c_void,
-                buf.capacity(),
+                cmp::min(buf.capacity(), <wrlen_t>::MAX as usize) as wrlen_t,
                 flags,
             )
         })?;
@@ -339,7 +345,7 @@ impl Socket {
             libc::recvfrom(
                 self.as_raw_fd(),
                 buf.as_mut_ptr() as *mut c_void,
-                buf.len(),
+                cmp::min(buf.len(), <wrlen_t>::MAX as usize) as wrlen_t,
                 flags,
                 (&raw mut storage) as *mut _,
                 &mut addrlen,
@@ -362,7 +368,7 @@ impl Socket {
         self.recv_from_with_flags(buf, MSG_PEEK)
     }
 
-    #[cfg(not(target_os = "wasi"))]
+    #[cfg(not(any(target_os = "eos", target_os = "wasi")))]
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
         self.0.write(buf)
     }
@@ -589,10 +595,20 @@ impl Socket {
         Ok(local_creds_persistent != 0)
     }
 
-    #[cfg(not(any(target_os = "solaris", target_os = "illumos", target_os = "vita")))]
+    #[cfg(not(any(
+        target_os = "eos",
+        target_os = "solaris",
+        target_os = "illumos",
+        target_os = "vita",
+    )))]
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         let mut nonblocking = nonblocking as libc::c_int;
         cvt(unsafe { libc::ioctl(self.as_raw_fd(), libc::FIONBIO, &mut nonblocking) }).map(drop)
+    }
+
+    #[cfg(target_os = "eos")]
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        self.0.set_nonblocking(nonblocking)
     }
 
     #[cfg(target_os = "vita")]

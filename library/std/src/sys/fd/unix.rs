@@ -59,6 +59,16 @@ const READ_LIMIT: usize = if cfg!(target_vendor = "apple") {
     libc::ssize_t::MAX as usize
 };
 
+#[cfg(target_os = "eos")]
+fn transfer_count(count: usize) -> u32 {
+    cmp::min(count, READ_LIMIT) as u32
+}
+
+#[cfg(not(target_os = "eos"))]
+fn transfer_count(count: usize) -> usize {
+    cmp::min(count, READ_LIMIT)
+}
+
 #[cfg(any(
     target_os = "dragonfly",
     target_os = "freebsd",
@@ -81,6 +91,7 @@ const fn max_iov() -> usize {
     libc::UIO_MAXIOV as usize
 }
 
+#[cfg(not(target_os = "eos"))]
 #[cfg(not(any(
     target_os = "android",
     target_os = "dragonfly",
@@ -112,7 +123,7 @@ impl FileDesc {
             libc::read(
                 self.as_raw_fd(),
                 buf.as_mut_ptr() as *mut libc::c_void,
-                cmp::min(buf.len(), READ_LIMIT),
+                transfer_count(buf.len()),
             )
         })?;
         Ok(ret as usize)
@@ -122,7 +133,8 @@ impl FileDesc {
         target_os = "espidf",
         target_os = "horizon",
         target_os = "vita",
-        target_os = "nuttx"
+        target_os = "nuttx",
+        target_os = "eos",
     )))]
     pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         let ret = cvt(unsafe {
@@ -139,7 +151,8 @@ impl FileDesc {
         target_os = "espidf",
         target_os = "horizon",
         target_os = "vita",
-        target_os = "nuttx"
+        target_os = "nuttx",
+        target_os = "eos",
     ))]
     pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         io::default_read_vectored(|b| self.read(b), bufs)
@@ -153,6 +166,7 @@ impl FileDesc {
             target_os = "vita",
             target_os = "nuttx",
             target_os = "wasi",
+            target_os = "eos",
         )))
     }
 
@@ -166,7 +180,7 @@ impl FileDesc {
             pread64(
                 self.as_raw_fd(),
                 buf.as_mut_ptr() as *mut libc::c_void,
-                cmp::min(buf.len(), READ_LIMIT),
+                transfer_count(buf.len()),
                 offset as off64_t, // EINVAL if offset + count overflows
             )
         })
@@ -179,7 +193,7 @@ impl FileDesc {
             libc::read(
                 self.as_raw_fd(),
                 cursor.as_mut().as_mut_ptr().cast::<libc::c_void>(),
-                cmp::min(cursor.capacity(), READ_LIMIT),
+                transfer_count(cursor.capacity()),
             )
         })?;
 
@@ -196,7 +210,7 @@ impl FileDesc {
             pread64(
                 self.as_raw_fd(),
                 cursor.as_mut().as_mut_ptr().cast::<libc::c_void>(),
-                cmp::min(cursor.capacity(), READ_LIMIT),
+                transfer_count(cursor.capacity()),
                 offset as off64_t, // EINVAL if offset + count overflows
             )
         })?;
@@ -346,7 +360,7 @@ impl FileDesc {
             libc::write(
                 self.as_raw_fd(),
                 buf.as_ptr() as *const libc::c_void,
-                cmp::min(buf.len(), READ_LIMIT),
+                transfer_count(buf.len()),
             )
         })?;
         Ok(ret as usize)
@@ -356,7 +370,8 @@ impl FileDesc {
         target_os = "espidf",
         target_os = "horizon",
         target_os = "vita",
-        target_os = "nuttx"
+        target_os = "nuttx",
+        target_os = "eos",
     )))]
     pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
         let ret = cvt(unsafe {
@@ -373,7 +388,8 @@ impl FileDesc {
         target_os = "espidf",
         target_os = "horizon",
         target_os = "vita",
-        target_os = "nuttx"
+        target_os = "nuttx",
+        target_os = "eos",
     ))]
     pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
         io::default_write_vectored(|b| self.write(b), bufs)
@@ -387,6 +403,7 @@ impl FileDesc {
             target_os = "vita",
             target_os = "nuttx",
             target_os = "wasi",
+            target_os = "eos",
         )))
     }
 
@@ -408,7 +425,7 @@ impl FileDesc {
             cvt(pwrite64(
                 self.as_raw_fd(),
                 buf.as_ptr() as *const libc::c_void,
-                cmp::min(buf.len(), READ_LIMIT),
+                transfer_count(buf.len()),
                 offset as off64_t,
             ))
             .map(|n| n as usize)
@@ -563,9 +580,21 @@ impl FileDesc {
         target_os = "nto",
         target_os = "wasi",
     )))]
+    #[cfg(not(target_os = "eos"))]
     pub fn set_cloexec(&self) -> io::Result<()> {
         unsafe {
             cvt(libc::ioctl(self.as_raw_fd(), libc::FIOCLEX))?;
+            Ok(())
+        }
+    }
+    #[cfg(target_os = "eos")]
+    pub fn set_cloexec(&self) -> io::Result<()> {
+        unsafe {
+            let previous = cvt(libc::fcntl(self.as_raw_fd(), libc::F_GETFD, 0))?;
+            let new = previous | libc::FD_CLOEXEC;
+            if new != previous {
+                cvt(libc::fcntl(self.as_raw_fd(), libc::F_SETFD, new))?;
+            }
             Ok(())
         }
     }
@@ -614,9 +643,26 @@ impl FileDesc {
     }
 
     #[cfg(not(target_os = "linux"))]
+    #[cfg(not(target_os = "eos"))]
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         unsafe {
             let previous = cvt(libc::fcntl(self.as_raw_fd(), libc::F_GETFL))?;
+            let new = if nonblocking {
+                previous | libc::O_NONBLOCK
+            } else {
+                previous & !libc::O_NONBLOCK
+            };
+            if new != previous {
+                cvt(libc::fcntl(self.as_raw_fd(), libc::F_SETFL, new))?;
+            }
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "eos")]
+    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+        unsafe {
+            let previous = cvt(libc::fcntl(self.as_raw_fd(), libc::F_GETFL, 0))?;
             let new = if nonblocking {
                 previous | libc::O_NONBLOCK
             } else {

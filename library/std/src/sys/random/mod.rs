@@ -32,6 +32,11 @@ cfg_select! {
         mod getentropy;
         pub use getentropy::fill_bytes;
     }
+    target_os = "eos" => {
+        // EOS HashMap seeding uses the stable eos_rust_hash_seed service.
+        mod eos;
+        pub use eos::{fill_bytes, hashmap_random_keys};
+    }
     target_os = "espidf" => {
         mod espidf;
         pub use espidf::fill_bytes;
@@ -115,6 +120,7 @@ cfg_select! {
     _ => {}
 }
 
+#[cfg(not(target_os = "eos"))]
 #[cfg(not(any(
     target_os = "linux",
     target_os = "android",

@@ -14,6 +14,7 @@ ABI_HEADER = ROOT / "src" / "tools" / "eos-abi" / "include" / "eos_rust_abi.h"
 EXPECTED_EXPORTS = (
     ROOT / "src" / "tools" / "eos-abi" / "tests" / "expected-exports-v1.txt"
 )
+PURE_RUST_FUNCTIONS = {"sysconf"}
 
 
 def run(command, *, cwd=ROOT):
@@ -97,11 +98,9 @@ class LibcLinkTests(unittest.TestCase):
         public_functions = re.findall(
             r"\bpub\s+(?:unsafe\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", source
         )
-        self.assertEqual(
-            len(declarations),
-            len(public_functions),
-            "every public function must be an extern declaration with an explicit link_name",
-        )
+        extern_functions = {rust_name for _link, rust_name in declarations}
+        pure_rust_functions = set(public_functions) - extern_functions
+        self.assertEqual(PURE_RUST_FUNCTIONS, pure_rust_functions)
         self.assertTrue(
             all(name.startswith("eos_rust_") for name in declared_links),
             "all extern link names must use the stable eos_rust_ namespace",
@@ -116,7 +115,7 @@ class LibcLinkTests(unittest.TestCase):
             for line in EXPECTED_EXPORTS.read_text(encoding="utf-8").splitlines()
             if line.strip()
         }
-        self.assertEqual(118, len(header_exports))
+        self.assertEqual(120, len(header_exports))
         self.assertEqual(expected_exports, header_exports)
         self.assertEqual(header_exports, set(declared_links))
 

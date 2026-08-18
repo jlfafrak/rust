@@ -2,6 +2,10 @@
 mod common;
 
 cfg_select! {
+    target_os = "eos" => {
+        mod eos;
+        use eos as imp;
+    }
     target_os = "fuchsia" => {
         mod fuchsia;
         use fuchsia as imp;

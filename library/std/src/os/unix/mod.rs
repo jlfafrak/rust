@@ -35,6 +35,9 @@
 #[cfg(doc)]
 use crate::os::linux as platform;
 
+#[cfg(all(not(doc), target_os = "eos"))]
+mod eos;
+
 #[cfg(not(doc))]
 mod platform {
     #[cfg(target_os = "aix")]
@@ -49,6 +52,8 @@ mod platform {
     pub use crate::os::dragonfly::*;
     #[cfg(target_os = "emscripten")]
     pub use crate::os::emscripten::*;
+    #[cfg(target_os = "eos")]
+    pub use super::eos::*;
     #[cfg(target_os = "espidf")]
     pub use crate::os::espidf::*;
     #[cfg(target_os = "freebsd")]
@@ -90,6 +95,7 @@ mod platform {
 pub mod ffi;
 pub mod fs;
 pub mod io;
+#[cfg(not(target_os = "eos"))]
 pub mod net;
 pub mod process;
 pub mod raw;

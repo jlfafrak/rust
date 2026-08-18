@@ -838,6 +838,10 @@ static int32_t eos_port_thread_tls_set(uint32_t slot, uintptr_t value) {
                ? 0 : 25;
 }
 
+static uint32_t eos_port_cpu_count(void) {
+    return UINT32_C(2);
+}
+
 typedef struct eos_host_thread_start {
     eos_port_thread_start start;
     void *argument;

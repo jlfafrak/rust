@@ -1,8 +1,10 @@
 use crate::ffi::OsString;
 use crate::io;
 use crate::os::unix::ffi::OsStringExt;
+#[cfg(not(target_os = "eos"))]
 use crate::sys::io::errno;
 
+#[cfg(not(target_os = "eos"))]
 pub fn hostname() -> io::Result<OsString> {
     // Query the system for the maximum host name length.
     let host_name_max = match unsafe { libc::sysconf(libc::_SC_HOST_NAME_MAX) } {
@@ -59,4 +61,17 @@ pub fn hostname() -> io::Result<OsString> {
         // Resize the buffer (according to `Vec`'s resizing rules) and try again.
         buf.try_reserve(buf.capacity() + 1)?;
     }
+}
+
+#[cfg(target_os = "eos")]
+pub fn hostname() -> io::Result<OsString> {
+    use crate::ffi::CStr;
+
+    let mut buf = [0u8; libc::NAME_MAX as usize + 1];
+    // EOS obtains the name through the stable eos_rust_gethostname service.
+    if unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len() as u32) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let bytes = unsafe { CStr::from_ptr(buf.as_ptr().cast()) }.to_bytes().to_vec();
+    Ok(OsString::from_vec(bytes))
 }

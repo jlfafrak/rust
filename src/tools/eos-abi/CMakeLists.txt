@@ -152,6 +152,17 @@ if(BUILD_TESTING)
     target_link_libraries(runtime_env_test PRIVATE eos_rust_abi_host_test Threads::Threads)
     add_test(NAME runtime_env COMMAND runtime_env_test)
 
+    add_executable(runtime_services_test tests/runtime_services_test.cpp)
+    set_target_properties(runtime_services_test PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED YES
+        CXX_EXTENSIONS NO
+    )
+    target_compile_definitions(runtime_services_test PRIVATE EOS_RUST_HOST_TEST=1)
+    target_link_libraries(runtime_services_test PRIVATE
+        eos_rust_abi_host_test Threads::Threads)
+    add_test(NAME runtime_services COMMAND runtime_services_test)
+
     add_executable(hash_seed_test tests/hash_seed_test.cpp)
     set_target_properties(hash_seed_test PROPERTIES
         CXX_STANDARD 17
@@ -321,6 +332,14 @@ if(BUILD_TESTING)
     target_include_directories(martos_process_contract_test PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/ports/martos_14_0_39")
     add_test(NAME martos_process_contract COMMAND martos_process_contract_test)
+
+    add_executable(martos_runtime_contract_test
+        tests/martos_runtime_contract_test.c)
+    set_target_properties(martos_runtime_contract_test PROPERTIES
+        C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO)
+    target_include_directories(martos_runtime_contract_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/ports/martos_14_0_39")
+    add_test(NAME martos_runtime_contract COMMAND martos_runtime_contract_test)
 
     set(CMAKE_REQUIRED_FLAGS "-fsanitize=thread")
     set(CMAKE_REQUIRED_LINK_OPTIONS "-fsanitize=thread")

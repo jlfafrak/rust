@@ -54,7 +54,7 @@ static void eos_hash_seed_initialize(const eos_hash_seed_sources *sources) {
     eos_hash_seed_initialized = 1;
 }
 
-void eos_rust_hash_seed(uint64_t *key0, uint64_t *key1) {
+int32_t eos_rust_hash_seed(uint64_t *key0, uint64_t *key1) {
     eos_hash_seed_sources sources;
     uint64_t output0;
     uint64_t output1;
@@ -62,7 +62,7 @@ void eos_rust_hash_seed(uint64_t *key0, uint64_t *key1) {
     int32_t lock_status = eos_hash_seed_lock_acquire();
     if (lock_status != EOS_PORT_STATUS_OK) {
         eos_allocation_record_failure(lock_status, "hash_seed.lock");
-        return;
+        return -1;
     }
     if (!eos_hash_seed_initialized) {
 #ifdef EOS_RUST_HOST_TEST
@@ -95,6 +95,7 @@ void eos_rust_hash_seed(uint64_t *key0, uint64_t *key1) {
         *key1 = output1;
     }
     eos_hash_seed_lock_release();
+    return 0;
 }
 
 #ifdef EOS_RUST_HOST_TEST

@@ -328,6 +328,17 @@ EOS_RUST_EXPORT void eos_rust_runtime_init(int32_t argc,
                                            const char *const *argv);
 
 /*
+ * Performs terminal cleanup for compatibility state owned by the calling
+ * thread. Calls are idempotent. This does not reset process-wide runtime
+ * state, close descriptors, or reclaim process-lifetime registries. Cleanup
+ * failures after state release emit a direct diagnostic and abort.
+ */
+EOS_RUST_EXPORT void eos_rust_runtime_cleanup(void);
+
+/* Returns the number of processor cores available to this EOS application. */
+EOS_RUST_EXPORT uint32_t eos_rust_cpu_count(void);
+
+/*
  * File operations use nonnegative byte counts or offsets for success and -1
  * with compatibility errno for failure. Byte counts above INT32_MAX are
  * rejected with EINVAL before descriptor or buffer access, so every transfer
@@ -658,9 +669,10 @@ EOS_RUST_EXPORT char **eos_rust_environ(void);
 /*
  * Produces process- and request-diversified keys for hash-table state. This
  * service is not callable from ISR context. A null output pointer is ignored;
- * every call still advances the process state.
+ * every successful call still advances the process state. Returns zero on
+ * success or -1 with EOS errno set if the state lock cannot be acquired.
  */
-EOS_RUST_EXPORT void eos_rust_hash_seed(uint64_t *key0, uint64_t *key1);
+EOS_RUST_EXPORT int32_t eos_rust_hash_seed(uint64_t *key0, uint64_t *key1);
 
 #ifdef __cplusplus
 }

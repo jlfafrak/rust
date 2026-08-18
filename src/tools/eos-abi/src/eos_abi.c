@@ -58,3 +58,11 @@ int32_t eos_rust_abi_require(uint32_t major, uint32_t minimum_minor) {
 int32_t *eos_rust_errno_location(void) {
     return eos_tls_errno_location();
 }
+
+void eos_rust_runtime_cleanup(void) {
+    eos_tls_cleanup_current();
+}
+
+uint32_t eos_rust_cpu_count(void) {
+    return eos_port_cpu_count();
+}

@@ -1,4 +1,6 @@
-use crate::ffi::{CStr, c_char, c_int};
+#[cfg(not(target_os = "eos"))]
+use crate::ffi::{CStr, c_char};
+use crate::ffi::c_int;
 use crate::io;
 
 unsafe extern "C" {
@@ -30,6 +32,8 @@ unsafe extern "C" {
     #[cfg_attr(any(target_os = "freebsd", target_vendor = "apple"), link_name = "__error")]
     #[cfg_attr(target_os = "haiku", link_name = "_errnop")]
     #[cfg_attr(target_os = "aix", link_name = "_Errno")]
+    // EOS routes errno through the stable eos_rust_errno_location service.
+    #[cfg_attr(target_os = "eos", link_name = "eos_rust_errno_location")]
     // SAFETY: this will always return the same pointer on a given thread.
     #[unsafe(ffi_const)]
     pub safe fn errno_location() -> *mut c_int;
@@ -98,6 +102,7 @@ pub fn is_interrupted(errno: i32) -> bool {
     errno == libc::EINTR
 }
 
+#[cfg(not(target_os = "eos"))]
 pub fn decode_error_kind(errno: i32) -> io::ErrorKind {
     use io::ErrorKind::*;
     match errno as libc::c_int {
@@ -150,7 +155,45 @@ pub fn decode_error_kind(errno: i32) -> io::ErrorKind {
     }
 }
 
+#[cfg(target_os = "eos")]
+pub fn decode_error_kind(errno: i32) -> io::ErrorKind {
+    use io::ErrorKind::*;
+    match errno as libc::c_int {
+        libc::EADDRINUSE => AddrInUse,
+        libc::EADDRNOTAVAIL => AddrNotAvailable,
+        libc::EBUSY => ResourceBusy,
+        libc::ECONNABORTED => ConnectionAborted,
+        libc::ECONNREFUSED => ConnectionRefused,
+        libc::ECONNRESET => ConnectionReset,
+        libc::EDEADLK => Deadlock,
+        libc::EEXIST => AlreadyExists,
+        libc::EHOSTUNREACH => HostUnreachable,
+        libc::EINTR => Interrupted,
+        libc::EINVAL => InvalidInput,
+        libc::EISDIR => IsADirectory,
+        libc::ENOENT => NotFound,
+        libc::ENOMEM => OutOfMemory,
+        libc::ENOSPC => StorageFull,
+        libc::ENOSYS => Unsupported,
+        libc::ENAMETOOLONG => InvalidFilename,
+        libc::ENETDOWN => NetworkDown,
+        libc::ENETUNREACH => NetworkUnreachable,
+        libc::ENOTCONN => NotConnected,
+        libc::ENOTDIR => NotADirectory,
+        libc::ENOTEMPTY => DirectoryNotEmpty,
+        libc::EPIPE => BrokenPipe,
+        libc::EROFS => ReadOnlyFilesystem,
+        libc::ESPIPE => NotSeekable,
+        libc::ETIMEDOUT => TimedOut,
+        libc::EINPROGRESS => InProgress,
+        libc::EACCES => PermissionDenied,
+        x if x == libc::EAGAIN => WouldBlock,
+        _ => Uncategorized,
+    }
+}
+
 /// Gets a detailed string description for the given error number.
+#[cfg(not(target_os = "eos"))]
 pub fn error_string(errno: i32) -> String {
     const TMPBUF_SZ: usize = 128;
 
@@ -183,4 +226,9 @@ pub fn error_string(errno: i32) -> String {
         // it's better to give a low-quality error message than none at all.
         String::from_utf8_lossy(CStr::from_ptr(p).to_bytes()).into()
     }
+}
+
+#[cfg(target_os = "eos")]
+pub fn error_string(errno: i32) -> String {
+    format!("EOS error {errno}")
 }

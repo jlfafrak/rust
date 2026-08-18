@@ -21,9 +21,12 @@ use crate::{cmp, io, ptr, sys};
     target_os = "l4re",
     target_os = "vxworks",
     target_os = "espidf",
-    target_os = "nuttx"
+    target_os = "nuttx",
+    target_os = "eos",
 )))]
 pub const DEFAULT_MIN_STACK_SIZE: usize = 2 * 1024 * 1024;
+#[cfg(target_os = "eos")]
+pub const DEFAULT_MIN_STACK_SIZE: usize = 4096;
 #[cfg(target_os = "l4re")]
 pub const DEFAULT_MIN_STACK_SIZE: usize = 1024 * 1024;
 #[cfg(target_os = "vxworks")]
@@ -64,7 +67,7 @@ impl Thread {
             );
         }
 
-        #[cfg(not(any(target_os = "espidf", target_os = "nuttx")))]
+        #[cfg(not(any(target_os = "eos", target_os = "espidf", target_os = "nuttx")))]
         {
             let stack_size = cmp::max(stack, min_stack_size(attr.as_ptr()));
 
@@ -91,6 +94,34 @@ impl Thread {
                     }
                 }
             };
+        }
+
+        #[cfg(target_os = "eos")]
+        {
+            let stack_size = cmp::max(stack, min_stack_size(attr.as_ptr()));
+            let stack_size = u32::try_from(stack_size).map_err(|_| {
+                io::const_error!(io::ErrorKind::InvalidInput, "invalid stack size")
+            })?;
+            match libc::pthread_attr_setstacksize(attr.as_mut_ptr(), stack_size) {
+                0 => {}
+                libc::EINVAL => {
+                    let page_size = sys::pal::conf::page_size() as u32;
+                    let stack_size = stack_size
+                        .checked_add(page_size - 1)
+                        .map(|size| size & !(page_size - 1))
+                        .ok_or(io::const_error!(
+                            io::ErrorKind::InvalidInput,
+                            "invalid stack size",
+                        ))?;
+                    if libc::pthread_attr_setstacksize(attr.as_mut_ptr(), stack_size) != 0 {
+                        return Err(io::const_error!(
+                            io::ErrorKind::InvalidInput,
+                            "invalid stack size",
+                        ));
+                    }
+                }
+                n => panic!("unexpected pthread_attr_setstacksize error: {n}"),
+            }
         }
 
         let data = Box::into_raw(data);
@@ -146,6 +177,14 @@ impl Drop for Thread {
 
 pub fn available_parallelism() -> io::Result<NonZero<usize>> {
     cfg_select! {
+        target_os = "eos" => {
+            // eos_rust_cpu_count is the stable source for the two Cortex-A9 cores.
+            let count = unsafe { libc::eos_cpu_count() } as usize;
+            if count != 2 {
+                return Err(io::Error::UNKNOWN_THREAD_COUNT);
+            }
+            Ok(NonZero::new(count).unwrap())
+        }
         any(
             target_os = "android",
             target_os = "emscripten",
@@ -414,6 +453,18 @@ pub fn set_name(name: &CStr) {
         // We have no good way of propagating errors here, but in debug-builds let's check that this actually worked.
         debug_assert_eq!(res, 0);
     }
+}
+
+#[cfg(target_os = "eos")]
+pub fn set_name(name: &CStr) {
+    const NAME_WITH_NUL_MAX: usize = 64;
+    let mut truncated = [0; NAME_WITH_NUL_MAX];
+    for (src, dst) in name.to_bytes().iter().zip(&mut truncated[..NAME_WITH_NUL_MAX - 1]) {
+        *dst = *src as libc::c_char;
+    }
+    // EOS names threads through the stable eos_rust_pthread_setname_np service.
+    let result = unsafe { libc::pthread_setname_np(libc::pthread_self(), truncated.as_ptr()) };
+    debug_assert_eq!(result, 0);
 }
 
 #[cfg(any(
@@ -766,6 +817,9 @@ pub fn sleep_until(deadline: crate::time::Instant) {
 }
 
 pub fn yield_now() {
+    #[cfg(target_os = "eos")]
+    let ret = unsafe { libc::pthread_yield() };
+    #[cfg(not(target_os = "eos"))]
     let ret = unsafe { libc::sched_yield() };
     debug_assert_eq!(ret, 0);
 }

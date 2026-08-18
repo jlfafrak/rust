@@ -39,6 +39,9 @@ cfg_select! {
 // The following implementations are based on
 // https://github.com/aosp-mirror/platform_bionic/blob/ad8dcd6023294b646e5a8288c0ed431b0845da49/libc/include/android/legacy_signal_inlines.h
 cfg_select! {
+    target_os = "eos" => {
+        // EOS does not expose POSIX signal-set services.
+    }
     target_os = "android" => {
         #[allow(dead_code)]
         pub unsafe fn sigemptyset(set: *mut libc::sigset_t) -> libc::c_int {
@@ -684,10 +687,22 @@ pub fn read_output(
     }
 }
 
+#[cfg(not(target_os = "eos"))]
 pub fn getpid() -> u32 {
     unsafe { libc::getpid() as u32 }
 }
 
+#[cfg(target_os = "eos")]
+pub fn getpid() -> u32 {
+    panic!("EOS v1 does not expose a current process identifier")
+}
+
+#[cfg(not(target_os = "eos"))]
 pub fn getppid() -> u32 {
     unsafe { libc::getppid() as u32 }
+}
+
+#[cfg(target_os = "eos")]
+pub fn getppid() -> u32 {
+    panic!("EOS v1 does not expose a parent process identifier")
 }

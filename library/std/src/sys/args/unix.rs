@@ -149,6 +149,27 @@ mod imp {
     }
 }
 
+#[cfg(target_os = "eos")]
+mod imp {
+    use crate::ffi::c_char;
+    use crate::ptr;
+    use crate::sync::atomic::{Atomic, AtomicIsize, AtomicPtr, Ordering};
+
+    static ARGC: Atomic<isize> = AtomicIsize::new(0);
+    static ARGV: Atomic<*mut *const u8> = AtomicPtr::new(ptr::null_mut());
+
+    pub unsafe fn init(argc: isize, argv: *const *const u8) {
+        ARGC.store(argc, Ordering::Relaxed);
+        ARGV.store(argv as *mut _, Ordering::Relaxed);
+    }
+
+    pub fn argc_argv() -> (isize, *const *const c_char) {
+        let argv = ARGV.load(Ordering::Relaxed);
+        let argc = if argv.is_null() { 0 } else { ARGC.load(Ordering::Relaxed) };
+        (argc, argv.cast())
+    }
+}
+
 // Use `_NSGetArgc` and `_NSGetArgv` on Apple platforms.
 //
 // Even though these have underscores in their names, they've been available

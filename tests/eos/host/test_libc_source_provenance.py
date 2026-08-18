@@ -21,7 +21,7 @@ EXPECTED_EOS_HASHES = {
     "build.rs": "f47a9b616c619130b6be76652b6f398b0b15ee99458eee9e2905a58210d9ddad",
     "src/lib.rs": "9e00f607791a159309dba5f3772c452bcff6068beb965aa77a32b730f0d95b44",
     "src/new/mod.rs": "d4018f14c7b99604e0c31c69db8808de6d41d83d373c0a49be8d0b4f62736f85",
-    "src/eos/mod.rs": "3af9d6c8d819d96701099f34b919e5269de29c28d16b1ce64631ac8f71f2f550",
+    "src/eos/mod.rs": "59bbbabedb07e8f563fbda2970a766ed0175a608d3b3e08c8cf6d0a2b69101a0",
 }
 MODIFIED_UPSTREAM_PATHS = {"build.rs", "src/lib.rs", "src/new/mod.rs"}
 ADDED_EOS_PATHS = {"src/eos/mod.rs"}

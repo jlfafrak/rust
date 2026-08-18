@@ -50,6 +50,7 @@ use libc::readdir as readdir64;
     target_os = "vita",
     target_os = "wasi",
 )))]
+#[cfg(not(target_os = "eos"))]
 use libc::readdir_r as readdir64_r;
 #[cfg(any(all(target_os = "linux", not(target_env = "musl")), target_os = "hurd"))]
 use libc::readdir64;
@@ -67,9 +68,15 @@ use libc::{
     target_os = "android",
     target_os = "hurd",
 )))]
+#[cfg(not(target_os = "eos"))]
 use libc::{
     dirent as dirent64, fstat as fstat64, ftruncate as ftruncate64, lseek as lseek64,
     lstat as lstat64, off_t as off64_t, open as open64, stat as stat64,
+};
+#[cfg(target_os = "eos")]
+use libc::{
+    dirent as dirent64, fstat as fstat64, lseek as lseek64, lstat as lstat64, off_t as off64_t,
+    open as open64, stat as stat64,
 };
 #[cfg(any(
     all(target_os = "linux", not(target_env = "musl")),
@@ -98,7 +105,9 @@ use crate::sys::weak::syscall;
 #[cfg(target_os = "android")]
 use crate::sys::weak::weak;
 use crate::sys::{AsInner, AsInnerMut, FromInner, IntoInner, cvt, cvt_r};
-use crate::{mem, ptr};
+use crate::mem;
+#[cfg(not(target_os = "eos"))]
+use crate::ptr;
 
 pub struct File(FileDesc);
 
@@ -272,7 +281,11 @@ impl ReadDir {
     }
 }
 
+#[cfg(not(target_os = "eos"))]
 struct DirStream(*mut libc::DIR);
+
+#[cfg(target_os = "eos")]
+struct DirStream(c_int);
 
 // dir::Dir requires openat support
 cfg_select! {
@@ -283,6 +296,7 @@ cfg_select! {
         target_os = "vita",
         target_os = "nto",
         target_os = "vxworks",
+        target_os = "eos",
     ) => {
         pub use crate::sys::fs::common::Dir;
     }
@@ -300,7 +314,7 @@ fn debug_path_fd<'a, 'b>(
     let mut b = f.debug_struct(name);
 
     fn get_mode(fd: c_int) -> Option<(bool, bool)> {
-        let mode = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        let mode = unsafe { fcntl_no_arg(fd, libc::F_GETFL) };
         if mode == -1 {
             return None;
         }
@@ -321,6 +335,16 @@ fn debug_path_fd<'a, 'b>(
     }
 
     b
+}
+
+#[cfg(target_os = "eos")]
+unsafe fn fcntl_no_arg(fd: c_int, command: c_int) -> c_int {
+    unsafe { libc::fcntl(fd, command, 0) }
+}
+
+#[cfg(not(target_os = "eos"))]
+unsafe fn fcntl_no_arg(fd: c_int, command: c_int) -> c_int {
+    unsafe { libc::fcntl(fd, command) }
 }
 
 fn get_path_from_fd(fd: c_int) -> Option<PathBuf> {
@@ -957,6 +981,7 @@ impl Iterator for ReadDir {
         target_os = "vita",
         target_os = "wasi",
     )))]
+    #[cfg(not(target_os = "eos"))]
     fn next(&mut self) -> Option<io::Result<DirEntry>> {
         if self.end_of_stream {
             return None;
@@ -986,6 +1011,37 @@ impl Iterator for ReadDir {
             }
         }
     }
+
+    #[cfg(target_os = "eos")]
+    fn next(&mut self) -> Option<io::Result<DirEntry>> {
+        if self.end_of_stream {
+            return None;
+        }
+        loop {
+            let mut entry = unsafe { mem::zeroed() };
+            // EOS fills a caller-owned record through eos_rust_readdir.
+            match unsafe { libc::readdir(self.inner.dirp.0, &mut entry) } {
+                -1 => return Some(Err(Error::last_os_error())),
+                0 => {
+                    self.end_of_stream = true;
+                    return None;
+                }
+                1 => {
+                    let ret = DirEntry { entry, dir: Arc::clone(&self.inner) };
+                    if ret.name_bytes() != b"." && ret.name_bytes() != b".." {
+                        return Some(Ok(ret));
+                    }
+                }
+                _ => {
+                    self.end_of_stream = true;
+                    return Some(Err(io::const_error!(
+                        io::ErrorKind::InvalidData,
+                        "EOS returned an invalid directory status",
+                    )));
+                }
+            }
+        }
+    }
 }
 
 /// Aborts the process if a file desceriptor is not open, if debug asserts are enabled
@@ -1002,7 +1058,7 @@ pub(crate) fn debug_assert_fd_is_open(fd: RawFd) {
 
     // this is similar to assert_unsafe_precondition!() but it doesn't require const
     if core::ub_checks::check_library_ub() {
-        if unsafe { libc::fcntl(fd, libc::F_GETFD) } == -1 && errno() == libc::EBADF {
+        if unsafe { fcntl_no_arg(fd, libc::F_GETFD) } == -1 && errno() == libc::EBADF {
             rtabort!("IO Safety violation: owned file descriptor already closed");
         }
     }
@@ -1022,6 +1078,7 @@ impl Drop for DirStream {
             target_os = "vxworks",
             target_os = "rtems",
             target_os = "nuttx",
+            target_os = "eos",
         )))]
         {
             let fd = unsafe { libc::dirfd(self.0) };
@@ -1156,6 +1213,11 @@ impl DirEntry {
     ))]
     pub fn ino(&self) -> u64 {
         self.entry.d_ino as u64
+    }
+
+    #[cfg(target_os = "eos")]
+    pub fn ino(&self) -> u64 {
+        self.entry.d_ino
     }
 
     #[cfg(any(target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))]
@@ -1365,7 +1427,12 @@ impl File {
         // some platforms (like macOS, where `open64` is actually `open`), `mode_t` is `u16`.
         // However, since this is a variadic function, C integer promotion rules mean that on
         // the ABI level, this still gets passed as `c_int` (aka `u32` on Unix platforms).
-        let fd = cvt_r(|| unsafe { open64(path.as_ptr(), flags, opts.mode as c_int) })?;
+        #[cfg(not(target_os = "eos"))]
+        let mode = opts.mode as c_int;
+        // EOS routes open through the fixed-signature eos_rust_open service.
+        #[cfg(target_os = "eos")]
+        let mode = opts.mode as mode_t;
+        let fd = cvt_r(|| unsafe { open64(path.as_ptr(), flags, mode) })?;
         Ok(File(unsafe { FileDesc::from_raw_fd(fd) }))
     }
 
@@ -1694,10 +1761,19 @@ impl File {
         Err(io::const_error!(io::ErrorKind::Unsupported, "unlock() not supported"))
     }
 
+    #[cfg(not(target_os = "eos"))]
     pub fn truncate(&self, size: u64) -> io::Result<()> {
         let size: off64_t =
             size.try_into().map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         cvt_r(|| unsafe { ftruncate64(self.as_raw_fd(), size) }).map(drop)
+    }
+
+    #[cfg(target_os = "eos")]
+    pub fn truncate(&self, _size: u64) -> io::Result<()> {
+        Err(io::const_error!(
+            io::ErrorKind::Unsupported,
+            "file truncation is not supported by the EOS v1 ABI",
+        ))
     }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
@@ -1791,7 +1867,7 @@ impl File {
 
     pub fn set_times(&self, times: FileTimes) -> io::Result<()> {
         cfg_select! {
-            any(target_os = "redox", target_os = "espidf", target_os = "horizon", target_os = "nuttx") => {
+            any(target_os = "eos", target_os = "redox", target_os = "espidf", target_os = "horizon", target_os = "nuttx") => {
                 // Redox doesn't appear to support `UTIME_OMIT`.
                 // ESP-IDF and HorizonOS do not support `futimens` at all and the behavior for those OS is therefore
                 // the same as for Redox.
@@ -1856,6 +1932,7 @@ impl File {
 }
 
 #[cfg(not(any(
+    target_os = "eos",
     target_os = "redox",
     target_os = "espidf",
     target_os = "horizon",
@@ -2077,6 +2154,7 @@ impl fmt::Debug for Mode {
     }
 }
 
+#[cfg(not(target_os = "eos"))]
 pub fn readdir(path: &Path) -> io::Result<ReadDir> {
     let ptr = run_path_with_cstr(path, &|p| unsafe { Ok(libc::opendir(p.as_ptr())) })?;
     if ptr.is_null() {
@@ -2084,6 +2162,17 @@ pub fn readdir(path: &Path) -> io::Result<ReadDir> {
     } else {
         let root = path.to_path_buf();
         let inner = InnerReadDir { dirp: DirStream(ptr), root };
+        Ok(ReadDir::new(inner))
+    }
+}
+
+#[cfg(target_os = "eos")]
+pub fn readdir(path: &Path) -> io::Result<ReadDir> {
+    let descriptor = run_path_with_cstr(path, &|p| unsafe { Ok(libc::opendir(p.as_ptr())) })?;
+    if descriptor < 0 {
+        Err(Error::last_os_error())
+    } else {
+        let inner = InnerReadDir { dirp: DirStream(descriptor), root: path.to_path_buf() };
         Ok(ReadDir::new(inner))
     }
 }
@@ -2104,6 +2193,7 @@ pub fn rmdir(p: &CStr) -> io::Result<()> {
     cvt(unsafe { libc::rmdir(p.as_ptr()) }).map(|_| ())
 }
 
+#[cfg(not(target_os = "eos"))]
 pub fn readlink(c_path: &CStr) -> io::Result<PathBuf> {
     let p = c_path.as_ptr();
 
@@ -2130,6 +2220,14 @@ pub fn readlink(c_path: &CStr) -> io::Result<PathBuf> {
     }
 }
 
+#[cfg(target_os = "eos")]
+pub fn readlink(_path: &CStr) -> io::Result<PathBuf> {
+    Err(io::const_error!(
+        io::ErrorKind::Unsupported,
+        "reading symbolic links is not supported by the EOS v1 ABI",
+    ))
+}
+
 pub fn symlink(original: &CStr, link: &CStr) -> io::Result<()> {
     cvt(unsafe { libc::symlink(original.as_ptr(), link.as_ptr()) }).map(|_| ())
 }
@@ -2150,6 +2248,7 @@ pub fn link(original: &CStr, link: &CStr) -> io::Result<()> {
             // Other misc platforms
             target_os = "horizon",
             target_os = "vita",
+            target_os = "eos",
             target_env = "nto70",
         ) => {
             cvt(unsafe { libc::link(original.as_ptr(), link.as_ptr()) })?;
@@ -2197,6 +2296,7 @@ pub fn lstat(p: &CStr) -> io::Result<FileAttr> {
     Ok(FileAttr::from_stat64(stat))
 }
 
+#[cfg(not(target_os = "eos"))]
 pub fn canonicalize(path: &CStr) -> io::Result<PathBuf> {
     let r = unsafe { libc::realpath(path.as_ptr(), ptr::null_mut()) };
     if r.is_null() {
@@ -2207,6 +2307,18 @@ pub fn canonicalize(path: &CStr) -> io::Result<PathBuf> {
         libc::free(r as *mut _);
         buf
     })))
+}
+
+#[cfg(target_os = "eos")]
+pub fn canonicalize(path: &CStr) -> io::Result<PathBuf> {
+    let mut buf = Vec::<u8>::with_capacity(libc::PATH_MAX as usize);
+    // EOS canonicalizes through the stable eos_rust_realpath service.
+    if unsafe { libc::realpath(path.as_ptr(), buf.as_mut_ptr().cast(), buf.capacity() as u32) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let len = unsafe { CStr::from_ptr(buf.as_ptr().cast()) }.to_bytes().len();
+    unsafe { buf.set_len(len) };
+    Ok(PathBuf::from(OsString::from_vec(buf)))
 }
 
 fn open_from(from: &Path) -> io::Result<(crate::fs::File, crate::fs::Metadata)> {
@@ -2223,7 +2335,7 @@ fn open_from(from: &Path) -> io::Result<(crate::fs::File, crate::fs::Metadata)> 
 
 fn set_times_impl(p: &CStr, times: FileTimes, follow_symlinks: bool) -> io::Result<()> {
     cfg_select! {
-       any(target_os = "redox", target_os = "espidf", target_os = "horizon", target_os = "nuttx", target_os = "vita", target_os = "rtems") => {
+       any(target_os = "eos", target_os = "redox", target_os = "espidf", target_os = "horizon", target_os = "nuttx", target_os = "vita", target_os = "rtems") => {
             let _ = (p, times, follow_symlinks);
             Err(io::const_error!(
                 io::ErrorKind::Unsupported,
@@ -2489,9 +2601,17 @@ pub fn lchown(path: &Path, uid: u32, gid: u32) -> io::Result<()> {
     Err(io::const_error!(io::ErrorKind::Unsupported, "lchown not supported by vxworks"))
 }
 
-#[cfg(not(any(target_os = "fuchsia", target_os = "vxworks", target_os = "wasi")))]
+#[cfg(not(any(target_os = "eos", target_os = "fuchsia", target_os = "vxworks", target_os = "wasi")))]
 pub fn chroot(dir: &Path) -> io::Result<()> {
     run_path_with_cstr(dir, &|dir| cvt(unsafe { libc::chroot(dir.as_ptr()) }).map(|_| ()))
+}
+
+#[cfg(target_os = "eos")]
+pub fn chroot(_dir: &Path) -> io::Result<()> {
+    Err(io::const_error!(
+        io::ErrorKind::Unsupported,
+        "changing the root directory is not supported by EOS",
+    ))
 }
 
 #[cfg(target_os = "vxworks")]
@@ -2500,11 +2620,19 @@ pub fn chroot(dir: &Path) -> io::Result<()> {
     Err(io::const_error!(io::ErrorKind::Unsupported, "chroot not supported by vxworks"))
 }
 
-#[cfg(not(target_os = "wasi"))]
+#[cfg(not(any(target_os = "eos", target_os = "wasi")))]
 pub fn mkfifo(path: &Path, mode: u32) -> io::Result<()> {
     run_path_with_cstr(path, &|path| {
         cvt(unsafe { libc::mkfifo(path.as_ptr(), mode.try_into().unwrap()) }).map(|_| ())
     })
+}
+
+#[cfg(target_os = "eos")]
+pub fn mkfifo(_path: &Path, _mode: u32) -> io::Result<()> {
+    Err(io::const_error!(
+        io::ErrorKind::Unsupported,
+        "named pipes are not supported by EOS",
+    ))
 }
 
 pub use remove_dir_impl::remove_dir_all;
@@ -2517,6 +2645,7 @@ pub use remove_dir_impl::remove_dir_all;
     target_os = "vita",
     target_os = "nto",
     target_os = "vxworks",
+    target_os = "eos",
     miri
 ))]
 mod remove_dir_impl {
@@ -2531,6 +2660,7 @@ mod remove_dir_impl {
     target_os = "vita",
     target_os = "nto",
     target_os = "vxworks",
+    target_os = "eos",
     miri
 )))]
 mod remove_dir_impl {

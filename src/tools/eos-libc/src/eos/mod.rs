@@ -270,6 +270,25 @@ pub const DT_SOCK: u32 = 12;
 pub const IOV_MAX: c_int = 1024;
 pub const UIO_MAXIOV: c_int = IOV_MAX;
 
+pub const _SC_PAGESIZE: c_int = 1;
+pub const _SC_THREAD_STACK_MIN: c_int = 2;
+pub const _SC_HOST_NAME_MAX: c_int = 3;
+pub const _SC_NPROCESSORS_ONLN: c_int = 4;
+
+/// EOS has fixed configuration values rather than a native `sysconf` service.
+pub unsafe fn sysconf(name: c_int) -> c_long {
+    match name {
+        _SC_PAGESIZE => 4096,
+        _SC_THREAD_STACK_MIN => 4096,
+        _SC_HOST_NAME_MAX => NAME_MAX as c_long,
+        _SC_NPROCESSORS_ONLN => 2,
+        _ => {
+            unsafe { *__errno() = ENOTSUP };
+            -1
+        }
+    }
+}
+
 pub const PTHREAD_STACK_MIN: usize = 4096;
 pub const PTHREAD_MUTEX_NORMAL: c_int = 0;
 pub const PTHREAD_MUTEX_RECURSIVE: c_int = 1;
@@ -367,6 +386,10 @@ unsafe extern "C" {
     pub fn exit(status: i32) -> !;
     #[link_name = "eos_rust_runtime_init"]
     pub fn eos_runtime_init(argc: i32, argv: *const *const c_char);
+    #[link_name = "eos_rust_runtime_cleanup"]
+    pub fn eos_runtime_cleanup();
+    #[link_name = "eos_rust_cpu_count"]
+    pub fn eos_cpu_count() -> u32;
 
     #[link_name = "eos_rust_open"]
     pub fn open(path: *const c_char, flags: c_int, mode: mode_t) -> c_int;
@@ -585,5 +608,5 @@ unsafe extern "C" {
     #[link_name = "eos_rust_environ"]
     pub fn environ() -> *mut *mut c_char;
     #[link_name = "eos_rust_hash_seed"]
-    pub fn eos_hash_seed(key0: *mut u64, key1: *mut u64);
+    pub fn eos_hash_seed(key0: *mut u64, key1: *mut u64) -> c_int;
 }

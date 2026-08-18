@@ -494,9 +494,17 @@ impl ChildExt for process::Child {
         self.handle.send_process_group_signal(signal)
     }
 
-    #[cfg(not(target_os = "espidf"))]
+    #[cfg(not(any(target_os = "eos", target_os = "espidf")))]
     fn kill_process_group(&mut self) -> io::Result<()> {
         self.handle.send_process_group_signal(libc::SIGKILL)
+    }
+
+    #[cfg(target_os = "eos")]
+    fn kill_process_group(&mut self) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "process groups are not supported on EOS",
+        ))
     }
 
     #[cfg(target_os = "espidf")]
