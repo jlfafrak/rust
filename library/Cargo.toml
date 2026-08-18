@@ -81,6 +81,8 @@ rustflags = [
 ]
 
 [patch.crates-io]
+libc = { path = "../src/tools/eos-libc" }
+
 # See comments in `library/rustc-std-workspace-core/README.md` for what's going on here
 rustc-std-workspace-core = { path = 'rustc-std-workspace-core' }
 rustc-std-workspace-alloc = { path = 'rustc-std-workspace-alloc' }
