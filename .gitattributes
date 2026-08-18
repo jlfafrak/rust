@@ -11,6 +11,12 @@ src/etc/installer/gfx/* binary
 src/vendor/** -text
 Cargo.lock linguist-generated=false
 
+# Preserve exact bytes from the pinned libc git archive despite upstream whitespace.
+src/tools/eos-libc/ci/sysinfo_guard.patch -whitespace
+src/tools/eos-libc/libc-test/semver/hermit.txt -whitespace
+src/tools/eos-libc/libc-test/semver/l4re.txt -whitespace
+src/tools/eos-libc/libc-test/src/cmsg.c -whitespace
+
 # Older git versions try to fix line endings on images and fonts, this prevents it.
 *.png binary
 *.ico binary

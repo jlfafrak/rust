@@ -18,23 +18,24 @@ with the exact subject `library: add EOS libc bindings`; the handoff records its
 ## Source provenance and import
 
 The authoritative source is libc 0.2.185 at commit
-`71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8`. A verified local crates.io archive was reused at
-`/home/dev/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/libc-0.2.185.crate`; no network
-retrieval was needed.
+`71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8`. The final vendor is a `.git`-free `git archive` of
+that exact commit from the authoritative `https://github.com/rust-lang/libc.git`, not the
+crates.io package payload.
 
-- Archive SHA-256:
-  `52ff2c0fe9bc6cb6b14a0592c2ff4fa9ceb83eea9db979b0487cd054946a2b8f`.
-- The archive digest exactly matches the checksum in the base `library/Cargo.lock`.
-- The archive's `.cargo_vcs_info.json` records SHA-1
-  `71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8` with an empty `path_in_vcs`.
-- The archive was extracted with `tar -xzf ... --strip-components=1` into
-  `src/tools/eos-libc`; the pristine import contained 360 files.
-- The deterministic pristine path/content digest was computed by sorting null-delimited paths,
-  hashing each file, and hashing that manifest. It is
-  `188378303cfc7821d2fb9cf01114e8d77a83614ba446397d4fef061b76274b97`.
-- The production EOS module is the sole added file within the imported tree, bringing the
-  working tree to 361 files. There is no `.git` directory and no proprietary EOS header in the
-  vendored source.
+- No local exact git object or checkout was available. A scoped one-commit fetch into `/tmp`
+  resolved `FETCH_HEAD` exactly to `71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8`; `git cat-file`
+  identified it as a commit and `git fsck --full` found no corruption.
+- The commit's tree object is `68d565ea31258a8056ada681c1e0ec90dcb23988` and contains 508
+  tracked blobs. The deterministic git-archive SHA-256 is
+  `6a16cc74f09fd7914b4c1e14ebe84b9ab335a62917a9200e29b2aba4122f0b2c`.
+- `tests/eos/fixtures/libc-0.2.185-71d5bfcc.sha256` records all 508 tracked paths and content
+  digests plus source, commit, tree, and archive metadata for future offline verification.
+- The final vendor contains exactly those 508 tracked files plus `src/eos/mod.rs`. The only
+  modified tracked files are `build.rs`, `src/lib.rs`, and `src/new/mod.rs`; their exact final
+  digests and the EOS addition's digest are allowlisted by the provenance test.
+- The tracked source `Cargo.toml` is used directly. Package-only `.cargo_vcs_info.json`,
+  `Cargo.toml.orig`, and the normalized generated Cargo manifest are not vendored.
+- There is no `.git`, symlink, unexpected path, or proprietary EOS header in the vendored tree.
 
 DrvFS reports permissive working-tree modes, so every newly added vendored, report, and test
 file is explicitly normalized to index mode `100644` before handoff.
@@ -189,3 +190,71 @@ Self-review confirmed 118/118 export equality, explicit stable link names, EOS-b
 routing, no `.git`, no native EOS layout/pointer exposure, no Task 12 source edits, and no manual
 lock edit. The approved ruling resolves the former plan-order concern. The deferred std/PAL gate
 is recorded above for Task 12 and is the only downstream concern.
+
+## Fix Round 1 — exact tracked source provenance (2026-08-18)
+
+Review found that the first commit had authenticated the crates.io package as produced from the
+pinned commit, but had not imported the commit's exact tracked tree as Task 11 Step 1 required.
+The finding was verified before implementation: the vendored `Cargo.toml` began with Cargo's
+normalized-package banner and referred readers to package-only `Cargo.toml.orig`; the package had
+360 files while the pinned git tree has 508, with repository paths excluded from the package.
+The package archive SHA-256
+`52ff2c0fe9bc6cb6b14a0592c2ff4fa9ceb83eea9db979b0487cd054946a2b8f` and its
+`.cargo_vcs_info.json` commit value were valid package provenance, but were insufficient proof of
+an exact tracked-tree export.
+
+### Provenance TDD
+
+Before replacing the package payload, the 508-entry offline SHA-256 manifest and
+`test_libc_source_provenance.py` were added. The production change that makes this test fail is a
+missing, extra, or content-drifted upstream path outside the four explicit EOS changes.
+
+The RED command was:
+
+```text
+python3 -m unittest tests/eos/host/test_libc_source_provenance.py -v
+```
+
+It exited 1 and reported exactly 150 tracked paths missing from the package payload, beginning
+with `.cirrus.yml`, `.github/*`, `ci/*`, `ctest/*`, and `libc-test/*`. This was the expected
+behavioral provenance failure, not a parser or test-fixture error.
+
+The package tree was then replaced by a `git archive` of the verified commit. Only the three
+small EOS routing patches were reapplied to `build.rs`, `src/lib.rs`, and `src/new/mod.rs`, and
+the existing `src/eos/mod.rs` was restored as the sole added vendor file. The GREEN rerun passed
+1/1 with 509 files observed. An independent `diff -qr` against the extracted git archive reports
+only those three modified files and the `src/eos` addition.
+
+### Fix verification
+
+- Offline Cargo lock regeneration used
+  `RUSTC_BOOTSTRAP=1 build/host/stage0/bin/cargo update --manifest-path library/Cargo.toml -p
+  libc --offline`; it exited 0 with `Locking 0 packages` and 14 unchanged dependencies. The
+  workspace lock required no generated content change and was not hand-edited.
+- `python3 -m unittest tests/eos/host/test_libc_source_provenance.py
+  tests/eos/host/test_libc_links.py tests/eos/host/test_toolchain_lock.py -v`: 7/7 passed,
+  consisting of provenance 1/1, focused link/compile/runtime 5/5, and toolchain lock 1/1.
+- `BOOTSTRAP_SKIP_TARGET_SANITY=1 ./x build library/core library/compiler-builtins --target
+  armv7a-unknown-eos-eabi`: passed. The first comparator attempt had stopped before compilation
+  because these staged sysroot prerequisites were absent; no layout mismatch occurred.
+- `python3 tests/eos/abi/compare_layouts.py /tmp/eos-task11-fix1-layout`: passed,
+  `matched 111 ARM layout facts`.
+- `BOOTSTRAP_SKIP_TARGET_SANITY=1 ./x test tests/ui/target-cfg/eos.rs
+  tests/assembly-llvm/targets/armv7a-unknown-eos-eabi.rs`: passed, one UI target-cfg test and one
+  LLVM assembly ABI test. The tracked Cargo manifest built libc successfully in this run.
+- The first full `git diff --cached --check` was an honest RED: after removing one blank EOF
+  introduced in the generated manifest, it still reported whitespace in four otherwise pristine
+  upstream paths. Their bytes could not be changed without violating exact-source provenance.
+  Four exact path rules in the repository-level `.gitattributes` therefore unset whitespace
+  checking only for `ci/sysinfo_guard.patch`, `libc-test/semver/hermit.txt`,
+  `libc-test/semver/l4re.txt`, and `libc-test/src/cmsg.c` under the vendored tree. `git
+  check-attr whitespace` reports `unset` for all four and the full `git diff --cached --check`
+  GREEN rerun exits 0 with no output.
+- The pre-commit index contains 158 paths: 152 additions, four modifications, and two deletions.
+  All 152 additions are mode `100644`, and the staged path audit contains no `library/std`, PAL,
+  or progress-ledger path.
+- The fix contains no `library/std` or PAL change. The user-approved Task 12 deferral and the
+  failing-check classification above remain unchanged.
+
+The separate fix commit uses subject `library: correct EOS libc source provenance`; its full hash
+is recorded in the handoff because a commit cannot contain its own hash.
