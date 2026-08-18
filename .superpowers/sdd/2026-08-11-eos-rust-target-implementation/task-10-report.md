@@ -352,3 +352,46 @@ any delete still reports the error and leaves the child waitable.
 Focused GREEN: strict O3 rebuilt and ran `martos_process_contract_test`, `process_test`,
 `process_redirection_test`, and fully instrumented `process_tsan`; all returned exit 0 with no
 ThreadSanitizer report.
+
+## Fix Round 1 — concurrent host process records
+
+Independent review found an Important host-adapter defect. The host fake kept one global name,
+release/kill state, active flag, copied request, and inherited-fd vector. A second live load
+cleared and then overwrote the first record. Killing the first unique name could no longer match
+and common kill would retry indefinitely.
+
+The new real process test creates four `CLOEXEC` pipes and starts two simultaneous
+`/host/block-copy3` children. They have literal distinct argv (`child-one`/`child-two`),
+environment (`CHILD=one`/`CHILD=two`), cwd (`/work/one`/`/work/two`), and stdin/stdout pipe
+objects containing `one` and `two`. It verifies both keyed observations coexist, core and host
+counts are two, kills/waits/closes the first while the second remains running, then independently
+kills/waits/closes the second, reads the correct bytes from both output pipes, closes all eight
+fixture descriptors, and observes zero core live records, host active records, and host loaded
+records. The same test source is compiled into fully instrumented `process_tsan`.
+
+RED evidence:
+
+- The first build failed at link with exit 2 and unresolved keyed started/active/argc/envc/
+  argument/environment/cwd plus active-count and record-count hooks.
+- After adding only minimal keyed observation hooks over the old singleton, the executable
+  reached the real two-child state and failed deterministically with exit 1:
+  `second live process clobbered the first host adapter record`. It stopped before issuing the
+  old indefinitely retrying kill.
+
+The host adapter now owns a guarded fixed-capacity table of 64 private records keyed by the
+unique internal application name. Load claims and zeros one non-live slot and assigns a monotonic
+observation sequence. Run resolves that exact live slot and owns its started/active,
+release/killed, argv/env/cwd, and inherited-descriptor observations. Kill resolves only the exact
+live name and signals only that record. Unload marks that record non-live; immutable observation
+bytes remain available until the slot is safely reused by a later load or the test fixture is
+reset. Legacy no-argument hooks select the latest sequence for existing single-child tests;
+new identity hooks map the public monotonic identity to its unique internal name under the same
+guard. Count hooks scan live/active slots under the guard. No public ABI changed.
+
+Focused GREEN: strict O3 rebuilt and ran `process_test`, `process_redirection_test`,
+`martos_process_contract_test`, the production host archive, and fully instrumented
+`process_tsan`; every command returned exit 0 and TSan emitted no race report.
+
+The reviewer also reported a Minor missing proof that caller argv/env/cwd storage may be
+mutated/freed immediately after spawn. Per the five-round SDD workflow this Minor is deliberately
+deferred and controller-owned in the progress ledger; this fix round does not edit that ledger.

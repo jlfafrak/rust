@@ -34,19 +34,39 @@ static pthread_mutex_t eos_host_locks[EOS_PORT_LOCK_COUNT] = {
 static pthread_mutex_t eos_host_console_guard = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t eos_host_process_guard = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t eos_host_process_condition = PTHREAD_COND_INITIALIZER;
-static uint32_t eos_host_process_started;
-static uint32_t eos_host_process_active;
-static uint32_t eos_host_process_release;
-static uint32_t eos_host_process_killed;
-static char eos_host_process_name[64];
-static char eos_host_process_program[256];
-static char eos_host_process_argv[16][128];
-static char eos_host_process_envp[16][128];
-static char eos_host_process_cwd[256];
-static int32_t eos_host_process_inherited[64];
-static uint32_t eos_host_process_argc;
-static uint32_t eos_host_process_envc;
-static uint32_t eos_host_process_inherited_count;
+#define EOS_HOST_PROCESS_CAPACITY UINT32_C(64)
+typedef struct eos_host_process_record {
+    uint32_t in_use;
+    uint32_t started;
+    uint32_t active;
+    uint32_t release;
+    uint32_t killed;
+    uint64_t sequence;
+    char name[64];
+    char program[256];
+    char argv[16][128];
+    char envp[16][128];
+    char cwd[256];
+    int32_t inherited[64];
+    uint32_t argc;
+    uint32_t envc;
+    uint32_t inherited_count;
+} eos_host_process_record;
+static eos_host_process_record
+    eos_host_process_records[EOS_HOST_PROCESS_CAPACITY];
+static uint64_t eos_host_process_next_sequence = UINT64_C(1);
+static eos_host_process_record *eos_host_process_find_locked(
+    const char *name, int require_live) {
+    uint32_t index;
+    for (index = 0; index < EOS_HOST_PROCESS_CAPACITY; ++index) {
+        eos_host_process_record *record = &eos_host_process_records[index];
+        if (record->name[0] != '\0' && strcmp(record->name, name) == 0 &&
+            (!require_live || record->in_use != UINT32_C(0))) {
+            return record;
+        }
+    }
+    return NULL;
+}
 #ifdef EOS_RUST_HOST_TEST
 static pthread_mutex_t eos_host_closedir_guard = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t eos_host_closedir_condition = PTHREAD_COND_INITIALIZER;
@@ -255,16 +275,9 @@ void eos_host_test_reset(void) {
     (void)pthread_cond_broadcast(&eos_host_closedir_condition);
     (void)pthread_mutex_unlock(&eos_host_closedir_guard);
     (void)pthread_mutex_lock(&eos_host_process_guard);
-    eos_host_process_started = UINT32_C(0);
-    eos_host_process_active = UINT32_C(0);
-    eos_host_process_release = UINT32_C(0);
-    eos_host_process_killed = UINT32_C(0);
-    eos_host_process_name[0] = '\0';
-    eos_host_process_program[0] = '\0';
-    eos_host_process_cwd[0] = '\0';
-    eos_host_process_argc = UINT32_C(0);
-    eos_host_process_envc = UINT32_C(0);
-    eos_host_process_inherited_count = UINT32_C(0);
+    (void)memset(eos_host_process_records, 0,
+                 sizeof(eos_host_process_records));
+    eos_host_process_next_sequence = UINT64_C(1);
     (void)pthread_cond_broadcast(&eos_host_process_condition);
     (void)pthread_mutex_unlock(&eos_host_process_guard);
 }
@@ -532,45 +545,216 @@ void eos_host_test_hostname(const char *name) {
     (void)pthread_mutex_unlock(&eos_host_console_guard);
 }
 
+static void eos_host_test_process_identity_name(uint32_t identity,
+                                                char name[64]) {
+    static const char digits[] = "0123456789abcdef";
+    uint32_t index;
+    (void)memcpy(name, "eos.rust.", 9U);
+    for (index = 0; index < UINT32_C(8); ++index) {
+        name[9U + index] = digits[(identity >> (28U - index * 4U)) & 0xfU];
+    }
+    name[17] = '\0';
+}
+static eos_host_process_record *eos_host_process_find_identity_locked(
+    uint32_t identity) {
+    char name[64];
+    eos_host_test_process_identity_name(identity, name);
+    return eos_host_process_find_locked(name, 0);
+}
+static eos_host_process_record *eos_host_process_latest_locked(void) {
+    eos_host_process_record *latest = NULL;
+    uint32_t index;
+    for (index = 0; index < EOS_HOST_PROCESS_CAPACITY; ++index) {
+        eos_host_process_record *record = &eos_host_process_records[index];
+        if (record->sequence != UINT64_C(0) &&
+            (latest == NULL || record->sequence > latest->sequence)) {
+            latest = record;
+        }
+    }
+    return latest;
+}
 void eos_host_test_process_release(void) {
+    uint32_t index;
     (void)pthread_mutex_lock(&eos_host_process_guard);
-    eos_host_process_release = UINT32_C(1);
+    for (index = 0; index < EOS_HOST_PROCESS_CAPACITY; ++index) {
+        eos_host_process_record *record = &eos_host_process_records[index];
+        if (record->in_use != UINT32_C(0) &&
+            record->active != UINT32_C(0)) {
+            record->release = UINT32_C(1);
+        }
+    }
     (void)pthread_cond_broadcast(&eos_host_process_condition);
     (void)pthread_mutex_unlock(&eos_host_process_guard);
 }
 uint32_t eos_host_test_process_started(void) {
+    eos_host_process_record *record;
     uint32_t value;
     (void)pthread_mutex_lock(&eos_host_process_guard);
-    value = eos_host_process_started;
+    record = eos_host_process_latest_locked();
+    value = record == NULL ? UINT32_C(0) : record->started;
     (void)pthread_mutex_unlock(&eos_host_process_guard);
     return value;
+}
+uint32_t eos_host_test_process_active_count(void) {
+    uint32_t count = 0;
+    uint32_t index;
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    for (index = 0; index < EOS_HOST_PROCESS_CAPACITY; ++index) {
+        if (eos_host_process_records[index].active != UINT32_C(0)) ++count;
+    }
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return count;
+}
+uint32_t eos_host_test_process_record_count(void) {
+    uint32_t count = 0;
+    uint32_t index;
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    for (index = 0; index < EOS_HOST_PROCESS_CAPACITY; ++index) {
+        if (eos_host_process_records[index].in_use != UINT32_C(0)) ++count;
+    }
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return count;
 }
 uint32_t eos_host_test_process_active(void) {
+    return eos_host_test_process_active_count();
+}
+uint32_t eos_host_test_process_argc(void) {
+    eos_host_process_record *record;
     uint32_t value;
     (void)pthread_mutex_lock(&eos_host_process_guard);
-    value = eos_host_process_active;
+    record = eos_host_process_latest_locked();
+    value = record == NULL ? UINT32_C(0) : record->argc;
     (void)pthread_mutex_unlock(&eos_host_process_guard);
     return value;
 }
-uint32_t eos_host_test_process_argc(void) { return eos_host_process_argc; }
-uint32_t eos_host_test_process_envc(void) { return eos_host_process_envc; }
+uint32_t eos_host_test_process_envc(void) {
+    eos_host_process_record *record;
+    uint32_t value;
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    record = eos_host_process_latest_locked();
+    value = record == NULL ? UINT32_C(0) : record->envc;
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return value;
+}
 uint32_t eos_host_test_process_inherited_count(void) {
-    return eos_host_process_inherited_count;
+    eos_host_process_record *record;
+    uint32_t value;
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    record = eos_host_process_latest_locked();
+    value = record == NULL ? UINT32_C(0) : record->inherited_count;
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return value;
 }
 const char *eos_host_test_process_program(void) {
-    return eos_host_process_program;
+    eos_host_process_record *record;
+    const char *value;
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    record = eos_host_process_latest_locked();
+    value = record == NULL ? "" : record->program;
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return value;
 }
 const char *eos_host_test_process_argument(uint32_t index) {
-    return index < eos_host_process_argc ? eos_host_process_argv[index] : "";
+    eos_host_process_record *record;
+    const char *value;
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    record = eos_host_process_latest_locked();
+    value = record != NULL && index < record->argc ? record->argv[index] : "";
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return value;
 }
 const char *eos_host_test_process_environment(uint32_t index) {
-    return index < eos_host_process_envc ? eos_host_process_envp[index] : "";
+    eos_host_process_record *record;
+    const char *value;
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    record = eos_host_process_latest_locked();
+    value = record != NULL && index < record->envc ? record->envp[index] : "";
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return value;
 }
-const char *eos_host_test_process_cwd(void) { return eos_host_process_cwd; }
+const char *eos_host_test_process_cwd(void) {
+    eos_host_process_record *record;
+    const char *value;
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    record = eos_host_process_latest_locked();
+    value = record == NULL ? "" : record->cwd;
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return value;
+}
 int32_t eos_host_test_process_inherited_fd(uint32_t index) {
-    return index < eos_host_process_inherited_count
-               ? eos_host_process_inherited[index]
-               : -1;
+    eos_host_process_record *record;
+    int32_t value;
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    record = eos_host_process_latest_locked();
+    value = record != NULL && index < record->inherited_count
+                ? record->inherited[index] : -1;
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return value;
+}
+uint32_t eos_host_test_process_started_identity(uint32_t identity) {
+    eos_host_process_record *record;
+    uint32_t value;
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    record = eos_host_process_find_identity_locked(identity);
+    value = record == NULL ? UINT32_C(0) : record->started;
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return value;
+}
+uint32_t eos_host_test_process_active_identity(uint32_t identity) {
+    eos_host_process_record *record;
+    uint32_t value;
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    record = eos_host_process_find_identity_locked(identity);
+    value = record == NULL ? UINT32_C(0) : record->active;
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return value;
+}
+uint32_t eos_host_test_process_argc_identity(uint32_t identity) {
+    eos_host_process_record *record;
+    uint32_t value;
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    record = eos_host_process_find_identity_locked(identity);
+    value = record == NULL ? UINT32_C(0) : record->argc;
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return value;
+}
+uint32_t eos_host_test_process_envc_identity(uint32_t identity) {
+    eos_host_process_record *record;
+    uint32_t value;
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    record = eos_host_process_find_identity_locked(identity);
+    value = record == NULL ? UINT32_C(0) : record->envc;
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return value;
+}
+const char *eos_host_test_process_argument_identity(uint32_t identity,
+                                                     uint32_t index) {
+    eos_host_process_record *record;
+    const char *value;
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    record = eos_host_process_find_identity_locked(identity);
+    value = record != NULL && index < record->argc ? record->argv[index] : "";
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return value;
+}
+const char *eos_host_test_process_environment_identity(uint32_t identity,
+                                                        uint32_t index) {
+    eos_host_process_record *record;
+    const char *value;
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    record = eos_host_process_find_identity_locked(identity);
+    value = record != NULL && index < record->envc ? record->envp[index] : "";
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return value;
+}
+const char *eos_host_test_process_cwd_identity(uint32_t identity) {
+    eos_host_process_record *record;
+    const char *value;
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    record = eos_host_process_find_identity_locked(identity);
+    value = record == NULL ? "" : record->cwd;
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    return value;
 }
 void eos_host_test_pause_closedir_after_validation(void) {
     (void)pthread_mutex_lock(&eos_host_closedir_guard);
@@ -743,19 +927,32 @@ static int32_t eos_port_process_validate(
                ? 1 : 0;
 }
 
+static void eos_host_process_copy(char *destination, size_t capacity,
+                                  const char *source);
+
 static int32_t eos_port_process_load(const eos_port_process_request *request) {
+    eos_host_process_record *record = NULL;
+    uint32_t index;
     if (request == NULL || request->program == NULL) {
         return 1;
     }
+    if (strcmp(request->program, "/host/missing") == 0) return 12;
     (void)pthread_mutex_lock(&eos_host_process_guard);
-    eos_host_process_started = UINT32_C(0);
-    eos_host_process_active = UINT32_C(0);
-    eos_host_process_release = UINT32_C(0);
-    eos_host_process_killed = UINT32_C(0);
-    eos_host_process_name[0] = '\0';
+    for (index = 0; index < EOS_HOST_PROCESS_CAPACITY; ++index) {
+        if (eos_host_process_records[index].in_use == UINT32_C(0)) {
+            record = &eos_host_process_records[index];
+            break;
+        }
+    }
+    if (record != NULL) {
+        (void)memset(record, 0, sizeof(*record));
+        record->in_use = UINT32_C(1);
+        record->sequence = eos_host_process_next_sequence++;
+        eos_host_process_copy(record->name, sizeof(record->name),
+                              request->name);
+    }
     (void)pthread_mutex_unlock(&eos_host_process_guard);
-    return strcmp(request->program, "/host/missing") == 0
-               ? 12 : 0;
+    return record == NULL ? 15 : 0;
 }
 
 static void eos_host_process_copy(char *destination, size_t capacity,
@@ -771,49 +968,52 @@ static void eos_host_process_copy(char *destination, size_t capacity,
 
 static int32_t eos_port_process_run(const eos_port_process_request *request,
                                     int32_t *exit_code) {
+    eos_host_process_record *record;
     uint32_t index;
     if (request == NULL || exit_code == NULL) {
         return 1;
     }
     (void)pthread_mutex_lock(&eos_host_process_guard);
-    eos_host_process_copy(eos_host_process_name,
-                          sizeof(eos_host_process_name), request->name);
-    eos_host_process_copy(eos_host_process_program,
-                          sizeof(eos_host_process_program), request->program);
-    eos_host_process_argc = request->argc < UINT32_C(16)
-                                ? request->argc : UINT32_C(16);
-    eos_host_process_envc = request->envc < UINT32_C(16)
-                                ? request->envc : UINT32_C(16);
-    eos_host_process_inherited_count =
+    record = eos_host_process_find_locked(request->name, 1);
+    if (record == NULL) {
+        (void)pthread_mutex_unlock(&eos_host_process_guard);
+        return 1;
+    }
+    eos_host_process_copy(record->program, sizeof(record->program),
+                          request->program);
+    record->argc = request->argc < UINT32_C(16)
+                       ? request->argc : UINT32_C(16);
+    record->envc = request->envc < UINT32_C(16)
+                       ? request->envc : UINT32_C(16);
+    record->inherited_count =
         request->inherited_count < UINT32_C(64)
             ? request->inherited_count : UINT32_C(64);
-    for (index = 0; index < eos_host_process_argc; ++index) {
-        eos_host_process_copy(eos_host_process_argv[index],
-                              sizeof(eos_host_process_argv[index]),
+    for (index = 0; index < record->argc; ++index) {
+        eos_host_process_copy(record->argv[index],
+                              sizeof(record->argv[index]),
                               request->argv[index]);
     }
-    for (index = 0; index < eos_host_process_envc; ++index) {
-        eos_host_process_copy(eos_host_process_envp[index],
-                              sizeof(eos_host_process_envp[index]),
+    for (index = 0; index < record->envc; ++index) {
+        eos_host_process_copy(record->envp[index],
+                              sizeof(record->envp[index]),
                               request->envp[index]);
     }
-    eos_host_process_copy(eos_host_process_cwd, sizeof(eos_host_process_cwd),
-                          request->cwd);
-    for (index = 0; index < eos_host_process_inherited_count; ++index) {
-        eos_host_process_inherited[index] = request->inherited[index].descriptor;
+    eos_host_process_copy(record->cwd, sizeof(record->cwd), request->cwd);
+    for (index = 0; index < record->inherited_count; ++index) {
+        record->inherited[index] = request->inherited[index].descriptor;
     }
-    eos_host_process_started = UINT32_C(1);
-    eos_host_process_active = UINT32_C(1);
+    record->started = UINT32_C(1);
+    record->active = UINT32_C(1);
     (void)pthread_cond_broadcast(&eos_host_process_condition);
     if (strcmp(request->program, "/host/block") == 0 ||
         strcmp(request->program, "/host/block-copy3") == 0) {
-        while (eos_host_process_release == UINT32_C(0) &&
-               eos_host_process_killed == UINT32_C(0)) {
+        while (record->release == UINT32_C(0) &&
+               record->killed == UINT32_C(0)) {
             (void)pthread_cond_wait(&eos_host_process_condition,
                                     &eos_host_process_guard);
         }
     }
-    eos_host_process_active = UINT32_C(0);
+    record->active = UINT32_C(0);
     (void)pthread_mutex_unlock(&eos_host_process_guard);
 
     if (strcmp(request->program, "/host/run-error") == 0) {
@@ -844,6 +1044,7 @@ static int32_t eos_port_process_run(const eos_port_process_request *request,
 }
 
 static int32_t eos_port_process_kill(const char *name, uint32_t *matched) {
+    eos_host_process_record *record;
     int32_t result = 0;
     if (name == NULL || matched == NULL) return 1;
     *matched = UINT32_C(0);
@@ -855,26 +1056,35 @@ static int32_t eos_port_process_kill(const char *name, uint32_t *matched) {
     }
 #endif
     (void)pthread_mutex_lock(&eos_host_process_guard);
-    if (eos_host_process_active != UINT32_C(0) &&
-        strcmp(name, eos_host_process_name) == 0) {
-        eos_host_process_killed = UINT32_C(1);
-        eos_host_process_release = UINT32_C(1);
+    record = eos_host_process_find_locked(name, 1);
+    if (record != NULL && record->active != UINT32_C(0)) {
+        record->killed = UINT32_C(1);
+        record->release = UINT32_C(1);
         *matched = UINT32_C(1);
         (void)pthread_cond_broadcast(&eos_host_process_condition);
+#ifdef EOS_RUST_HOST_TEST
         if (eos_host_process_kill_after_match_status != 0) {
             result = eos_host_process_kill_after_match_status;
             eos_host_process_kill_after_match_status = 0;
         }
+#endif
     }
     (void)pthread_mutex_unlock(&eos_host_process_guard);
     return result;
 }
 
 static int32_t eos_port_process_unload(const char *name) {
+    eos_host_process_record *record;
     if (name == NULL) return 1;
 #ifdef EOS_RUST_HOST_TEST
     if (eos_host_next_process_unload_status != 0) eos_rust_abort();
 #endif
+    (void)pthread_mutex_lock(&eos_host_process_guard);
+    record = eos_host_process_find_locked(name, 1);
+    if (record != NULL) record->in_use = UINT32_C(0);
+    (void)pthread_cond_broadcast(&eos_host_process_condition);
+    (void)pthread_mutex_unlock(&eos_host_process_guard);
+    if (record == NULL) return 1;
     return 0;
 }
 

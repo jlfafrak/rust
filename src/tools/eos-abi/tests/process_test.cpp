@@ -67,6 +67,15 @@ const char *eos_host_test_process_program(void);
 const char *eos_host_test_process_argument(uint32_t);
 const char *eos_host_test_process_environment(uint32_t);
 const char *eos_host_test_process_cwd(void);
+uint32_t eos_host_test_process_started_identity(uint32_t);
+uint32_t eos_host_test_process_active_identity(uint32_t);
+uint32_t eos_host_test_process_argc_identity(uint32_t);
+uint32_t eos_host_test_process_envc_identity(uint32_t);
+const char *eos_host_test_process_argument_identity(uint32_t, uint32_t);
+const char *eos_host_test_process_environment_identity(uint32_t, uint32_t);
+const char *eos_host_test_process_cwd_identity(uint32_t);
+uint32_t eos_host_test_process_active_count(void);
+uint32_t eos_host_test_process_record_count(void);
 }
 
 namespace {
@@ -113,6 +122,14 @@ void wait_no_records() {
         std::this_thread::yield();
     }
     fail("closed process record did not self-reap");
+}
+
+void wait_started(eos_rust_process_t process) {
+    for (uint32_t spin = 0; spin != UINT32_C(1000000); ++spin) {
+        if (eos_host_test_process_started_identity(process) != 0) return;
+        std::this_thread::yield();
+    }
+    fail("keyed blocked host process did not start");
 }
 
 #ifndef EOS_RUST_TSAN_TEST
@@ -346,6 +363,115 @@ void test_partial_kill_failure_preserves_termination() {
            "partial-kill process close failed");
 }
 
+void test_two_live_processes_are_isolated() {
+    reset_fixture();
+    eos_rust_fd_t input_one[2]{-1, -1};
+    eos_rust_fd_t output_one[2]{-1, -1};
+    eos_rust_fd_t input_two[2]{-1, -1};
+    eos_rust_fd_t output_two[2]{-1, -1};
+    expect(eos_rust_pipe(input_one, EOS_RUST_O_CLOEXEC) == 0 &&
+               eos_rust_pipe(output_one, EOS_RUST_O_CLOEXEC) == 0 &&
+               eos_rust_pipe(input_two, EOS_RUST_O_CLOEXEC) == 0 &&
+               eos_rust_pipe(output_two, EOS_RUST_O_CLOEXEC) == 0,
+           "multi-live stdio fixture creation failed");
+    expect(eos_rust_write(input_one[1], "one", 3) == 3 &&
+               eos_rust_write(input_two[1], "two", 3) == 3,
+           "multi-live stdin fixture write failed");
+
+    const char *argv_one[] = {"child-one", "alpha"};
+    const char *env_one[] = {"CHILD=one"};
+    auto request_one = request("/host/block-copy3");
+    request_one.argv = argv_one;
+    request_one.argc = 2;
+    request_one.envp = env_one;
+    request_one.envc = 1;
+    request_one.cwd = "/work/one";
+    request_one.stdin_fd = input_one[0];
+    request_one.stdout_fd = output_one[1];
+
+    const char *argv_two[] = {"child-two", "beta"};
+    const char *env_two[] = {"CHILD=two"};
+    auto request_two = request("/host/block-copy3");
+    request_two.argv = argv_two;
+    request_two.argc = 2;
+    request_two.envp = env_two;
+    request_two.envc = 1;
+    request_two.cwd = "/work/two";
+    request_two.stdin_fd = input_two[0];
+    request_two.stdout_fd = output_two[1];
+
+    eos_rust_process_t process_one = 0;
+    eos_rust_process_t process_two = 0;
+    eos_rust_process_status status_one{};
+    eos_rust_process_status status_two{};
+    expect(eos_rust_spawn(&request_one, &process_one) == 0,
+           "first multi-live spawn failed");
+    wait_started(process_one);
+    expect(eos_rust_spawn(&request_two, &process_two) == 0,
+           "second multi-live spawn failed");
+    wait_started(process_two);
+
+    expect(eos_host_test_process_started_identity(process_one) != 0 &&
+               eos_host_test_process_started_identity(process_two) != 0 &&
+               eos_host_test_process_active_count() == 2 &&
+               eos_host_test_process_record_count() == 2,
+           "second live process clobbered the first host adapter record");
+    expect(eos_host_test_process_argc_identity(process_one) == 2 &&
+               eos_host_test_process_envc_identity(process_one) == 1 &&
+               std::strcmp(eos_host_test_process_argument_identity(
+                               process_one, 0),
+                           "child-one") == 0 &&
+               std::strcmp(eos_host_test_process_environment_identity(
+                               process_one, 0),
+                           "CHILD=one") == 0 &&
+               std::strcmp(eos_host_test_process_cwd_identity(process_one),
+                           "/work/one") == 0 &&
+               eos_host_test_process_argc_identity(process_two) == 2 &&
+               eos_host_test_process_envc_identity(process_two) == 1 &&
+               std::strcmp(eos_host_test_process_argument_identity(
+                               process_two, 0),
+                           "child-two") == 0 &&
+               std::strcmp(eos_host_test_process_environment_identity(
+                               process_two, 0),
+                           "CHILD=two") == 0 &&
+               std::strcmp(eos_host_test_process_cwd_identity(process_two),
+                           "/work/two") == 0,
+           "multi-live argv/env/cwd observations were not isolated");
+
+    expect(eos_rust_process_kill(process_one) == 0,
+           "first multi-live kill failed");
+    expect(eos_rust_process_try_wait(process_two, &status_two) == 0 &&
+               eos_host_test_process_active_identity(process_two) != 0,
+           "killing the first process disturbed the second");
+    expect(eos_rust_process_wait(process_one, &status_one) == 0 &&
+               status_one.kind == EOS_RUST_PROCESS_TERMINATED &&
+               eos_rust_process_close(process_one) == 0,
+           "first multi-live wait/close failed");
+    expect(eos_rust_process_kill(process_two) == 0 &&
+               eos_rust_process_wait(process_two, &status_two) == 0 &&
+               status_two.kind == EOS_RUST_PROCESS_TERMINATED &&
+               eos_rust_process_close(process_two) == 0,
+           "second multi-live kill/wait/close failed");
+
+    char first[4]{};
+    char second[4]{};
+    expect(eos_rust_read(output_one[0], first, 3) == 3 &&
+               std::memcmp(first, "one", 3) == 0 &&
+               eos_rust_read(output_two[0], second, 3) == 3 &&
+               std::memcmp(second, "two", 3) == 0,
+           "multi-live stdio contexts were not isolated");
+    for (eos_rust_fd_t descriptor :
+         {input_one[0], input_one[1], output_one[0], output_one[1],
+          input_two[0], input_two[1], output_two[0], output_two[1]}) {
+        expect(eos_rust_close(descriptor) == 0,
+               "multi-live stdio fixture cleanup failed");
+    }
+    wait_no_records();
+    expect(eos_host_test_process_active_count() == 0 &&
+               eos_host_test_process_record_count() == 0,
+           "multi-live process adapter records did not clean up");
+}
+
 void test_unload_failure_surfaces_from_wait() {
 #ifndef EOS_RUST_TSAN_TEST
     reset_fixture();
@@ -369,6 +495,7 @@ int main() {
     test_run_error_and_fault_rollback();
     test_kill_failure_leaves_child_waitable();
     test_partial_kill_failure_preserves_termination();
+    test_two_live_processes_are_isolated();
     test_unload_failure_surfaces_from_wait();
     return 0;
 }
