@@ -15,8 +15,6 @@ import tempfile
 
 
 AUTH_MARKER = b"martos_smp_elf_authentication_block_sha2_256_adbc_1394_e532_101\n"
-AUTH_DIGEST_LENGTH = 64
-AUTH_TRAILER_LENGTH = len(AUTH_MARKER) + AUTH_DIGEST_LENGTH + 1
 ELF32_HEADER = struct.Struct("<16sHHIIIIIHHHHHH")
 ELF32_PROGRAM_HEADER = struct.Struct("<IIIIIIII")
 ELF32_SECTION_HEADER = struct.Struct("<IIIIIIIIII")
@@ -186,12 +184,8 @@ def authenticated_bytes(base: bytes) -> bytes:
     return packaged
 
 
-def has_authentication_trailer(data: bytes) -> bool:
-    marker_index = len(data) - AUTH_TRAILER_LENGTH
-    return (
-        marker_index >= 0
-        and data[marker_index : marker_index + len(AUTH_MARKER)] == AUTH_MARKER
-    )
+def has_terminal_authentication_marker(data: bytes, elf_extent: int) -> bool:
+    return data.find(AUTH_MARKER, elf_extent) >= 0
 
 
 def resolved_output(path: Path) -> Path:
@@ -230,9 +224,9 @@ def package(source_argument: Path, output_argument: Path) -> None:
         raise PackageError(f"unable to read input ELF: {error}") from error
     if base[:4] != b"\x7fELF":
         raise PackageError("input does not begin with ELF magic")
-    if has_authentication_trailer(base):
+    elf_extent = last_elf_extent(base)
+    if has_terminal_authentication_marker(base, elf_extent):
         raise PackageError("input already contains an authentication trailer")
-    last_elf_extent(base)
 
     root = sdk_root()
     validator = rooted_validator(root)

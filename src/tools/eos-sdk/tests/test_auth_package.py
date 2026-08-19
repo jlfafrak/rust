@@ -10,6 +10,7 @@ from support import (
     ELF_VALIDATOR,
     install_fake_elf_tools,
     minimal_elf,
+    minimal_elf_with_payload,
     run_python,
     valid_tool_outputs,
     write_executable,
@@ -182,7 +183,7 @@ os.execv(sys.executable, [sys.executable, {str(ELF_VALIDATOR)!r}, *sys.argv[1:]]
         self.assertEqual(self.source.read_bytes(), base)
 
     def test_internal_marker_bytes_are_hashed_as_part_of_the_base_elf(self):
-        base = minimal_elf() + AUTH_MARKER + b"ordinary ELF payload bytes"
+        base = minimal_elf_with_payload(AUTH_MARKER + b"ordinary ELF payload bytes")
         self.source.write_bytes(base)
         result = self.invoke()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -193,6 +194,24 @@ os.execv(sys.executable, [sys.executable, {str(ELF_VALIDATOR)!r}, *sys.argv[1:]]
             + hashlib.sha256(base).hexdigest().encode("ascii")
             + b"\n",
         )
+
+    def test_rejects_malformed_terminal_trailer_variants(self):
+        base = minimal_elf()
+        digest = hashlib.sha256(base).hexdigest().encode("ascii")
+        cases = {
+            "missing newline": digest,
+            "extra newline": digest + b"\n\n",
+            "short digest": digest[:-1] + b"\n",
+            "long digest": digest + b"0\n",
+            "extra suffix": digest + b"\nextra",
+        }
+        for label, suffix in cases.items():
+            with self.subTest(label=label):
+                self.source.write_bytes(base + AUTH_MARKER + suffix)
+                result = self.invoke()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("authentication trailer", result.stderr)
+                self.assertFalse(self.output.exists())
 
     def test_rejects_output_directory_symlink_escape(self):
         self.source.write_bytes(minimal_elf())

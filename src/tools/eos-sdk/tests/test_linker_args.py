@@ -339,6 +339,14 @@ raise SystemExit(int(Path({str(self.status_control)!r}).read_text(encoding="utf-
             "hard float": ["-mfloat-abi=hard"],
             "alternate script": ["-Wl,-T,/tmp/alternate.ld"],
             "alternate interpreter": ["-Wl,--dynamic-linker=/tmp/ld.so"],
+            "short interpreter split": ["-Wl,-I,/tmp/attacker-ld.so"],
+            "short interpreter joined": ["-Wl,-I/tmp/attacker-ld.so"],
+            "single-dash interpreter": ["-Wl,-dynamic-linker=/tmp/attacker-ld.so"],
+            "MRI script split": ["-Wl,-c,/tmp/attacker.mri"],
+            "MRI script long": ["-Wl,--mri-script=/tmp/attacker.mri"],
+            "default script split": ["-Wl,-dT,/tmp/attacker.ld"],
+            "default script long": ["-Wl,--default-script=/tmp/attacker.ld"],
+            "incremental relocatable": ["-Wl,-i"],
             "shared output": ["-shared"],
             "PIE disabled": ["-no-pie"],
             "PIC disabled": ["-fno-PIC"],
@@ -377,6 +385,10 @@ raise SystemExit(int(Path({str(self.status_control)!r}).read_text(encoding="utf-
             "direct output": ["--output=/tmp/outside.so"],
             "no PIE alias": ["-Wl,-no-pie"],
             "linker plugin": ["-Wl,-plugin,/tmp/attacker.so"],
+            "short interpreter": ["-Wl,-I,/tmp/attacker-ld.so"],
+            "MRI script": ["-Wl,-c,/tmp/attacker.mri"],
+            "default script": ["-Wl,-dT,/tmp/attacker.ld"],
+            "incremental relocatable": ["-Wl,-i"],
         }
         for label, extra in cases.items():
             with self.subTest(label=label):

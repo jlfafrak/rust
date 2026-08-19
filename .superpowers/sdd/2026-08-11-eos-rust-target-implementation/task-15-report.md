@@ -7,8 +7,9 @@ ELF validator, and authentication packager. The exact EOS `std` bootstrap now su
 Task 14 unwind application links as a final EOS PIE, passes the strict application validator,
 packages with the exact MARTOS authentication trailer, and passes allowed-trailer validation.
 
-The outer repository started at `596c23b0a4fdb1c8e0020e9f01597fb56b8a59f6`. The required outer
-commit subject is `tools: add EOS link validation and authentication`; its resulting hash is
+The outer repository started at `596c23b0a4fdb1c8e0020e9f01597fb56b8a59f6`. The required primary
+outer commit is `2bee665228a888aecf61edd68d895922f6a262db` with subject
+`tools: add EOS link validation and authentication`. A subsequent review-hardening commit is
 reported in the controller handoff because a commit cannot contain its own stable hash.
 
 One evidence-driven integration correction is deliberately disclosed outside the Task 15 file
@@ -80,8 +81,19 @@ Focused cycles then exposed and fixed concrete behavior:
 - A final review mutation showed that searching for the authentication marker anywhere rejected
   legitimate embedded bytes. Trailer recognition is now anchored to the exact 129-byte suffix;
   embedded marker bytes remain part of the ELF and are included in the package digest.
+- Exact-delta re-review found GNU ld's short dynamic-interpreter alias (`-I PROGRAM`) and a
+  missing-newline trailer as two remaining bypasses. Six initial direct cases were RED:
+  app/shared `-Wl,-I,...` variants reached the fake compiler, and validator/packager accepted a
+  terminal marker plus 64 digest characters without the required newline. The expanded MRI/
+  default-script/incremental alias matrix then produced eight more RED subtests. The wrapper now
+  rejects `-I`, single-dash interpreter, `-c`/`--mri-script`, `-dT`/`--default-script`, and `-i`
+  after `-Wl` normalization. Marker occurrences inside declared ELF extents remain ordinary data,
+  but any marker at or beyond the last declared ELF extent is an authentication overlay and must
+  be the single exact 129-byte suffix. Both tools test missing/extra newline, short/long digest,
+  and extra suffix shapes. The focused controls are GREEN and exact real base/trailer validation
+  remains GREEN; direct real malformed-trailer probes return status 2 from both tools.
 
-The final Task 15 suite is 42/42 GREEN. The consolidated unwind, bootstrap, PAL, libc link/source,
+The final Task 15 suite is 44/44 GREEN. The consolidated unwind, bootstrap, PAL, libc link/source,
 and toolchain-lock regression is 37/37 GREEN, including the new backtrace cfg check and a mutation
 that proves removing the EOS line is rejected.
 
@@ -125,11 +137,12 @@ Application mode invokes the pinned compiler with:
 
 Rust objects, including the object defining `main`, remain before the runtime closure. No GCC crt
 object is injected or accepted. Static, hard-float, non-PIC/non-PIE, relocatable, alternate
-linker/script/interpreter, response-file, tool-prefix/specs/sysroot/plugin, crt, and ambiguous-
-output attempts fail closed. Injected MARTOS operands are absolute resolved paths, so preserved
-Rust search paths cannot shadow the pinned closure. A single resolved output is required beneath
-the resolved current working directory. Consequently an external `CARGO_TARGET_DIR` outside the
-invocation cwd is unsupported in release one.
+linker/script/interpreter (including GNU ld `-I` and single-dash forms), response-file,
+tool-prefix/specs/sysroot/plugin, crt, and ambiguous-output attempts fail closed. Injected MARTOS
+operands are absolute resolved paths, so preserved Rust search paths cannot shadow the pinned
+closure. A single resolved output is required beneath the resolved current working directory.
+Consequently an external `CARGO_TARGET_DIR` outside the invocation cwd is unsupported in release
+one.
 
 The shared mode exists only to make the approved precompiled Rust sysroot possible. It requires
 exactly one `-shared`, an output named `libstd-<16 lowercase hex>.so`, a single exactly matching
@@ -158,9 +171,10 @@ native ABI.
 Before invoking external tools, the validator captures the bytes once and checks ELF magic,
 ELF32/little-endian/current-version, ARM, `ET_DYN`, EABI5 softfp flags, exact ELF header sizes,
 bounded program/section tables, and every file-backed segment and section extent. Marker-free mode
-rejects a structurally exact trailer suffix. Allowed-trailer mode accepts the marker only at the
+rejects an authentication overlay. Allowed-trailer mode accepts an overlay marker only at the
 exact 129-byte suffix, followed by 64 lowercase digest characters and one newline, and verifies
-the digest over exactly the preceding bytes. Marker text embedded elsewhere is ordinary ELF data.
+the digest over exactly the preceding bytes. Any malformed terminal marker overlay is rejected;
+marker text inside a declared ELF segment or section extent is ordinary ELF data.
 
 Only root-resolved executable ARM GNU `readelf` and `nm` are invoked, with argv arrays rather than
 a shell, closed stdin, a minimal `PATH`/C-locale environment, timeouts, strict UTF-8, return-code
@@ -221,13 +235,14 @@ script-relative default.
 The exact final bootstrap/application sequence produced these results:
 
 - `./x build library/std --target armv7a-unknown-eos-eabi`: passed after the cfg correction in
-  2:25 in the final review rerun. The installed `libstd-0e630290a4d2acf4.so` is ELF32
+  1:08 in the final post-review-hardening rerun. The installed
+  `libstd-0e630290a4d2acf4.so` is ELF32
   little-endian ARM EABI5 softfp
   `ET_DYN`, has RX/RW loads, DYNAMIC and ARM_EXIDX, no PT_TLS or TEXTREL, and the exact soname.
   Its 113 undefineds and broader shared-object relocation set were inspected separately; the
   application validator is intentionally not applied to this build-time sysroot DSO.
-- Exact Task 14 unwind Cargo build with source stage-1 rustc: forced a fresh link and passed in
-  49.64 seconds.
+- Exact Task 14 unwind Cargo build with source stage-1 rustc: forced a fresh link after the final
+  hardening and passed in 7.92 seconds.
 - Final unwind application: 1,821,648-byte ELF32 ARM EABI5 softfp `ET_DYN` PIE, global `main`
   entry `0x239ac`, interpreter, RX/RW, DYNAMIC, ARM_EXIDX, allocated `.ARM.extab` size `0x683c`
   and `.ARM.exidx` size `0x3710`, PIE/NEEDED contract, 1,934 `R_ARM_RELATIVE` plus 95
@@ -245,7 +260,7 @@ The final verification set is:
 
 ```text
 python3 -m unittest discover -s src/tools/eos-sdk/tests -p 'test_*.py' -v
-  Ran 42 tests ... OK
+  Ran 44 tests ... OK
 
 python3 -m unittest -v \
   tests.eos.host.test_ffi_unwind_policy \

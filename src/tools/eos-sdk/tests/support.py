@@ -12,6 +12,7 @@ LINK_WRAPPER = SDK_SOURCE_ROOT / "bin" / "eos-rust-link"
 ELF_VALIDATOR = SDK_SOURCE_ROOT / "bin" / "eos-elf-validate"
 AUTH_PACKAGER = SDK_SOURCE_ROOT / "bin" / "eos-auth-package"
 AUTH_MARKER = b"martos_smp_elf_authentication_block_sha2_256_adbc_1394_e532_101\n"
+ELF32_PROGRAM_HEADER_OFFSET = struct.calcsize("<16sHHIIIIIHHHHHH")
 
 
 def write_executable(path: Path, source: str) -> None:
@@ -45,6 +46,14 @@ def minimal_elf(entry: int = 0x1000) -> bytes:
         "<IIIIIIII", 1, 0, 0, 0, file_size, file_size, 5, 0x1000
     )
     return header + program_header + bytes(40)
+
+
+def minimal_elf_with_payload(payload: bytes, entry: int = 0x1000) -> bytes:
+    """Return a minimal ELF whose LOAD extent includes the supplied payload."""
+    image = bytearray(minimal_elf(entry))
+    image.extend(payload)
+    struct.pack_into("<II", image, ELF32_PROGRAM_HEADER_OFFSET + 16, len(image), len(image))
+    return bytes(image)
 
 
 def valid_tool_outputs() -> dict[str, str]:

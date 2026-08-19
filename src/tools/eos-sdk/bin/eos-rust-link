@@ -184,6 +184,12 @@ def reject_argument(
             "--plugin",
             "-plugin-opt",
             "--plugin-opt",
+            "-I",
+            "-c",
+            "--mri-script",
+            "-dT",
+            "--default-script",
+            "-i",
         }
         for position, linker_argument in enumerate(linker_arguments):
             if linker_argument.startswith("@"):
@@ -208,6 +214,12 @@ def reject_argument(
                     "-T",
                     "--script=",
                     "--dynamic-linker=",
+                    "-dynamic-linker=",
+                    "-I",
+                    "-c",
+                    "--mri-script=",
+                    "-dT",
+                    "--default-script=",
                     "-plugin=",
                     "--plugin=",
                     "-plugin-opt=",

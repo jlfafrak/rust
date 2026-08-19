@@ -62,12 +62,26 @@ def rooted_file(root: Path, relative: str, description: str) -> Path:
     return resolved
 
 
-def split_authentication_trailer(data: bytes, allow_trailer: bool) -> bytes:
-    marker_index = len(data) - AUTH_TRAILER_LENGTH
-    if marker_index < 0 or data[
-        marker_index : marker_index + len(AUTH_MARKER)
-    ] != AUTH_MARKER:
+def authentication_marker_offsets(data: bytes, minimum: int) -> list[int]:
+    offsets: list[int] = []
+    offset = data.find(AUTH_MARKER, minimum)
+    while offset >= 0:
+        offsets.append(offset)
+        offset = data.find(AUTH_MARKER, offset + 1)
+    return offsets
+
+
+def split_authentication_trailer(
+    data: bytes, allow_trailer: bool, elf_extent: int
+) -> bytes:
+    terminal_markers = authentication_marker_offsets(data, elf_extent)
+    if not terminal_markers:
         return data
+    marker_index = len(data) - AUTH_TRAILER_LENGTH
+    if terminal_markers != [marker_index]:
+        raise ValidationError(
+            "authentication trailer has an invalid length or terminator"
+        )
     if not allow_trailer:
         raise ValidationError("authentication trailer is not allowed for a base ELF")
     trailer = data[marker_index + len(AUTH_MARKER) :]
@@ -410,7 +424,8 @@ def validate(image: Path, allow_trailer: bool) -> None:
         raise ValidationError(f"unable to read input ELF: {error}") from error
     if data[:4] != b"\x7fELF":
         raise ValidationError("input does not begin with ELF magic")
-    base = split_authentication_trailer(data, allow_trailer)
+    full_extent = validate_internal_elf(data)
+    base = split_authentication_trailer(data, allow_trailer, full_extent)
     validate_internal_elf(base)
 
     root = sdk_root()

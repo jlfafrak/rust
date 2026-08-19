@@ -13,6 +13,7 @@ from support import (
     ELF_VALIDATOR,
     install_fake_elf_tools,
     minimal_elf,
+    minimal_elf_with_payload,
     run_python,
     valid_tool_outputs,
     write_executable,
@@ -219,10 +220,29 @@ sys.stdout.write(outputs[key])
         self.assertIn("digest", invalid.stderr)
 
     def test_internal_marker_bytes_are_not_misclassified_as_a_trailer(self):
-        embedded = minimal_elf() + AUTH_MARKER + b"ordinary ELF payload bytes"
+        embedded = minimal_elf_with_payload(
+            AUTH_MARKER + b"ordinary ELF payload bytes"
+        )
         self.image.write_bytes(embedded)
         result = self.invoke(str(self.image))
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_rejects_malformed_terminal_trailer_variants(self):
+        base = self.image.read_bytes()
+        digest = hashlib.sha256(base).hexdigest().encode("ascii")
+        cases = {
+            "missing newline": digest,
+            "extra newline": digest + b"\n\n",
+            "short digest": digest[:-1] + b"\n",
+            "long digest": digest + b"0\n",
+            "extra suffix": digest + b"\nextra",
+        }
+        for label, suffix in cases.items():
+            with self.subTest(label=label):
+                self.image.write_bytes(base + AUTH_MARKER + suffix)
+                result = self.invoke("--allow-auth-trailer", str(self.image))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("terminator", result.stderr)
 
     def test_rejects_truncated_elf_extent_and_marker_only_fixture(self):
         self.image.write_bytes(minimal_elf()[:-1])
