@@ -45,3 +45,6 @@ Task 13: complete (commits f74c366..0defc49, review clean; artifact cross-link d
 Task 14: fix round 1/5 (2 addressed, 2 open — unwind root omitted from C-unwind scan; comment text can impersonate native callback call; commits 498bc36..c12fc74)
 Task 14: fix round 2/5 (2 addressed, 0 open; commits c12fc74..7122fab)
 Task 14: complete (commits 47f0c30..7122fab, review clean; final linked EHABI gates continue in Task 15)
+Task 15: fix round 1/5 (4 addressed, 2 new open; commits 596c23b..2bee665)
+Task 15: fix round 2/5 (2 addressed, 0 open; commits 2bee665..329404f)
+Task 15: complete (commits 596c23b..329404f; nested backtrace commit 28ec93b..02ef1b5; review clean; hardware loader/authentication/unwind validation remains manual)
