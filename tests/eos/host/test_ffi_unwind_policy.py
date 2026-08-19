@@ -19,6 +19,9 @@ UNWIND_WASM = ROOT / "library" / "unwind" / "src" / "wasm.rs"
 PANIC_UNWIND = ROOT / "library" / "panic_unwind" / "src"
 PERSONALITY = STD / "sys" / "personality" / "mod.rs"
 PERSONALITY_GCC = STD / "sys" / "personality" / "gcc.rs"
+BACKTRACE_LIBUNWIND = (
+    ROOT / "library" / "backtrace" / "src" / "backtrace" / "libunwind.rs"
+)
 LIFECYCLE = STD / "thread" / "lifecycle.rs"
 THREAD = STD / "sys" / "thread" / "unix.rs"
 THREAD_LOCAL = STD / "sys" / "thread_local" / "mod.rs"
@@ -312,6 +315,45 @@ class FfiUnwindPolicyTests(unittest.TestCase):
                 r'#\[link\(name\s*=\s*"gcc"\)\]\s*'
                 r'unsafe\s+extern\s+"C"\s*\{\s*\}',
                 re.DOTALL,
+            ),
+        )
+
+    def test_eos_backtrace_uses_the_arm_gnu_macro_api(self):
+        source = source_without_comments(
+            BACKTRACE_LIBUNWIND.read_text(encoding="utf-8")
+        )
+        self.assertRegex(
+            source,
+            re.compile(
+                r'not\(all\(target_os\s*=\s*"eos"\s*,\s*'
+                r'target_arch\s*=\s*"arm"\)\)\s*,',
+                re.DOTALL,
+            ),
+        )
+        unwind_cfg = source[source.rindex("cfg_if::cfg_if!") :]
+        macro_api = body_after_marker(unwind_cfg, "} else")
+        self.assert_markers_in_order(
+            macro_api,
+            (
+                "fn _Unwind_VRS_Get(",
+                "pub unsafe fn _Unwind_GetIP(",
+                "pub unsafe fn _Unwind_FindEnclosingFunction(",
+            ),
+        )
+        self.assertRegex(
+            source_without_comments(macro_api),
+            r"pub\s+unsafe\s+fn\s+_Unwind_FindEnclosingFunction\s*"
+            r"\([^)]*\)\s*->\s*\*mut\s+c_void\s*\{\s*pc\s*\}",
+        )
+
+    def test_backtrace_policy_rejects_the_extern_arm_api_for_eos(self):
+        self.assert_source_mutation_is_rejected(
+            "test_eos_backtrace_uses_the_arm_gnu_macro_api",
+            BACKTRACE_LIBUNWIND,
+            lambda source: source.replace(
+                '            not(all(target_os = "eos", target_arch = "arm")),\n',
+                "",
+                1,
             ),
         )
 
