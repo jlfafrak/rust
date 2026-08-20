@@ -1,0 +1,5 @@
+[build]
+target = "armv7a-unknown-eos-eabi"
+
+[target.armv7a-unknown-eos-eabi]
+linker = "eos-rust-link"

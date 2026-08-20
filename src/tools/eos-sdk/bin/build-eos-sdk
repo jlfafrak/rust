@@ -1,0 +1,867 @@
+#!/usr/bin/env python3
+"""Build and atomically stage the relocatable EOS Rust SDK."""
+
+from __future__ import annotations
+
+import argparse
+from contextlib import contextmanager
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import tomllib
+
+
+TARGET = "armv7a-unknown-eos-eabi"
+TOOLCHAIN = "eos-1.97.1"
+GCC_VERSION = "14.3.1"
+BACKTRACE_REVISION = "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd"
+EXPECTED_LOCK = {
+    ("rust", "version"): "1.97.1",
+    ("rust", "upstream_commit"): "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
+    ("libc", "version"): "0.2.185",
+    ("libc", "upstream_commit"): "71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8",
+    ("arm_gnu", "release"): "14.3.Rel1",
+    ("eos_sdk", "baseline"): "MARTOS-SMP-14.0.39",
+    ("eos_rust_abi", "major"): 1,
+    ("eos_rust_abi", "minor"): 0,
+}
+TARGET_FLAGS = (
+    "-march=armv7-a",
+    "-mtune=cortex-a9",
+    "-mfpu=neon-vfpv3",
+    "-mfloat-abi=softfp",
+)
+
+
+class BuildError(Exception):
+    pass
+
+
+def directory(argument: str, description: str) -> Path:
+    candidate = Path(argument)
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as error:
+        raise BuildError(f"{description} is unavailable: {candidate}: {error}") from error
+    if not resolved.is_dir():
+        raise BuildError(f"{description} is not a directory: {resolved}")
+    return resolved
+
+
+def rooted_file(root: Path, relative: str, description: str) -> Path:
+    candidate = root / relative
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root)
+    except ValueError as error:
+        raise BuildError(f"{description} resolves outside {root}: {candidate}") from error
+    except OSError as error:
+        raise BuildError(f"missing {description}: {candidate}: {error}") from error
+    if not resolved.is_file():
+        raise BuildError(f"{description} is not a regular file: {resolved}")
+    return resolved
+
+
+def validate_tree_links(root: Path, description: str) -> None:
+    for path in root.rglob("*"):
+        if not path.is_symlink():
+            continue
+        try:
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(root)
+        except ValueError as error:
+            raise BuildError(f"{description} symlink resolves outside its root: {path}") from error
+        except OSError as error:
+            raise BuildError(f"broken {description} symlink: {path}: {error}") from error
+
+
+def load_lock(source: Path) -> dict:
+    path = rooted_file(
+        source,
+        "src/tools/eos-sdk/manifests/toolchain.lock.toml",
+        "toolchain lock",
+    )
+    try:
+        lock = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
+        raise BuildError(f"unable to parse toolchain lock: {error}") from error
+    mismatches = []
+    for (section, key), expected in EXPECTED_LOCK.items():
+        actual = lock.get(section, {}).get(key)
+        if actual != expected:
+            mismatches.append(f"{section}.{key}: expected {expected!r}, found {actual!r}")
+    if mismatches:
+        raise BuildError("toolchain lock does not match the release baseline: " + "; ".join(mismatches))
+    return lock
+
+
+def command_tool(name: str) -> Path:
+    found = shutil.which(name)
+    if found is None:
+        raise BuildError(f"required build command is unavailable: {name}")
+    try:
+        tool = Path(found).resolve(strict=True)
+    except OSError as error:
+        raise BuildError(f"required build command is unavailable: {name}: {error}") from error
+    if not tool.is_file() or not os.access(tool, os.X_OK):
+        raise BuildError(f"required build command is not executable: {tool}")
+    return tool
+
+
+def build_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
+    environment = os.environ.copy()
+    environment["LC_ALL"] = "C"
+    environment["LANG"] = "C"
+    if extra:
+        environment.update(extra)
+    return environment
+
+
+def run_checked(
+    command: list[str],
+    description: str,
+    *,
+    cwd: Path | None = None,
+    environment: dict[str, str] | None = None,
+    capture: bool = False,
+) -> str:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if capture else None,
+            stderr=subprocess.PIPE if capture else None,
+            text=capture,
+            timeout=7200,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise BuildError(f"{description} failed: {error}") from error
+    if result.returncode != 0:
+        detail = result.stderr.strip() if capture and result.stderr else ""
+        suffix = f": {detail}" if detail else f" with status {result.returncode}"
+        raise BuildError(f"{description} failed{suffix}")
+    return result.stdout.strip() if capture and result.stdout else ""
+
+
+def git_output(git: Path, root: Path, arguments: list[str], description: str) -> str:
+    output = run_checked(
+        [str(git), "-C", str(root), *arguments],
+        description,
+        environment=build_environment(),
+        capture=True,
+    )
+    if re.fullmatch(r"[0-9a-f]{40}", output) is None:
+        raise BuildError(f"{description} returned an invalid revision: {output!r}")
+    return output
+
+
+def source_revisions(source: Path, git: Path, lock: dict) -> dict[str, str]:
+    upstream = lock["rust"]["upstream_commit"]
+    run_checked(
+        [str(git), "-C", str(source), "merge-base", "--is-ancestor", upstream, "HEAD"],
+        "Rust upstream ancestry validation",
+        environment=build_environment(),
+        capture=True,
+    )
+    rust_fork = git_output(git, source, ["rev-parse", "HEAD"], "Rust fork revision query")
+    backtrace_root = directory(str(source / "library" / "backtrace"), "backtrace source")
+    backtrace = git_output(
+        git,
+        backtrace_root,
+        ["rev-parse", "HEAD"],
+        "backtrace revision query",
+    )
+    if backtrace != BACKTRACE_REVISION:
+        raise BuildError(
+            f"backtrace revision must be {BACKTRACE_REVISION}, found {backtrace}"
+        )
+    return {
+        "rust_fork": rust_fork,
+        "rust_upstream": upstream,
+        "libc_upstream": lock["libc"]["upstream_commit"],
+        "backtrace": backtrace,
+    }
+
+
+def host_triple() -> str:
+    machine = platform.machine().lower()
+    if sys.platform.startswith("linux") and machine in {"x86_64", "amd64"}:
+        return "x86_64-unknown-linux-gnu"
+    if sys.platform.startswith("linux") and machine in {"aarch64", "arm64"}:
+        return "aarch64-unknown-linux-gnu"
+    raise BuildError(f"unsupported SDK host platform: {sys.platform}/{machine}")
+
+
+def validate_inputs(arm: Path, eos: Path) -> dict[str, Path]:
+    validate_tree_links(arm, "ARM GNU installation")
+    validate_tree_links(eos, "EOS SDK")
+    arm_files = {
+        name: rooted_file(arm, f"bin/arm-none-eabi-{name}", f"ARM GNU {name}")
+        for name in ("gcc", "ar", "ranlib", "readelf", "nm")
+    }
+    for relative in (
+        "martos/inc/martos_smp.h",
+        "libc/include/errno.h",
+        "martos/lib/libmartos_app.so",
+        "martos/lib/libmartos_app.so.1.0",
+        "martos/lib/libmartos_c++.a",
+        "martos/lib/libmartos_c++abi.a",
+        "martos/lib/libmartos_c.a",
+    ):
+        rooted_file(eos, relative, f"EOS SDK artifact {relative}")
+    version = run_checked(
+        [str(arm_files["gcc"]), "-dumpfullversion"],
+        "ARM GNU version query",
+        environment=build_environment(),
+        capture=True,
+    )
+    if version != GCC_VERSION:
+        raise BuildError(
+            f"ARM GNU 14.3.Rel1 requires GCC {GCC_VERSION}, found {version!r}"
+        )
+    return arm_files
+
+
+def copy_file_beneath(source_root: Path, relative: Path, destination_root: Path) -> None:
+    source = rooted_file(source_root, str(relative), f"staged input {relative}")
+    destination = destination_root / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination, follow_symlinks=True)
+
+
+def stage_arm_toolchain(arm: Path, stage: Path) -> None:
+    destination = stage / "arm-gnu"
+    gcc_relative = Path("bin/arm-none-eabi-gcc")
+    libexec_root = Path("libexec/gcc/arm-none-eabi") / GCC_VERSION
+    required = [
+        gcc_relative,
+        Path("bin/arm-none-eabi-ar"),
+        Path("bin/arm-none-eabi-ranlib"),
+        Path("bin/arm-none-eabi-readelf"),
+        Path("bin/arm-none-eabi-nm"),
+        Path("arm-none-eabi/bin/as"),
+        Path("arm-none-eabi/bin/ld"),
+        libexec_root / "collect2",
+        libexec_root / "liblto_plugin.so",
+    ]
+    compiler = rooted_file(arm, str(gcc_relative), "ARM GNU compiler")
+    libgcc_output = run_checked(
+        [str(compiler), *TARGET_FLAGS, "-print-libgcc-file-name"],
+        "ARM GNU softfp libgcc query",
+        environment=build_environment(),
+        capture=True,
+    )
+    libgcc = Path(libgcc_output)
+    if not libgcc.is_absolute():
+        raise BuildError("ARM GNU returned a non-absolute libgcc path")
+    try:
+        libgcc = libgcc.resolve(strict=True)
+        libgcc_relative = libgcc.relative_to(arm)
+    except ValueError as error:
+        raise BuildError(f"ARM GNU libgcc resolves outside its installation: {libgcc}") from error
+    except OSError as error:
+        raise BuildError(f"ARM GNU libgcc is unavailable: {libgcc}: {error}") from error
+    if libgcc.name != "libgcc.a":
+        raise BuildError(f"ARM GNU selected an unexpected support library: {libgcc}")
+    required.append(libgcc_relative)
+    for relative in required:
+        copy_file_beneath(arm, relative, destination)
+
+
+def copy_source_file(source: Path, relative: str, destination: Path) -> None:
+    artifact = rooted_file(source, relative, f"source artifact {relative}")
+    target = destination / Path(relative).name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(artifact, target)
+
+
+def stage_static_assets(source: Path, eos: Path, stage: Path) -> None:
+    shutil.copytree(eos, stage / "eos", symlinks=True)
+    sdk_source = source / "src" / "tools" / "eos-sdk"
+    for name in (
+        "eos-rust-link",
+        "eos-elf-validate",
+        "eos-auth-package",
+        "build-eos-sdk",
+        "install-eos-sdk",
+    ):
+        copy_source_file(source, f"src/tools/eos-sdk/bin/{name}", stage / "bin")
+    copy_source_file(
+        source,
+        "src/tools/eos-sdk/linker/app_linker_script.ld",
+        stage / "linker",
+    )
+    manifests = rooted_file(
+        source,
+        "src/tools/eos-sdk/manifests/toolchain.lock.toml",
+        "toolchain lock",
+    ).parent
+    shutil.copytree(manifests, stage / "manifests", dirs_exist_ok=True)
+    templates = rooted_file(
+        source,
+        "src/tools/eos-sdk/templates/config.toml",
+        "bootstrap template",
+    ).parent
+    shutil.copytree(templates, stage / "share" / "templates")
+    for name in ("COPYRIGHT", "LICENSE-APACHE", "LICENSE-MIT"):
+        copy_source_file(source, name, stage / "share" / "licenses" / "rust")
+    example = stage / "share" / "examples" / "hello-std"
+    copy_source_file(
+        source,
+        "tests/eos/apps/hello-std/Cargo.toml",
+        example,
+    )
+    copy_source_file(
+        source,
+        "tests/eos/apps/hello-std/src/main.rs",
+        example / "src",
+    )
+
+
+def render_bootstrap_config(template: Path, host: str, arm: Path, build: Path) -> str:
+    try:
+        content = template.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise BuildError(f"unable to read bootstrap template: {error}") from error
+
+    def escape(value: str) -> str:
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
+    replacements = {
+        "@HOST_TRIPLE@": host,
+        "@ARM_GNU_ROOT@": str(arm),
+        "@BUILD_DIR@": str(build),
+    }
+    for marker, value in replacements.items():
+        content = content.replace(marker, escape(value))
+    if re.search(r"@[A-Z0-9_]+@", content):
+        raise BuildError("bootstrap template contains an unresolved placeholder")
+    try:
+        parsed = tomllib.loads(content)
+    except tomllib.TOMLDecodeError as error:
+        raise BuildError(f"rendered bootstrap configuration is invalid: {error}") from error
+    if parsed.get("build", {}).get("target") != [TARGET]:
+        raise BuildError("rendered bootstrap configuration does not select only EOS")
+    return content
+
+
+def verify_pic(build: Path) -> None:
+    flags_file = build / "CMakeFiles" / "eos_rust_abi.dir" / "flags.make"
+    try:
+        flags = flags_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise BuildError(f"unable to verify MARTOS PIC compiler flags: {error}") from error
+    missing = [flag for flag in (*TARGET_FLAGS, "-fPIC") if flag not in flags.split()]
+    if missing:
+        raise BuildError(f"MARTOS ABI build is missing required compiler flags: {', '.join(missing)}")
+
+
+def build_native_abi(
+    source: Path,
+    arm: Path,
+    eos: Path,
+    work: Path,
+    stage: Path,
+    cmake: Path,
+    ctest: Path,
+) -> None:
+    abi_source = directory(str(source / "src" / "tools" / "eos-abi"), "EOS ABI source")
+    host_build = work / "eos-abi-host"
+    martos_build = work / "eos-abi-martos"
+    environment = build_environment()
+    run_checked(
+        [
+            str(cmake), "-S", str(abi_source), "-B", str(host_build),
+            "-DEOS_RUST_PORT=host", "-DBUILD_TESTING=ON",
+        ],
+        "EOS ABI host configuration",
+        environment=environment,
+    )
+    run_checked(
+        [str(cmake), "--build", str(host_build)],
+        "EOS ABI host build",
+        environment=environment,
+    )
+    run_checked(
+        [str(ctest), "--test-dir", str(host_build), "--output-on-failure"],
+        "EOS ABI host tests",
+        environment=environment,
+    )
+    compiler = rooted_file(arm, "bin/arm-none-eabi-gcc", "ARM GNU compiler")
+    ar = rooted_file(arm, "bin/arm-none-eabi-ar", "ARM GNU ar")
+    ranlib = rooted_file(arm, "bin/arm-none-eabi-ranlib", "ARM GNU ranlib")
+    cflags = " ".join(TARGET_FLAGS)
+    run_checked(
+        [
+            str(cmake), "-S", str(abi_source), "-B", str(martos_build),
+            "-DCMAKE_SYSTEM_NAME=Generic",
+            "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY",
+            f"-DCMAKE_C_COMPILER={compiler}",
+            f"-DCMAKE_AR={ar}",
+            f"-DCMAKE_RANLIB={ranlib}",
+            f"-DCMAKE_C_FLAGS={cflags}",
+            "-DEOS_RUST_PORT=martos_14_0_39",
+            "-DBUILD_TESTING=OFF",
+            f"-DEOS_SDK_ROOT={eos}",
+        ],
+        "EOS ABI MARTOS configuration",
+        environment=environment,
+    )
+    run_checked(
+        [str(cmake), "--build", str(martos_build)],
+        "EOS ABI MARTOS build",
+        environment=environment,
+    )
+    verify_pic(martos_build)
+    archive = rooted_file(martos_build, "libeos_rust_abi.a", "MARTOS ABI archive")
+    expected = rooted_file(
+        source,
+        "src/tools/eos-abi/tests/expected-exports-v1.txt",
+        "ABI export manifest",
+    )
+    checker = rooted_file(
+        source,
+        "src/tools/eos-abi/tests/check_exports.py",
+        "ABI export checker",
+    )
+    nm = rooted_file(arm, "bin/arm-none-eabi-nm", "ARM GNU nm")
+    run_checked(
+        [
+            sys.executable,
+            str(checker),
+            "--nm", str(nm),
+            "--archive", str(archive),
+            "--expected", str(expected),
+        ],
+        "MARTOS ABI export validation",
+        environment=environment,
+    )
+    (stage / "lib").mkdir(parents=True, exist_ok=True)
+    shutil.copy2(archive, stage / "lib" / "libeos_rust_abi.a")
+    (stage / "include").mkdir(parents=True, exist_ok=True)
+    for name in ("eos_rust_abi.h", "eos_rust_abi_version.h"):
+        header = rooted_file(source, f"src/tools/eos-abi/include/{name}", f"ABI header {name}")
+        shutil.copy2(header, stage / "include" / name)
+
+
+@contextmanager
+def native_rust_dist_temp(build_dir: Path):
+    """Redirect bootstrap's hard-coded out/tmp to a private native filesystem."""
+    native_parent = Path("/tmp").resolve(strict=True)
+    if not native_parent.is_dir():
+        raise BuildError(f"native dist temp parent is not a directory: {native_parent}")
+
+    bootstrap_tmp = build_dir / "tmp"
+    with tempfile.TemporaryDirectory(
+        prefix="eos-sdk-rust-dist-", dir=native_parent
+    ) as temporary:
+        native_tmp = Path(temporary)
+        native_status = native_tmp.lstat()
+        if not stat.S_ISDIR(native_status.st_mode):
+            raise BuildError(f"native dist temp is not a real directory: {native_tmp}")
+        if native_status.st_uid != os.geteuid():
+            raise BuildError(f"native dist temp is not owned by this user: {native_tmp}")
+        if stat.S_IMODE(native_status.st_mode) & 0o077:
+            raise BuildError(f"native dist temp is not private: {native_tmp}")
+        resolved_native = native_tmp.resolve(strict=True)
+        if resolved_native.parent != native_parent:
+            raise BuildError(
+                f"native dist temp escaped its parent: {native_tmp} -> {resolved_native}"
+            )
+
+        try:
+            bootstrap_status = bootstrap_tmp.lstat()
+        except FileNotFoundError:
+            bootstrap_status = None
+        except OSError as error:
+            raise BuildError(
+                f"cannot inspect bootstrap temp path {bootstrap_tmp}: {error}"
+            ) from error
+        if bootstrap_status is not None:
+            if stat.S_ISLNK(bootstrap_status.st_mode):
+                raise BuildError(
+                    f"bootstrap temp path must not be a symlink: {bootstrap_tmp}"
+                )
+            if not stat.S_ISDIR(bootstrap_status.st_mode):
+                raise BuildError(
+                    f"bootstrap temp path is not a directory: {bootstrap_tmp}"
+                )
+            if bootstrap_status.st_uid != os.geteuid():
+                raise BuildError(
+                    f"bootstrap temp directory is not owned by this user: {bootstrap_tmp}"
+                )
+            try:
+                next(bootstrap_tmp.iterdir())
+            except StopIteration:
+                pass
+            except OSError as error:
+                raise BuildError(
+                    f"cannot inspect bootstrap temp directory {bootstrap_tmp}: {error}"
+                ) from error
+            else:
+                raise BuildError(
+                    f"bootstrap temp directory is not empty: {bootstrap_tmp}"
+                )
+            try:
+                bootstrap_tmp.rmdir()
+            except OSError as error:
+                raise BuildError(
+                    f"cannot remove empty bootstrap temp directory {bootstrap_tmp}: {error}"
+                ) from error
+
+        link_created = False
+        try:
+            try:
+                bootstrap_tmp.symlink_to(resolved_native, target_is_directory=True)
+                link_created = True
+            except OSError as error:
+                raise BuildError(
+                    f"cannot create bootstrap temp redirect {bootstrap_tmp}: {error}"
+                ) from error
+            try:
+                resolved_redirect = bootstrap_tmp.resolve(strict=True)
+            except OSError as error:
+                raise BuildError(
+                    f"cannot resolve bootstrap temp redirect {bootstrap_tmp}: {error}"
+                ) from error
+            if resolved_redirect != resolved_native:
+                raise BuildError(
+                    "bootstrap temp redirect resolved to an unexpected directory: "
+                    f"{bootstrap_tmp} -> {resolved_redirect}"
+                )
+            yield resolved_native
+        finally:
+            if link_created:
+                try:
+                    link_status = bootstrap_tmp.lstat()
+                except FileNotFoundError as error:
+                    raise BuildError(
+                        f"bootstrap temp redirect disappeared: {bootstrap_tmp}"
+                    ) from error
+                except OSError as error:
+                    raise BuildError(
+                        f"cannot inspect bootstrap temp redirect during cleanup: {error}"
+                    ) from error
+                if not stat.S_ISLNK(link_status.st_mode):
+                    raise BuildError(
+                        f"bootstrap temp redirect was replaced during use: {bootstrap_tmp}"
+                    )
+                try:
+                    final_target = bootstrap_tmp.resolve(strict=True)
+                    bootstrap_tmp.unlink()
+                except OSError as error:
+                    raise BuildError(
+                        f"cannot clean bootstrap temp redirect {bootstrap_tmp}: {error}"
+                    ) from error
+                if final_target != resolved_native:
+                    raise BuildError(
+                        "bootstrap temp redirect target changed during use: "
+                        f"{bootstrap_tmp} -> {final_target}"
+                    )
+
+
+def run_rust_build(source: Path, work: Path, stage: Path, host: str) -> Path:
+    x = rooted_file(source, "x", "Rust bootstrap driver")
+    if not os.access(x, os.X_OK):
+        raise BuildError(f"Rust bootstrap driver is not executable: {x}")
+    build_dir = work / "rust-build"
+    config = work / "bootstrap.toml"
+    template = rooted_file(
+        source,
+        "src/tools/eos-sdk/templates/config.toml",
+        "bootstrap template",
+    )
+    config.write_text(
+        render_bootstrap_config(template, host, stage / "arm-gnu", build_dir),
+        encoding="utf-8",
+    )
+    python_startup = work / "bootstrap-python"
+    python_startup.mkdir()
+    (python_startup / "sitecustomize.py").write_text(
+        """\
+import multiprocessing
+
+if "fork" in multiprocessing.get_all_start_methods():
+    multiprocessing.set_start_method("fork")
+""",
+        encoding="utf-8",
+    )
+    inherited_pythonpath = os.environ.get("PYTHONPATH")
+    pythonpath = str(python_startup)
+    if inherited_pythonpath:
+        pythonpath += os.pathsep + inherited_pythonpath
+    environment = build_environment(
+        {
+            "EOS_RUST_SDK_ROOT": str(stage),
+            "PATH": f"{stage / 'bin'}{os.pathsep}{os.environ.get('PATH', os.defpath)}",
+            "PYTHONPATH": pythonpath,
+        }
+    )
+    common = [
+        "--config", str(config),
+        "--build-dir", str(build_dir),
+        "--host", host,
+        "--stage", "2",
+    ]
+    run_checked(
+        [
+            str(x), "build", *common, "--target", TARGET,
+            "compiler/rustc", "src/tools/cargo", "src/tools/rustdoc",
+            "library/std", "library/test",
+        ],
+        "host compiler and EOS sysroot build",
+        cwd=source,
+        environment=environment,
+    )
+    stage2 = directory(str(build_dir / host / "stage2"), "stage2 host toolchain")
+    shutil.copytree(stage2, stage, dirs_exist_ok=True, symlinks=True)
+    for rust_src_name in ("src", "rustc-src"):
+        optional_rust_src = stage / "lib" / "rustlib" / rust_src_name
+        try:
+            rust_src_mode = optional_rust_src.lstat().st_mode
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(rust_src_mode):
+            optional_rust_src.unlink()
+        elif stat.S_ISDIR(rust_src_mode):
+            shutil.rmtree(optional_rust_src)
+        else:
+            raise BuildError(
+                f"optional stage2 {rust_src_name} path has unsupported type: "
+                f"{optional_rust_src}"
+            )
+    cargo_candidates = (
+        build_dir / host / "stage2-tools-bin" / "cargo",
+        stage2 / "bin" / "cargo",
+    )
+    cargo = next((candidate for candidate in cargo_candidates if candidate.is_file()), None)
+    if cargo is None:
+        raise BuildError("stage2 Cargo binary is missing")
+    shutil.copy2(cargo, stage / "bin" / "cargo")
+    with native_rust_dist_temp(build_dir):
+        run_checked(
+            [str(x), "dist", *common, "--target", host, "rustc", "cargo"],
+            "host Rust distribution build",
+            cwd=source,
+            environment=environment,
+        )
+        run_checked(
+            [str(x), "dist", *common, "--target", TARGET, "rust-std"],
+            "EOS Rust standard-library distribution build",
+            cwd=source,
+            environment=environment,
+        )
+    return build_dir
+
+
+def tree_hash(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*"), key=lambda entry: entry.relative_to(root).as_posix()):
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        if path.is_symlink():
+            digest.update(b"L\0" + relative + b"\0" + os.readlink(path).encode("utf-8") + b"\0")
+        elif path.is_file():
+            digest.update(b"F\0" + relative + b"\0")
+            with path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    digest.update(chunk)
+            digest.update(b"\0")
+        elif path.is_dir():
+            digest.update(b"D\0" + relative + b"\0")
+        else:
+            raise BuildError(f"unsupported filesystem entry in staged tree: {path}")
+    return digest.hexdigest()
+
+
+def file_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def toml_string(value: str) -> str:
+    return json.dumps(value, ensure_ascii=True)
+
+
+def write_manifests(
+    stage: Path,
+    build_dir: Path,
+    lock: dict,
+    revisions: dict[str, str],
+) -> None:
+    dist = directory(str(build_dir / "dist"), "Rust distribution directory")
+    archives = sorted(path for path in dist.iterdir() if path.is_file())
+    names = [path.name for path in archives]
+    if not any("rustc" in name for name in names):
+        raise BuildError("host rustc distribution archive is missing")
+    if not any("cargo" in name for name in names):
+        raise BuildError("host Cargo distribution archive is missing")
+    if not any("rust-std" in name and TARGET in name for name in names):
+        raise BuildError("EOS rust-std distribution archive is missing")
+    distribution_hashes = {path.name: file_hash(path) for path in archives}
+
+    source_manifest = f'''[rust]
+version = {toml_string(lock["rust"]["version"])}
+fork_commit = {toml_string(revisions["rust_fork"])}
+upstream_commit = {toml_string(revisions["rust_upstream"])}
+
+[libc]
+version = {toml_string(lock["libc"]["version"])}
+upstream_commit = {toml_string(revisions["libc_upstream"])}
+
+[backtrace]
+commit = {toml_string(revisions["backtrace"])}
+
+[arm_gnu]
+release = {toml_string(lock["arm_gnu"]["release"])}
+
+[eos_sdk]
+baseline = {toml_string(lock["eos_sdk"]["baseline"])}
+'''
+    revisions_path = stage / "share" / "source-revisions.toml"
+    revisions_path.parent.mkdir(parents=True, exist_ok=True)
+    revisions_path.write_text(source_manifest, encoding="utf-8")
+
+    lines = [
+        "[release]",
+        'version = "1.97.1"',
+        f"toolchain = {toml_string(TOOLCHAIN)}",
+        f"target = {toml_string(TARGET)}",
+        "layout_version = 1",
+        "",
+        "[input_hashes]",
+        'algorithm = "sha256-tree-v1"',
+        f'arm_gnu_installed = "{tree_hash(stage / "arm-gnu")}"',
+        f'eos_sdk = "{tree_hash(stage / "eos")}"',
+        "",
+        "[source_revisions]",
+    ]
+    lines.extend(f"{key} = {toml_string(value)}" for key, value in revisions.items())
+    lines.extend(["", "[distribution_hashes]"])
+    lines.extend(
+        f"{toml_string(name)} = {toml_string(digest)}"
+        for name, digest in distribution_hashes.items()
+    )
+    lines.append("")
+    (stage / "manifests" / "release-manifest.toml").write_text(
+        "\n".join(lines), encoding="utf-8"
+    )
+
+
+def validate_staged_sdk(stage: Path) -> None:
+    try:
+        layout = tomllib.loads(
+            rooted_file(stage, "manifests/sdk-layout.toml", "SDK layout manifest").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
+        raise BuildError(f"unable to validate staged SDK layout: {error}") from error
+    required = layout.get("required", {})
+    for tool in required.get("host_tools", []):
+        path = rooted_file(stage, f"bin/{tool}", f"host tool {tool}")
+        if not os.access(path, os.X_OK):
+            raise BuildError(f"staged host tool is not executable: {path}")
+    for relative in required.get("paths", []):
+        path = rooted_file(stage, relative, f"required staged artifact {relative}")
+        if relative.startswith("bin/") and not os.access(path, os.X_OK):
+            raise BuildError(f"staged SDK tool is not executable: {path}")
+    libdir = directory(
+        str(stage / "lib" / "rustlib" / TARGET / "lib"),
+        "EOS target sysroot library directory",
+    )
+    for library in required.get("target_libraries", []):
+        if not list(libdir.glob(f"lib{library}-*.rlib")):
+            raise BuildError(f"staged SDK is missing target library {library}")
+    if not list(libdir.glob("libstd-*.so")):
+        raise BuildError("staged SDK is missing shared target libstd")
+    validate_tree_links(stage, "staged SDK")
+
+
+def parse_arguments(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="build-eos-sdk")
+    parser.add_argument("--source-root", required=True)
+    parser.add_argument("--arm-gnu-root", required=True)
+    parser.add_argument("--eos-sdk-root", required=True)
+    parser.add_argument("--output", required=True)
+    return parser.parse_args(arguments)
+
+
+def build(arguments: argparse.Namespace) -> Path:
+    source = directory(arguments.source_root, "Rust source root")
+    arm = directory(arguments.arm_gnu_root, "ARM GNU installation")
+    eos = directory(arguments.eos_sdk_root, "EOS SDK input")
+    lock = load_lock(source)
+    arm_files = validate_inputs(arm, eos)
+    del arm_files
+    git = command_tool("git")
+    cmake = command_tool("cmake")
+    ctest = command_tool("ctest")
+    revisions = source_revisions(source, git, lock)
+
+    output_argument = Path(arguments.output)
+    if not output_argument.is_absolute():
+        output_argument = Path.cwd() / output_argument
+    output = output_argument.resolve(strict=False)
+    parent = output.parent.resolve(strict=True)
+    if output.exists():
+        raise BuildError(f"output already exists: {output}")
+    for input_root in (source, arm, eos):
+        try:
+            output.relative_to(input_root)
+        except ValueError:
+            continue
+        raise BuildError(f"output cannot be nested beneath an input tree: {output}")
+
+    with tempfile.TemporaryDirectory(prefix=".eos-sdk-build-", dir=parent) as temporary:
+        work = Path(temporary)
+        stage = work / "sdk"
+        stage.mkdir()
+        stage_arm_toolchain(arm, stage)
+        stage_static_assets(source, eos, stage)
+        build_native_abi(source, arm, eos, work, stage, cmake, ctest)
+        with tempfile.TemporaryDirectory(
+            prefix=".eos-sdk-rust-build-", dir=source
+        ) as rust_temporary:
+            rust_work = Path(rust_temporary).resolve(strict=True)
+            try:
+                rust_work.relative_to(source)
+            except ValueError as error:
+                raise BuildError(
+                    f"private Rust build directory escaped the source root: {rust_work}"
+                ) from error
+            rust_build = run_rust_build(
+                source, rust_work, stage, host_triple()
+            )
+            write_manifests(stage, rust_build, lock, revisions)
+        validate_staged_sdk(stage)
+        os.replace(stage, output)
+    return output
+
+
+def main(arguments: list[str]) -> int:
+    parsed = parse_arguments(arguments)
+    output = build(parsed)
+    print(f"built EOS Rust SDK: {output}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except BuildError as error:
+        print(f"build-eos-sdk: {error}", file=sys.stderr)
+        raise SystemExit(2)

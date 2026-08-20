@@ -256,6 +256,7 @@ fn test_render_short_html() {
     create_default_session_globals_then(|| {
         assert_eq!(word_cfg("unix").render_short_html(), "Unix");
         assert_eq!(name_value_cfg("target_os", "macos").render_short_html(), "macOS");
+        assert_eq!(name_value_cfg("target_os", "eos").render_short_html(), "EOS");
         assert_eq!(name_value_cfg("target_pointer_width", "16").render_short_html(), "16-bit");
         assert_eq!(name_value_cfg("target_endian", "little").render_short_html(), "Little-endian");
         assert_eq!((!word_cfg("windows")).render_short_html(), "Non-Windows");
@@ -317,6 +318,10 @@ fn test_render_long_html() {
         assert_eq!(
             name_value_cfg("target_os", "wasi").render_long_html(),
             "Available on <strong>WASI</strong> only."
+        );
+        assert_eq!(
+            name_value_cfg("target_os", "eos").render_long_html(),
+            "Available on <strong>EOS</strong> only."
         );
         assert_eq!(
             name_value_cfg("target_pointer_width", "16").render_long_html(),

@@ -21,6 +21,7 @@
 #![feature(file_buffered)]
 #![feature(internal_output_capture)]
 #![feature(io_const_error)]
+#![cfg_attr(target_os = "eos", feature(restricted_std))]
 #![feature(staged_api)]
 #![feature(process_exitcode_internals)]
 #![feature(panic_can_unwind)]

@@ -1,5 +1,5 @@
 use std::any::Any;
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "eos")))]
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 
@@ -110,6 +110,9 @@ pub(crate) fn get_result_from_exit_code(
     time_opts: Option<&time::TestTimeOptions>,
     exec_time: Option<&time::TestExecTime>,
 ) -> TestResult {
+    #[cfg(target_os = "eos")]
+    let result = eos_result_from_status(status.code(), &status);
+    #[cfg(not(target_os = "eos"))]
     let result = match status.code() {
         Some(TR_OK) => TestResult::TrOk,
         #[cfg(windows)]
@@ -146,4 +149,75 @@ pub(crate) fn get_result_from_exit_code(
     }
 
     result
+}
+
+#[cfg(any(test, target_os = "eos"))]
+fn eos_result_from_status(
+    code: Option<i32>,
+    status: &impl std::fmt::Display,
+) -> TestResult {
+    match code {
+        Some(TR_OK) => TestResult::TrOk,
+        Some(code) => TestResult::TrFailedMsg(format!("got unexpected return code {code}")),
+        None => TestResult::TrFailedMsg(format!("child process {status}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TR_OK, TestResult, eos_result_from_status};
+    use std::fmt;
+
+    struct EosStatus {
+        kind: &'static str,
+        code: i32,
+        reserved: [u32; 6],
+    }
+
+    impl fmt::Display for EosStatus {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self.kind {
+                "exited" => write!(formatter, "exit status: {}", self.code),
+                "terminated" => {
+                    write!(formatter, "terminated with EOS status: {}", self.code)
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn eos_exited_status_uses_the_full_exit_code() {
+        let reserved = [1, 2, 3, 4, 5, 6];
+        let ok = EosStatus { kind: "exited", code: TR_OK, reserved };
+        let failed = EosStatus { kind: "exited", code: 257, reserved };
+
+        assert_eq!(eos_result_from_status(Some(ok.code), &ok), TestResult::TrOk);
+        assert_eq!(
+            eos_result_from_status(Some(failed.code), &failed),
+            TestResult::TrFailedMsg("got unexpected return code 257".into()),
+        );
+        assert_eq!(ok.reserved, reserved);
+        assert_eq!(failed.reserved, reserved);
+    }
+
+    #[test]
+    fn eos_terminated_status_is_truthful_without_inventing_a_signal() {
+        let status = EosStatus {
+            kind: "terminated",
+            code: 0x1234,
+            reserved: [7, 8, 9, 10, 11, 12],
+        };
+
+        let result = eos_result_from_status(None, &status);
+
+        assert_eq!(
+            result,
+            TestResult::TrFailedMsg(
+                "child process terminated with EOS status: 4660".into(),
+            ),
+        );
+        assert!(!format!("{result:?}").contains("signal"));
+        assert_eq!(status.reserved, [7, 8, 9, 10, 11, 12]);
+    }
 }

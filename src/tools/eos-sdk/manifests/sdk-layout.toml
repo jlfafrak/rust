@@ -1,0 +1,29 @@
+[sdk]
+layout_version = 1
+version = "1.97.1"
+toolchain = "eos-1.97.1"
+target = "armv7a-unknown-eos-eabi"
+
+[required]
+host_tools = ["rustc", "cargo", "rustdoc"]
+target_libraries = ["core", "alloc", "std", "panic_unwind", "proc_macro", "test"]
+paths = [
+    "bin/eos-rust-link",
+    "bin/eos-elf-validate",
+    "bin/eos-auth-package",
+    "lib/libeos_rust_abi.a",
+    "include/eos_rust_abi.h",
+    "include/eos_rust_abi_version.h",
+    "linker/app_linker_script.ld",
+    "manifests/toolchain.lock.toml",
+    "manifests/allowed-dynamic-symbols.txt",
+    "manifests/release-manifest.toml",
+    "share/templates/config.toml",
+    "share/templates/cargo-config.toml",
+    "share/licenses/rust/COPYRIGHT",
+    "share/licenses/rust/LICENSE-APACHE",
+    "share/licenses/rust/LICENSE-MIT",
+    "share/source-revisions.toml",
+    "share/examples/hello-std/Cargo.toml",
+    "share/examples/hello-std/src/main.rs",
+]
