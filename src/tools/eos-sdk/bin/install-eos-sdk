@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
+import re
 import shutil
+import stat
 import subprocess
 import sys
 import tomllib
@@ -13,10 +16,57 @@ import tomllib
 
 TARGET = "armv7a-unknown-eos-eabi"
 TOOLCHAIN = "eos-1.97.1"
+HOST_TOOLS = ("rustc", "cargo", "rustdoc")
+TARGET_LIBRARIES = ("core", "alloc", "std", "panic_unwind", "proc_macro", "test")
+REQUIRED_PATHS = (
+    "bin/eos-rust-link",
+    "bin/eos-elf-validate",
+    "bin/eos-auth-package",
+    "lib/libeos_rust_abi.a",
+    "include/eos_rust_abi.h",
+    "include/eos_rust_abi_version.h",
+    "eos/martos/lib/libmartos_app.so",
+    "eos/martos/lib/libmartos_app.so.1.0",
+    "eos/martos/lib/libmartos_c++.a",
+    "eos/martos/lib/libmartos_c++abi.a",
+    "eos/martos/lib/libmartos_c.a",
+    "linker/app_linker_script.ld",
+    "manifests/toolchain.lock.toml",
+    "manifests/allowed-dynamic-symbols.txt",
+    "manifests/release-manifest.toml",
+    "share/templates/config.toml",
+    "share/templates/cargo-config.toml",
+    "share/licenses/rust/COPYRIGHT",
+    "share/licenses/rust/LICENSE-APACHE",
+    "share/licenses/rust/LICENSE-MIT",
+    "share/source-revisions.toml",
+    "share/examples/hello-std/Cargo.toml",
+    "share/examples/hello-std/src/main.rs",
+)
+EOS_RUNTIME_PATHS = tuple(
+    path.removeprefix("eos/") for path in REQUIRED_PATHS if path.startswith("eos/")
+)
+HEX_40 = re.compile(r"[0-9a-f]{40}")
+HEX_64 = re.compile(r"[0-9a-f]{64}")
+ARCHIVE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*\.tar\.(?:xz|gz)")
 
 
 class InstallError(Exception):
     pass
+
+
+def matches_hex(value: object, pattern: re.Pattern[str]) -> bool:
+    return isinstance(value, str) and pattern.fullmatch(value) is not None
+
+
+class ValidatedSdk:
+    __slots__ = ("root", "device", "inode", "fingerprint")
+
+    def __init__(self, root: Path, device: int, inode: int, fingerprint: str):
+        self.root = root
+        self.device = device
+        self.inode = inode
+        self.fingerprint = fingerprint
 
 
 def rooted_file(root: Path, relative: str, description: str) -> Path:
@@ -51,31 +101,169 @@ def rooted_directory(root: Path, relative: str, description: str) -> Path:
     return resolved
 
 
+def validate_tree_entries(root: Path, description: str) -> None:
+    for path in root.rglob("*"):
+        try:
+            mode = path.lstat().st_mode
+        except OSError as error:
+            raise InstallError(f"cannot inspect {description} entry {path}: {error}") from error
+        if stat.S_ISLNK(mode):
+            try:
+                resolved = path.resolve(strict=True)
+                resolved.relative_to(root)
+            except ValueError as error:
+                root_name = "SDK root" if description == "SDK" else f"{description} root"
+                raise InstallError(
+                    f"{description} symlink resolves outside the {root_name}: {path}"
+                ) from error
+            except OSError as error:
+                raise InstallError(f"broken {description} symlink: {path}: {error}") from error
+        elif not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+            raise InstallError(f"unsupported {description} filesystem entry: {path}")
+
+
+def package_fingerprint(root: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        root_mode = stat.S_IMODE(root.stat().st_mode)
+        digest.update(f"R\0{root_mode:o}\0".encode("ascii"))
+        paths = sorted(
+            root.rglob("*"), key=lambda entry: entry.relative_to(root).as_posix()
+        )
+        for path in paths:
+            relative = path.relative_to(root).as_posix().encode("utf-8")
+            status = path.lstat()
+            mode = f"{stat.S_IMODE(status.st_mode):o}".encode("ascii")
+            if stat.S_ISLNK(status.st_mode):
+                target = os.readlink(path).encode("utf-8")
+                digest.update(b"L\0" + relative + b"\0" + mode + b"\0" + target + b"\0")
+            elif stat.S_ISREG(status.st_mode):
+                digest.update(b"F\0" + relative + b"\0" + mode + b"\0")
+                with path.open("rb") as source:
+                    while chunk := source.read(1024 * 1024):
+                        digest.update(chunk)
+                digest.update(b"\0")
+            elif stat.S_ISDIR(status.st_mode):
+                digest.update(b"D\0" + relative + b"\0" + mode + b"\0")
+            else:
+                raise InstallError(f"unsupported SDK filesystem entry: {path}")
+    except OSError as error:
+        raise InstallError(f"unable to fingerprint SDK package: {error}") from error
+    return digest.hexdigest()
+
+
+def validate_eos_runtime_closure(root: Path) -> None:
+    allowed: set[str] = set()
+    for relative in EOS_RUNTIME_PATHS:
+        path = Path(relative)
+        allowed.add(path.as_posix())
+        allowed.update(
+            parent.as_posix()
+            for parent in path.parents
+            if parent != Path(".")
+        )
+    actual = {path.relative_to(root).as_posix() for path in root.rglob("*")}
+    if actual != allowed:
+        raise InstallError("EOS package does not match the exact runtime closure")
+
+
 def load_layout(root: Path) -> dict:
     path = rooted_file(root, "manifests/sdk-layout.toml", "SDK layout manifest")
     try:
         layout = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
         raise InstallError(f"unable to parse SDK layout manifest: {error}") from error
-    sdk = layout.get("sdk", {})
-    if sdk.get("layout_version") != 1:
-        raise InstallError("unsupported SDK layout version")
-    if sdk.get("toolchain") != TOOLCHAIN or sdk.get("target") != TARGET:
-        raise InstallError("SDK layout identifies the wrong toolchain or target")
-    required = layout.get("required")
-    if not isinstance(required, dict):
-        raise InstallError("SDK layout has no required-artifact table")
+    expected_sdk = {
+        "layout_version": 1,
+        "version": "1.97.1",
+        "toolchain": TOOLCHAIN,
+        "target": TARGET,
+    }
+    expected_required = {
+        "host_tools": list(HOST_TOOLS),
+        "target_libraries": list(TARGET_LIBRARIES),
+        "paths": list(REQUIRED_PATHS),
+    }
+    if (
+        set(layout) != {"sdk", "required"}
+        or layout.get("sdk") != expected_sdk
+        or layout.get("required") != expected_required
+    ):
+        raise InstallError("SDK layout does not match the exact Task 16 contract")
     return layout
 
 
-def validate_sdk(argument: Path) -> Path:
+def load_release_manifest(root: Path) -> dict:
+    path = rooted_file(root, "manifests/release-manifest.toml", "release manifest")
+    try:
+        manifest = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
+        raise InstallError(f"unable to parse release manifest: {error}") from error
+    if set(manifest) != {
+        "release",
+        "input_hashes",
+        "source_revisions",
+        "distribution_hashes",
+    }:
+        raise InstallError("release manifest has unexpected top-level schema")
+    if manifest.get("release") != {
+        "version": "1.97.1",
+        "toolchain": TOOLCHAIN,
+        "target": TARGET,
+        "layout_version": 1,
+    }:
+        raise InstallError("release manifest identifies the wrong release")
+
+    input_hashes = manifest.get("input_hashes")
+    if (
+        not isinstance(input_hashes, dict)
+        or set(input_hashes) != {"algorithm", "arm_gnu_installed", "eos_sdk"}
+        or input_hashes.get("algorithm") != "sha256-tree-v1"
+        or not matches_hex(input_hashes.get("arm_gnu_installed"), HEX_64)
+        or not matches_hex(input_hashes.get("eos_sdk"), HEX_64)
+    ):
+        raise InstallError("release manifest input hashes are malformed")
+
+    revisions = manifest.get("source_revisions")
+    if (
+        not isinstance(revisions, dict)
+        or set(revisions)
+        != {"rust_fork", "rust_upstream", "libc_upstream", "backtrace"}
+        or any(not matches_hex(value, HEX_40) for value in revisions.values())
+        or revisions.get("rust_upstream") != "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
+        or revisions.get("libc_upstream") != "71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8"
+        or revisions.get("backtrace") != "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd"
+    ):
+        raise InstallError("release manifest source revisions are malformed")
+
+    distributions = manifest.get("distribution_hashes")
+    if (
+        not isinstance(distributions, dict)
+        or not distributions
+        or any(
+            not isinstance(name, str)
+            or ARCHIVE_NAME.fullmatch(name) is None
+            or not matches_hex(digest, HEX_64)
+            for name, digest in distributions.items()
+        )
+        or not any("rustc" in name for name in distributions)
+        or not any("cargo" in name for name in distributions)
+        or not any("rust-std" in name and TARGET in name for name in distributions)
+    ):
+        raise InstallError("release manifest distribution archive names or digests are malformed")
+    return manifest
+
+
+def validate_sdk(argument: Path) -> ValidatedSdk:
     try:
         root = argument.resolve(strict=True)
     except OSError as error:
         raise InstallError(f"SDK root is unavailable: {argument}: {error}") from error
     if not root.is_dir():
         raise InstallError(f"SDK root is not a directory: {root}")
+    validate_tree_entries(root, "SDK")
     layout = load_layout(root)
+    load_release_manifest(root)
     required = layout["required"]
     host_tools = required.get("host_tools")
     target_libraries = required.get("target_libraries")
@@ -91,8 +279,11 @@ def validate_sdk(argument: Path) -> Path:
         artifact = rooted_file(root, relative, f"required artifact {relative}")
         if relative.startswith("bin/") and not os.access(artifact, os.X_OK):
             raise InstallError(f"required tool is not executable: {artifact}")
-    rooted_directory(root, "arm-gnu", "ARM GNU installation")
-    rooted_directory(root, "eos", "EOS SDK input")
+    arm_root = rooted_directory(root, "arm-gnu", "ARM GNU installation")
+    eos_root = rooted_directory(root, "eos", "EOS SDK runtime")
+    validate_tree_entries(arm_root, "ARM GNU installation")
+    validate_tree_entries(eos_root, "EOS SDK runtime tree")
+    validate_eos_runtime_closure(eos_root)
 
     library_directory = rooted_directory(
         root, f"lib/rustlib/{TARGET}/lib", "EOS target sysroot library directory"
@@ -108,15 +299,41 @@ def validate_sdk(argument: Path) -> Path:
         raise InstallError("missing target shared library std")
     for library in shared_std:
         rooted_file(root, str(library.relative_to(root)), "target shared library std")
-    return root
+    try:
+        before = root.stat()
+    except OSError as error:
+        raise InstallError(f"unable to capture SDK root identity: {error}") from error
+    fingerprint = package_fingerprint(root)
+    try:
+        after = root.stat()
+    except OSError as error:
+        raise InstallError(f"SDK root changed during validation: {error}") from error
+    if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+        raise InstallError("SDK root identity changed during validation")
+    return ValidatedSdk(root, before.st_dev, before.st_ino, fingerprint)
 
 
 def quoted_for_shell(path: Path) -> str:
     return "'" + str(path).replace("'", "'\"'\"'") + "'"
 
 
-def install(root: Path) -> None:
+def revalidate_sdk(validated: ValidatedSdk) -> None:
+    try:
+        status = validated.root.stat()
+    except OSError as error:
+        raise InstallError(f"SDK root changed after validation: {error}") from error
+    if (status.st_dev, status.st_ino) != (validated.device, validated.inode):
+        raise InstallError("SDK root identity changed after validation")
+    if package_fingerprint(validated.root) != validated.fingerprint:
+        raise InstallError("SDK package changed after validation")
+
+
+def install(validated: ValidatedSdk) -> None:
     rustup = shutil.which("rustup")
+    # This closes the controllable validation/action window. A same-user actor can
+    # still race the few instructions between this check and exec/printing.
+    revalidate_sdk(validated)
+    root = validated.root
     if rustup is None:
         bin_directory = root / "bin"
         print("rustup was not found; use the EOS SDK explicitly:")
@@ -138,8 +355,8 @@ def main(arguments: list[str]) -> int:
     if len(arguments) > 1 or (arguments and arguments[0].startswith("-")):
         raise InstallError("usage: install-eos-sdk [SDK_ROOT]")
     candidate = Path(arguments[0]) if arguments else Path(__file__).resolve().parent.parent
-    root = validate_sdk(candidate)
-    install(root)
+    validated = validate_sdk(candidate)
+    install(validated)
     return 0
 
 

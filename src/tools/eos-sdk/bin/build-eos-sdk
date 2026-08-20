@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -22,6 +24,7 @@ import tomllib
 TARGET = "armv7a-unknown-eos-eabi"
 TOOLCHAIN = "eos-1.97.1"
 GCC_VERSION = "14.3.1"
+EOS_RELEASE_HEADING = "## Build 14.0.39"
 BACKTRACE_REVISION = "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd"
 EXPECTED_LOCK = {
     ("rust", "version"): "1.97.1",
@@ -39,6 +42,26 @@ TARGET_FLAGS = (
     "-mfpu=neon-vfpv3",
     "-mfloat-abi=softfp",
 )
+EOS_RUNTIME_LIBRARIES = (
+    "martos/lib/libmartos_app.so",
+    "martos/lib/libmartos_app.so.1.0",
+    "martos/lib/libmartos_c++.a",
+    "martos/lib/libmartos_c++abi.a",
+    "martos/lib/libmartos_c.a",
+)
+LIBC_PROVENANCE_METADATA = {
+    "source": "https://github.com/rust-lang/libc.git",
+    "tree": "68d565ea31258a8056ada681c1e0ec90dcb23988",
+    "files": "508",
+}
+LIBC_EOS_HASHES = {
+    "build.rs": "f47a9b616c619130b6be76652b6f398b0b15ee99458eee9e2905a58210d9ddad",
+    "src/lib.rs": "9e00f607791a159309dba5f3772c452bcff6068beb965aa77a32b730f0d95b44",
+    "src/new/mod.rs": "d4018f14c7b99604e0c31c69db8808de6d41d83d373c0a49be8d0b4f62736f85",
+    "src/eos/mod.rs": "59bbbabedb07e8f563fbda2970a766ed0175a608d3b3e08c8cf6d0a2b69101a0",
+}
+LIBC_MODIFIED_UPSTREAM_PATHS = {"build.rs", "src/lib.rs", "src/new/mod.rs"}
+LIBC_ADDED_EOS_PATHS = {"src/eos/mod.rs"}
 
 
 class BuildError(Exception):
@@ -154,19 +177,126 @@ def run_checked(
     return result.stdout.strip() if capture and result.stdout else ""
 
 
-def git_output(git: Path, root: Path, arguments: list[str], description: str) -> str:
-    output = run_checked(
+def git_text(git: Path, root: Path, arguments: list[str], description: str) -> str:
+    return run_checked(
         [str(git), "-C", str(root), *arguments],
         description,
         environment=build_environment(),
         capture=True,
     )
+
+
+def git_output(git: Path, root: Path, arguments: list[str], description: str) -> str:
+    output = git_text(git, root, arguments, description)
     if re.fullmatch(r"[0-9a-f]{40}", output) is None:
         raise BuildError(f"{description} returned an invalid revision: {output!r}")
     return output
 
 
+def require_clean_git_tree(git: Path, root: Path, description: str) -> None:
+    status = git_text(
+        git,
+        root,
+        ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"],
+        f"{description} status query",
+    )
+    if status:
+        raise BuildError(f"{description} tree must be clean: {status.splitlines()[0]}")
+
+
+def validate_libc_provenance(source: Path, lock: dict) -> None:
+    manifest = rooted_file(
+        source,
+        "tests/eos/fixtures/libc-0.2.185-71d5bfcc.sha256",
+        "vendored libc provenance manifest",
+    )
+    metadata: dict[str, str] = {}
+    upstream: dict[str, str] = {}
+    try:
+        lines = manifest.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise BuildError(f"unable to read vendored libc provenance manifest: {error}") from error
+    for line_number, raw in enumerate(lines, 1):
+        if raw.startswith("# "):
+            try:
+                key, value = raw[2:].split("=", 1)
+            except ValueError as error:
+                raise BuildError(
+                    f"malformed vendored libc provenance metadata on line {line_number}"
+                ) from error
+            if key in metadata:
+                raise BuildError(f"duplicate vendored libc provenance metadata: {key}")
+            metadata[key] = value
+            continue
+        if not raw:
+            continue
+        try:
+            digest, relative = raw.split("  ", 1)
+        except ValueError as error:
+            raise BuildError(
+                f"malformed vendored libc provenance entry on line {line_number}"
+            ) from error
+        relative_path = Path(relative)
+        if (
+            re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            or relative_path.is_absolute()
+            or ".." in relative_path.parts
+            or relative_path.as_posix() != relative
+            or relative in upstream
+        ):
+            raise BuildError(
+                f"invalid vendored libc provenance entry on line {line_number}"
+            )
+        upstream[relative] = digest
+
+    expected_metadata = {
+        **LIBC_PROVENANCE_METADATA,
+        "commit": lock["libc"]["upstream_commit"],
+    }
+    if metadata != expected_metadata or len(upstream) != 508:
+        raise BuildError("vendored libc provenance metadata does not match the locked commit")
+
+    vendor = directory(
+        str(source / "src" / "tools" / "eos-libc"), "vendored libc source"
+    )
+    if (vendor / ".git").exists():
+        raise BuildError("vendored libc source must not contain .git")
+    actual: set[str] = set()
+    for path in vendor.rglob("*"):
+        try:
+            mode = path.lstat().st_mode
+        except OSError as error:
+            raise BuildError(f"unable to inspect vendored libc path {path}: {error}") from error
+        relative = path.relative_to(vendor).as_posix()
+        if stat.S_ISLNK(mode):
+            raise BuildError(f"vendored libc source must not contain symlinks: {relative}")
+        if stat.S_ISDIR(mode):
+            continue
+        if not stat.S_ISREG(mode):
+            raise BuildError(f"vendored libc source has unsupported entry: {relative}")
+        actual.add(relative)
+
+    expected = set(upstream) | LIBC_ADDED_EOS_PATHS
+    if actual != expected:
+        missing = sorted(expected - actual)
+        unexpected = sorted(actual - expected)
+        raise BuildError(
+            "vendored libc paths do not match provenance fixture: "
+            f"missing={missing[:3]!r}; unexpected={unexpected[:3]!r}"
+        )
+    for relative in sorted(expected):
+        expected_digest = (
+            LIBC_EOS_HASHES[relative]
+            if relative in LIBC_EOS_HASHES
+            else upstream[relative]
+        )
+        actual_digest = file_hash(vendor / relative)
+        if actual_digest != expected_digest:
+            raise BuildError(f"vendored libc content does not match provenance: {relative}")
+
+
 def source_revisions(source: Path, git: Path, lock: dict) -> dict[str, str]:
+    require_clean_git_tree(git, source, "Rust source")
     upstream = lock["rust"]["upstream_commit"]
     run_checked(
         [str(git), "-C", str(source), "merge-base", "--is-ancestor", upstream, "HEAD"],
@@ -175,7 +305,19 @@ def source_revisions(source: Path, git: Path, lock: dict) -> dict[str, str]:
         capture=True,
     )
     rust_fork = git_output(git, source, ["rev-parse", "HEAD"], "Rust fork revision query")
+    gitlink = git_text(
+        git,
+        source,
+        ["ls-tree", "HEAD", "library/backtrace"],
+        "backtrace gitlink query",
+    )
+    expected_gitlink = f"160000 commit {BACKTRACE_REVISION}\tlibrary/backtrace"
+    if gitlink != expected_gitlink:
+        raise BuildError(
+            f"backtrace gitlink must be {BACKTRACE_REVISION}, found {gitlink!r}"
+        )
     backtrace_root = directory(str(source / "library" / "backtrace"), "backtrace source")
+    require_clean_git_tree(git, backtrace_root, "backtrace source")
     backtrace = git_output(
         git,
         backtrace_root,
@@ -186,6 +328,7 @@ def source_revisions(source: Path, git: Path, lock: dict) -> dict[str, str]:
         raise BuildError(
             f"backtrace revision must be {BACKTRACE_REVISION}, found {backtrace}"
         )
+    validate_libc_provenance(source, lock)
     return {
         "rust_fork": rust_fork,
         "rust_upstream": upstream,
@@ -213,13 +356,20 @@ def validate_inputs(arm: Path, eos: Path) -> dict[str, Path]:
     for relative in (
         "martos/inc/martos_smp.h",
         "libc/include/errno.h",
-        "martos/lib/libmartos_app.so",
-        "martos/lib/libmartos_app.so.1.0",
-        "martos/lib/libmartos_c++.a",
-        "martos/lib/libmartos_c++abi.a",
-        "martos/lib/libmartos_c.a",
+        *EOS_RUNTIME_LIBRARIES,
     ):
         rooted_file(eos, relative, f"EOS SDK artifact {relative}")
+    release_notes = rooted_file(
+        eos, "Release-Notes.md", "EOS SDK Release-Notes.md"
+    )
+    try:
+        release_note_lines = release_notes.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise BuildError(f"unable to read EOS SDK Release-Notes.md: {error}") from error
+    if EOS_RELEASE_HEADING not in release_note_lines:
+        raise BuildError(
+            f"EOS SDK Release-Notes.md must contain exact heading {EOS_RELEASE_HEADING!r}"
+        )
     version = run_checked(
         [str(arm_files["gcc"]), "-dumpfullversion"],
         "ARM GNU version query",
@@ -287,7 +437,8 @@ def copy_source_file(source: Path, relative: str, destination: Path) -> None:
 
 
 def stage_static_assets(source: Path, eos: Path, stage: Path) -> None:
-    shutil.copytree(eos, stage / "eos", symlinks=True)
+    for relative in EOS_RUNTIME_LIBRARIES:
+        copy_file_beneath(eos, Path(relative), stage / "eos")
     sdk_source = source / "src" / "tools" / "eos-sdk"
     for name in (
         "eos-rust-link",
@@ -701,6 +852,7 @@ def write_manifests(
     build_dir: Path,
     lock: dict,
     revisions: dict[str, str],
+    input_hashes: dict[str, str],
 ) -> None:
     dist = directory(str(build_dir / "dist"), "Rust distribution directory")
     archives = sorted(path for path in dist.iterdir() if path.is_file())
@@ -744,8 +896,8 @@ baseline = {toml_string(lock["eos_sdk"]["baseline"])}
         "",
         "[input_hashes]",
         'algorithm = "sha256-tree-v1"',
-        f'arm_gnu_installed = "{tree_hash(stage / "arm-gnu")}"',
-        f'eos_sdk = "{tree_hash(stage / "eos")}"',
+        f'arm_gnu_installed = "{input_hashes["arm_gnu_installed"]}"',
+        f'eos_sdk = "{input_hashes["eos_sdk"]}"',
         "",
         "[source_revisions]",
     ]
@@ -791,6 +943,47 @@ def validate_staged_sdk(stage: Path) -> None:
     validate_tree_links(stage, "staged SDK")
 
 
+def publish_no_replace(stage: Path, output: Path) -> None:
+    if not sys.platform.startswith("linux"):
+        raise BuildError("atomic no-replace publication is unavailable on this platform")
+    try:
+        renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+    except (OSError, AttributeError) as error:
+        raise BuildError("atomic no-replace publication is unavailable") from error
+    renameat2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    result = renameat2(
+        -100,
+        os.fsencode(stage),
+        -100,
+        os.fsencode(output),
+        1,
+    )
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number == errno.EEXIST:
+        raise BuildError(f"output collision detected during publication: {output}")
+    unavailable = {
+        errno.ENOSYS,
+        errno.EINVAL,
+        errno.ENOTSUP,
+        getattr(errno, "EOPNOTSUPP", errno.ENOTSUP),
+    }
+    if error_number in unavailable:
+        raise BuildError("atomic no-replace publication is unavailable")
+    raise BuildError(
+        f"atomic no-replace publication failed: {os.strerror(error_number)}"
+    )
+
+
 def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="build-eos-sdk")
     parser.add_argument("--source-root", required=True)
@@ -807,6 +1000,10 @@ def build(arguments: argparse.Namespace) -> Path:
     lock = load_lock(source)
     arm_files = validate_inputs(arm, eos)
     del arm_files
+    input_hashes = {
+        "arm_gnu_installed": tree_hash(arm),
+        "eos_sdk": tree_hash(eos),
+    }
     git = command_tool("git")
     cmake = command_tool("cmake")
     ctest = command_tool("ctest")
@@ -815,9 +1012,11 @@ def build(arguments: argparse.Namespace) -> Path:
     output_argument = Path(arguments.output)
     if not output_argument.is_absolute():
         output_argument = Path.cwd() / output_argument
-    output = output_argument.resolve(strict=False)
-    parent = output.parent.resolve(strict=True)
-    if output.exists():
+    if not output_argument.name:
+        raise BuildError(f"output must name a new SDK directory: {output_argument}")
+    parent = output_argument.parent.resolve(strict=True)
+    output = parent / output_argument.name
+    if os.path.lexists(output):
         raise BuildError(f"output already exists: {output}")
     for input_root in (source, arm, eos):
         try:
@@ -846,9 +1045,22 @@ def build(arguments: argparse.Namespace) -> Path:
             rust_build = run_rust_build(
                 source, rust_work, stage, host_triple()
             )
-            write_manifests(stage, rust_build, lock, revisions)
+            write_manifests(stage, rust_build, lock, revisions, input_hashes)
         validate_staged_sdk(stage)
-        os.replace(stage, output)
+        final_input_hashes = {
+            "arm_gnu_installed": tree_hash(arm),
+            "eos_sdk": tree_hash(eos),
+        }
+        changed_inputs = [
+            name
+            for name, expected in input_hashes.items()
+            if final_input_hashes[name] != expected
+        ]
+        if changed_inputs:
+            raise BuildError(
+                "input tree changed during the build: " + ", ".join(changed_inputs)
+            )
+        publish_no_replace(stage, output)
     return output
 
 
