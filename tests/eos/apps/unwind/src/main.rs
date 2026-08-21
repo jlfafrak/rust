@@ -1,6 +1,7 @@
 #![feature(restricted_std)]
 #![cfg_attr(target_os = "eos", deny(ffi_unwind_calls))]
 
+use std::backtrace::{Backtrace, BacktraceStatus};
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -31,6 +32,19 @@ fn main() {
             .expect("TLS cleanup panic must abort before join returns");
         panic!("TLS cleanup panic did not abort");
     }
+
+    let backtrace = Backtrace::force_capture();
+    let formatted = format!("{backtrace}");
+    assert_eq!(
+        backtrace.status(),
+        BacktraceStatus::Captured,
+        "forced backtrace must be captured"
+    );
+    assert!(
+        !formatted.trim().is_empty(),
+        "captured backtrace must contain printable evidence"
+    );
+    println!("EOS Rust backtrace probe:\n{formatted}");
 
     let dropped = Cell::new(false);
     let result = catch_unwind(AssertUnwindSafe(|| {

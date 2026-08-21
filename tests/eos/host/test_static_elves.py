@@ -21,7 +21,16 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[3]
 TARGET = "armv7a-unknown-eos-eabi"
-APPLICATIONS = ("filesystem", "threads-tls", "network", "process", "ffi-abi")
+APPLICATIONS = (
+    "hello-std",
+    "filesystem",
+    "threads-tls",
+    "network",
+    "process",
+    "ffi-abi",
+    "unwind",
+    "ffi-containment",
+)
 PROFILES = ("debug", "release")
 TARGET_FLAGS = (
     "-march=armv7-a",
@@ -306,6 +315,38 @@ def verify_authentication_trailer(base: Path, authenticated: Path) -> None:
         raise AssertionError("authenticated ELF trailer bytes do not match the base ELF")
 
 
+def retain_application_artifacts(
+    sdk: Path,
+    candidate: Path,
+    app_name: str,
+    profile: str,
+    cwd: Path,
+    environment: dict[str, str],
+    artifacts: Path,
+) -> tuple[Path, Path, str]:
+    validator = sdk / "bin" / "eos-elf-validate"
+    packager = sdk / "bin" / "eos-auth-package"
+    readelf = sdk / "arm-gnu" / "bin" / "arm-none-eabi-readelf"
+    run([validator, candidate], cwd=cwd, env=environment)
+    sections = run([readelf, "-SW", candidate], cwd=cwd).stdout
+    if ".symtab" not in sections:
+        raise AssertionError(f"base ELF was stripped before retention: {candidate}")
+    identifier = build_id(readelf, candidate, cwd)
+
+    artifacts.mkdir(parents=True, exist_ok=True)
+    retained = artifacts / f"{app_name}-{profile}.elf"
+    shutil.copy2(candidate, retained)
+    identifier_file = retained.with_suffix(".build-id")
+    identifier_file.write_text(identifier + "\n", encoding="ascii")
+    authenticated = artifacts / f"{app_name}-{profile}.auth.elf"
+    run([packager, retained, authenticated], cwd=artifacts, env=environment)
+    run([validator, "--allow-auth-trailer", authenticated], cwd=artifacts, env=environment)
+    verify_authentication_trailer(retained, authenticated)
+    if build_id(readelf, retained, artifacts) != identifier:
+        raise AssertionError("retained ELF build ID changed after copying")
+    return retained, authenticated, identifier
+
+
 def build_application(
     sdk: Path, app_name: str, profile: str, work: Path, artifacts: Path
 ) -> tuple[Path, Path, str]:
@@ -334,28 +375,78 @@ def build_application(
             candidate = alternate
         else:
             raise AssertionError(f"Cargo did not produce the expected EOS ELF: {candidate}")
+    return retain_application_artifacts(
+        sdk, candidate, app_name, profile, app, environment, artifacts
+    )
 
-    validator = sdk / "bin" / "eos-elf-validate"
-    packager = sdk / "bin" / "eos-auth-package"
-    readelf = sdk / "arm-gnu" / "bin" / "arm-none-eabi-readelf"
-    run([validator, candidate], cwd=app, env=environment)
-    sections = run([readelf, "-SW", candidate], cwd=app).stdout
-    if ".symtab" not in sections:
-        raise AssertionError(f"base ELF was stripped before retention: {candidate}")
-    identifier = build_id(readelf, candidate, app)
 
-    artifacts.mkdir(parents=True, exist_ok=True)
-    retained = artifacts / f"{app_name}-{profile}.elf"
-    shutil.copy2(candidate, retained)
-    identifier_file = retained.with_suffix(".build-id")
-    identifier_file.write_text(identifier + "\n", encoding="ascii")
-    authenticated = artifacts / f"{app_name}-{profile}.auth.elf"
-    run([packager, retained, authenticated], cwd=artifacts, env=environment)
-    run([validator, "--allow-auth-trailer", authenticated], cwd=artifacts, env=environment)
-    verify_authentication_trailer(retained, authenticated)
-    if build_id(readelf, retained, artifacts) != identifier:
-        raise AssertionError("retained ELF build ID changed after copying")
-    return retained, authenticated, identifier
+def build_ffi_containment_application(
+    sdk: Path, profile: str, work: Path, artifacts: Path
+) -> tuple[Path, Path, str]:
+    source = ROOT / "tests" / "eos" / "apps" / "ffi-containment"
+    caller_source = ROOT / "tests" / "eos" / "abi" / "ffi_caller.c"
+    if not source.is_dir() or not caller_source.is_file():
+        raise AssertionError("missing Rust staticlib or real C caller containment fixture")
+
+    app = work / f"ffi-containment-{profile}"
+    shutil.copytree(source, app)
+    caller = app / "ffi_caller.c"
+    shutil.copy2(caller_source, caller)
+    environment = build_environment(sdk, app)
+    cargo_command: list[str | Path] = [
+        sdk / "bin" / "cargo",
+        "build",
+        "--offline",
+        "--target",
+        TARGET,
+    ]
+    if profile == "release":
+        cargo_command.append("--release")
+    run(cargo_command, cwd=app, env=environment)
+
+    staticlib = app / "target" / TARGET / profile / "libffi_containment.a"
+    if not staticlib.is_file():
+        raise AssertionError(f"Cargo did not produce the reviewed Rust staticlib: {staticlib}")
+    caller_object = app / "ffi_caller.o"
+    run(
+        [
+            arm_gcc(sdk),
+            *TARGET_FLAGS,
+            "-fPIC",
+            "-ffunction-sections",
+            "-fdata-sections",
+            "-O2",
+            "-std=c11",
+            "-c",
+            caller,
+            "-o",
+            caller_object,
+        ],
+        cwd=app,
+    )
+
+    candidate = app / "ffi-containment.elf"
+    run(
+        [
+            sdk / "bin" / "eos-rust-link",
+            "-Wl,--build-id=sha1",
+            "-o",
+            candidate,
+            caller_object,
+            staticlib,
+        ],
+        cwd=app,
+        env=environment,
+    )
+    return retain_application_artifacts(
+        sdk,
+        candidate,
+        "ffi-containment",
+        profile,
+        app,
+        environment,
+        artifacts,
+    )
 
 
 def arm_attributes(
@@ -664,6 +755,39 @@ def build_softfp_objects(sdk: Path, work: Path, artifacts: Path) -> None:
     )
 
 
+class ApplicationEvidencePolicyTests(unittest.TestCase):
+    def application_source(self, name: str) -> str:
+        return (
+            ROOT / "tests" / "eos" / "apps" / name / "src" / "main.rs"
+        ).read_text(encoding="utf-8")
+
+    def test_process_probe_self_spawns_without_unsupported_child_overrides(self) -> None:
+        source = self.application_source("process")
+        self.assertIn("current_exe()", source)
+        self.assertIn('"--child"', source)
+        self.assertNotIn("/eos/rust-process-child", source)
+        self.assertNotIn(".env(", source)
+        self.assertNotIn(".current_dir(", source)
+
+    def test_network_probe_runs_numeric_transport_before_fallible_dns(self) -> None:
+        source = self.application_source("network")
+        self.assertNotIn("to_socket_addrs()?", source)
+        self.assertLess(source.index("TcpStream::connect"), source.index("to_socket_addrs()"))
+        self.assertLess(source.index("UdpSocket::bind"), source.index("to_socket_addrs()"))
+
+    def test_unwind_probe_force_captures_backtrace_evidence(self) -> None:
+        source = self.application_source("unwind")
+        self.assertIn("Backtrace::force_capture()", source)
+
+    def test_static_application_set_equals_board_policy(self) -> None:
+        manifest = tomllib.loads(
+            (
+                ROOT / "tests" / "eos" / "board" / "board-test-manifest.toml"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(set(APPLICATIONS), set(manifest["applications"]))
+
+
 class StaticElfGateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -685,11 +809,19 @@ class StaticElfGateTests(unittest.TestCase):
         for app_name in APPLICATIONS:
             for profile in PROFILES:
                 with self.subTest(application=app_name, profile=profile):
-                    retained, authenticated, identifier = build_application(
-                        self.sdk, app_name, profile, self.work, self.artifacts
-                    )
+                    if app_name == "ffi-containment":
+                        retained, authenticated, identifier = (
+                            build_ffi_containment_application(
+                                self.sdk, profile, self.work, self.artifacts
+                            )
+                        )
+                    else:
+                        retained, authenticated, identifier = build_application(
+                            self.sdk, app_name, profile, self.work, self.artifacts
+                        )
                     self.assertTrue(retained.is_file())
                     self.assertTrue(authenticated.is_file())
+                    self.assertTrue(retained.with_suffix(".build-id").is_file())
                     self.assertRegex(identifier, r"^[0-9a-f]{40}$")
 
     def test_softfp_objects_match_and_hard_float_control_fails(self) -> None:

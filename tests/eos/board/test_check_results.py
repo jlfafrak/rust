@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import tomllib
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
@@ -58,6 +59,7 @@ APPLICATIONS = (
     "process",
     "ffi-abi",
     "unwind",
+    "ffi-containment",
 )
 UNSUPPORTED_CAPABILITIES = (
     "secure_random",
@@ -345,6 +347,10 @@ class BoardResultGateTests(unittest.TestCase):
     def assert_rejected(self, result: subprocess.CompletedProcess[str], phrase: str) -> None:
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn(phrase, result.stderr)
+
+    def test_board_policy_requires_ffi_containment_application(self):
+        manifest = tomllib.loads(BOARD_MANIFEST.read_text(encoding="utf-8"))
+        self.assertEqual(tuple(manifest["applications"]), APPLICATIONS)
 
     def test_accepts_two_complete_test_only_cryptographically_signed_results(self):
         result = self.run_checker(self.result("XC7Z030"), self.result("XC7Z045"))

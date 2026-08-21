@@ -9,6 +9,7 @@ applications = [
     "process",
     "ffi-abi",
     "unwind",
+    "ffi-containment",
 ]
 acceptance_rows = [
     "pie_load_relocation",
