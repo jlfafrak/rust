@@ -149,6 +149,13 @@ immediately after resolve/type validation, before every tree and artifact check.
 control and existing package-mutation and pre-rustup root-replacement controls are GREEN (3/3).
 The documented same-user post-final-recheck micro-race remains the only irreducible boundary.
 
+Fresh final-code verification on `c9233ef94590a1a9fd32526ee9b60fda1774858c` passed: focused
+Task 16 32/32 in 325.675s, full eos-sdk discovery 76/76 in 277.192s, and the six host
+regression modules 37/37 in 51.635s; strict py_compile also passed. The sole real builder ran
+on `baeb1a5b368d15d98a5433a3aadd216f472bf9e2`, covering unchanged builder/package behavior.
+`c9233ef` is installer-only and is covered by the fresh root-replacement and regression tests;
+the user constraint prohibited a second builder.
+
 - A same-user process can still win the irreducible micro-race after the installer's final
   identity/fingerprint recheck and before rustup exec or no-rustup printing.
 - Atomic no-replace publication intentionally fails closed on filesystems that do not implement
