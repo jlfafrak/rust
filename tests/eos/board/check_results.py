@@ -85,6 +85,21 @@ def load_toml(path: Path, description: str) -> dict[str, Any]:
     return value
 
 
+def load_toml_snapshot(path: Path, description: str) -> tuple[dict[str, Any], bytes]:
+    try:
+        if not path.is_file():
+            raise GateError(f"missing {description}: {path}")
+        data = path.read_bytes()
+        value = tomllib.loads(data.decode("utf-8"))
+    except GateError:
+        raise
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
+        raise GateError(f"unable to read {description} {path}: {error}") from error
+    if not isinstance(value, dict):
+        raise GateError(f"{description} root must be an object")
+    return value, data
+
+
 def json_type_matches(value: Any, expected: str) -> bool:
     if expected == "object":
         return isinstance(value, dict)
@@ -258,7 +273,7 @@ def load_board_manifest(path: Path) -> dict[str, Any]:
 def validate_release_manifest(
     path: Path, schema_path: Path, expected: dict[str, Any]
 ) -> tuple[dict[str, Any], str]:
-    release = load_toml(path, "release manifest")
+    release, data = load_toml_snapshot(path, "release manifest")
     schema = load_json(schema_path, "release-manifest JSON schema")
     try:
         validate_schema(release, schema)
@@ -274,6 +289,10 @@ def validate_release_manifest(
         raise GateError("release manifest has no Cargo distribution archive")
     if not any("rust-std" in name and target in name for name in names):
         raise GateError("release manifest has no target rust-std distribution archive")
+
+    digest = hashlib.sha256(data).hexdigest()
+    if expected.get("release_manifest_sha256") != digest:
+        raise GateError("release manifest does not match exact reviewed release-manifest digest")
 
     derived = {
         "sdk_version": release["release"]["version"],
@@ -292,10 +311,6 @@ def validate_release_manifest(
             raise GateError(
                 f"release manifest {name} does not match reviewed board-test identity"
             )
-    try:
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError as error:
-        raise GateError(f"unable to hash release manifest {path}: {error}") from error
     return release, digest
 
 
@@ -452,7 +467,6 @@ def validate_result_semantics(
     result: dict[str, Any],
     source: Path,
     manifest: dict[str, Any],
-    release_digest: str,
     capabilities: dict[str, dict[str, Any]],
 ) -> None:
     captured_at = result["captured_at_utc"]
@@ -464,7 +478,6 @@ def validate_result_semantics(
         raise GateError(f"result {source} captured_at_utc is not canonical")
 
     expected = dict(manifest["expected"])
-    expected["release_manifest_sha256"] = release_digest
     identities = result["identities"]
     if set(identities) != set(expected):
         missing = sorted(set(expected) - set(identities))
@@ -580,7 +593,7 @@ def _run_with_policy(arguments: list[str], policy: PolicyPaths) -> int:
         raise GateError("exactly two board result paths are required")
     manifest = load_board_manifest(policy.manifest)
     result_schema = load_json(policy.result_schema, "board-result JSON schema")
-    _, release_digest = validate_release_manifest(
+    validate_release_manifest(
         options.release_manifest, policy.release_schema, manifest["expected"]
     )
     capabilities = load_capabilities(policy.capabilities, manifest)
@@ -599,7 +612,7 @@ def _run_with_policy(arguments: list[str], policy: PolicyPaths) -> int:
             raise GateError(f"board result {path} does not satisfy its schema: {error}") from error
         verify_signature(result, trusted_keys, path)
         validate_result_semantics(
-            result, path, manifest, release_digest, capabilities
+            result, path, manifest, capabilities
         )
         results.append((path, result))
 

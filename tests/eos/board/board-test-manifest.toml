@@ -74,7 +74,7 @@ optional_capabilities = [
 ]
 
 [expected]
-sdk_package_sha256_tree_v1 = "309cd5d682c09dfd65e1ff0f2c0ee5d87e390543bcdfd09af52b49f8327c5060"
+release_manifest_sha256 = "fac60315f383ea6341e874a01d2b802e09419f1e5137e5b20129e3f9a160c4b5"
 sdk_version = "1.97.1"
 toolchain = "eos-1.97.1"
 target = "armv7a-unknown-eos-eabi"

@@ -37,7 +37,7 @@ pass its own cryptographic signature verification before it contributes any rele
 
 The result contract requires:
 
-- exact reviewed SDK package, release-manifest, toolchain, target, layout, Rust fork/upstream,
+- exact reviewed release-manifest byte digest, toolchain, target, layout, Rust fork/upstream,
   libc, backtrace, ARM GNU release/tree, EOS baseline/tree, native ABI, and linker-script
   identities;
 - debug and release profiles exactly once;
@@ -347,3 +347,30 @@ the final static suite passed 13/13 in 49.849 seconds.
 Read-only inspection still finds `release-results` and `release-bundle` absent. No real board
 checker or bundle validation was run, no hardware evidence was created, and the overall release
 remains incomplete pending authentic organization-signed XC7Z030 and XC7Z045 results.
+
+## Final integration Task 1 — exact release-manifest snapshot binding
+
+The board-result gate now reads a release manifest into one byte snapshot, parses that snapshot,
+and hashes those same bytes. Its SHA-256 must equal the exact reviewed policy value
+`fac60315f383ea6341e874a01d2b802e09419f1e5137e5b20129e3f9a160c4b5` before the checker derives
+or accepts any release identity. Consequently correctly re-signed results cannot substitute a
+different valid-looking manifest or choose their own release-manifest digest.
+
+The signed identity no longer carries `sdk_package_sha256_tree_v1`; it carries the fixed
+`release_manifest_sha256` instead. This does not weaken the Task 17 full SDK-tree pin, which is
+outside this board-result identity change. RSA signature policy, target, ABI, linker,
+authentication, capability, and manual-hardware boundaries are unchanged.
+
+Two focused RED controls were observed before the change. A public checker invocation accepted
+two correctly signed synthetic results after a distribution digest and both result digests were
+changed, exiting `0` rather than rejecting with the exact reviewed release-manifest diagnostic.
+An in-process control that replaced the manifest after its first read observed two reads rather
+than one. After the snapshot and policy change, the required focused command passed all 20 tests:
+
+```text
+PYTHONPYCACHEPREFIX=/tmp/eos-final-task1-pycache \
+python3 -m unittest -v tests.eos.board.test_check_results
+```
+
+The synthetic fixture now mirrors the real six-entry archive-name shape. The tests remain
+synthetic and test-only; no board action, signature, release result, or hardware claim was made.

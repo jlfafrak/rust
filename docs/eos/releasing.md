@@ -14,7 +14,9 @@ The release manifest passed to the board checker is the unmodified Task 16
 `manifests/release-manifest.toml`. Its parsed data must satisfy
 `src/tools/eos-sdk/manifests/release-manifest.schema.json`, including the exact four top-level
 tables, fixed release identity, `sha256-tree-v1` input hashes, source-revision shapes, safe
-distribution archive names, and lowercase SHA-256 digests.
+distribution archive names, and lowercase SHA-256 digests. The checker parses and hashes one byte
+snapshot of that file; the digest must equal the exact checked-in reviewed value before either
+signed board result can be accepted.
 
 ## Manual evidence
 
@@ -43,8 +45,8 @@ src/tools/eos-sdk/bin/eos-elf-validate \
 ```
 
 The checker fails closed unless it receives exactly one signed result for each part family. Both
-results must match the reviewed SDK, Rust, libc, backtrace, ARM GNU, EOS baseline, native ABI,
-linker script, and release-manifest identities. They must contain debug and release profiles,
+results must match the exact reviewed release-manifest digest and its reviewed Rust, libc,
+backtrace, ARM GNU, EOS baseline, native ABI, and linker-script identities. They must contain debug and release profiles,
 identical cross-board application artifacts, two numerically distinct canonical lowercase
 load-address runs per profile, the exact application/build-ID set, every passing v1 acceptance
 row in all four runs, the exact complete capability inventory, and an explicit empty

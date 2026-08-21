@@ -15,6 +15,7 @@ import tempfile
 import textwrap
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -170,8 +171,11 @@ class BoardResultGateTests(unittest.TestCase):
                 backtrace = "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd"
 
                 [distribution_hashes]
+                "cargo-1.97.1-dev-x86_64-unknown-linux-gnu.tar.gz" = "9e829a813c8a564cdaec4f67cc211c79d714bfc80341364d8b473355e57c08c0"
                 "cargo-1.97.1-dev-x86_64-unknown-linux-gnu.tar.xz" = "c9506399dd578571b953cb12eb8e981ddd6eec472f76c45baa8011d343fab6c9"
+                "rust-std-1.97.1-dev-armv7a-unknown-eos-eabi.tar.gz" = "f67ca0532b7ec4b1681a699f5687258733c3eed31559ac4956d73283dfa5fe86"
                 "rust-std-1.97.1-dev-armv7a-unknown-eos-eabi.tar.xz" = "52f51b6804a036f2b4f9388b8bc4463b44e9c58bb3258a9d7d65807718a4ee0b"
+                "rustc-1.97.1-dev-x86_64-unknown-linux-gnu.tar.gz" = "31578b8d5e12734182e7f8d9f72d9b3dbf56a3c9e1e5713882fdb4ce929fcf8c"
                 "rustc-1.97.1-dev-x86_64-unknown-linux-gnu.tar.xz" = "26d4f1b0b0f4075d429e0e393f4e41fad37e89227c55156a0f8f328cad540490"
                 """
             ),
@@ -207,7 +211,6 @@ class BoardResultGateTests(unittest.TestCase):
             },
             "captured_at_utc": "2026-08-21T12:00:00Z",
             "identities": {
-                "sdk_package_sha256_tree_v1": "309cd5d682c09dfd65e1ff0f2c0ee5d87e390543bcdfd09af52b49f8327c5060",
                 "release_manifest_sha256": self.release_manifest_digest,
                 "sdk_version": "1.97.1",
                 "toolchain": "eos-1.97.1",
@@ -618,6 +621,78 @@ class BoardResultGateTests(unittest.TestCase):
                     ),
                     "release manifest",
                 )
+
+    def test_rejects_resigned_results_for_substituted_release_manifest(self):
+        first = self.result("XC7Z030")
+        second = self.result("XC7Z045")
+        self.release_manifest.write_text(
+            self.release_manifest.read_text(encoding="utf-8").replace(
+                "c9506399dd578571b953cb12eb8e981ddd6eec472f76c45baa8011d343fab6c9",
+                "0" * 64,
+            ),
+            encoding="utf-8",
+        )
+        substituted_digest = hashlib.sha256(self.release_manifest.read_bytes()).hexdigest()
+        for result in (first, second):
+            result["identities"]["release_manifest_sha256"] = substituted_digest
+            sign_result(result)
+
+        self.assert_rejected(
+            self.run_checker(first, second),
+            "exact reviewed release-manifest digest",
+        )
+
+    def test_release_manifest_parse_and_digest_share_one_byte_snapshot(self):
+        module_name = f"task18_checker_{id(self)}"
+        spec = importlib.util.spec_from_file_location(module_name, CHECKER)
+        assert spec is not None and spec.loader is not None
+        checker = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = checker
+        spec.loader.exec_module(checker)
+
+        parsed_bytes = self.release_manifest.read_bytes()
+        replacement_bytes = parsed_bytes.replace(
+            b"c9506399dd578571b953cb12eb8e981ddd6eec472f76c45baa8011d343fab6c9",
+            b"0" * 64,
+        )
+        original_read_bytes = Path.read_bytes
+        original_read_text = Path.read_text
+        reads = 0
+
+        def read_manifest_once_then_replace(path: Path) -> bytes:
+            nonlocal reads
+            if path != self.release_manifest:
+                return original_read_bytes(path)
+            reads += 1
+            if reads == 1:
+                path.write_bytes(replacement_bytes)
+                return parsed_bytes
+            return original_read_bytes(path)
+
+        def read_bytes(path: Path) -> bytes:
+            return read_manifest_once_then_replace(path)
+
+        def read_text(
+            path: Path, encoding: str | None = None, errors: str | None = None
+        ) -> str:
+            if path != self.release_manifest:
+                return original_read_text(path, encoding=encoding, errors=errors)
+            return read_manifest_once_then_replace(path).decode(
+                encoding or "utf-8", errors or "strict"
+            )
+
+        with (
+            mock.patch.object(Path, "read_bytes", read_bytes),
+            mock.patch.object(Path, "read_text", read_text),
+        ):
+            _, digest = checker.validate_release_manifest(
+                self.release_manifest,
+                RELEASE_SCHEMA,
+                checker.load_board_manifest(BOARD_MANIFEST)["expected"],
+            )
+
+        self.assertEqual(reads, 1)
+        self.assertEqual(digest, hashlib.sha256(parsed_bytes).hexdigest())
 
     def test_rejects_boolean_release_layout_version_end_to_end(self):
         self.release_manifest.write_text(

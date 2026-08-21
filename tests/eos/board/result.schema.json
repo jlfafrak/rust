@@ -28,14 +28,13 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "sdk_package_sha256_tree_v1", "release_manifest_sha256", "sdk_version",
+        "release_manifest_sha256", "sdk_version",
         "toolchain", "target", "layout_version", "rust_fork", "rust_upstream",
         "libc_upstream", "backtrace", "arm_gnu_release",
         "arm_gnu_sha256_tree_v1", "eos_sdk_baseline", "eos_sdk_sha256_tree_v1",
         "native_abi_major", "native_abi_minor", "linker_script_sha256"
       ],
       "properties": {
-        "sdk_package_sha256_tree_v1": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "release_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "sdk_version": {"type": "string", "minLength": 1},
         "toolchain": {"type": "string", "minLength": 1},

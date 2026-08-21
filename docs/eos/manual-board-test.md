@@ -94,8 +94,10 @@ python3 tests/eos/board/check_results.py \
 ```
 
 Repeat `--trusted-key` only when the organization is rotating approved public keys. The checker
-validates the immutable checked-in JSON schemas and board/capability policies, the exact Task 16
-TOML release-manifest shape, reviewed release identities, signatures,
+reads the supplied release manifest once, then parses and hashes that same byte snapshot. Its
+SHA-256 must equal the exact reviewed release-manifest digest in the immutable checked-in board
+policy. It also validates the immutable checked-in JSON schemas and board/capability policies,
+the exact Task 16 TOML release-manifest shape, reviewed release identities, signatures,
 profile/address/application sets, every v1 row in every run, capability semantics, and
 cross-board binary identity. Its public CLI accepts only the release manifest, repeatable trusted
 public keys, and exactly two result paths. Synthetic fixtures in the unit tests are explicitly
