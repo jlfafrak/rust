@@ -55,3 +55,7 @@ Task 16: complete (commits 166453d..680eb7a, review clean; nested backtrace rema
 Task 17: fix round 1/5 (2 addressed, 1 open — release preflight could select Python from an unverified SDK or CMake directory; commits 9446f77..42a5219)
 Task 17: fix round 2/5 (1 addressed, 0 open; commits 42a5219..65ec6ff)
 Task 17: complete (commits 951721d..65ec6ff, review clean; hardware execution remains Task 18)
+Task 18: fix round 1/5 (4 addressed, 1 open — case-variant spellings of one numeric load address counted as distinct; commits 334fe9b..2ffb852)
+Task 18: fix round 2/5 (1 addressed, 0 open; commits 2ffb852..ebaca4e)
+Task 18: repository implementation complete (commits a02c0c0..ebaca4e, review clean; no automatic board action or fabricated evidence)
+Task 18: manual release gate pending (authentic signed XC7Z030/XC7Z045 results and release bundle are absent; overall release is not complete)
