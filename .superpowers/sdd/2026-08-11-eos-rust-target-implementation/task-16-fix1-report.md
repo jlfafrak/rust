@@ -121,6 +121,26 @@ summary is empty. The source example inventory is exactly `Cargo.toml` and `src/
 
 ## Remaining concerns
 
+## Replacement build and smoke evidence
+
+The recovery replacement builder completed from clean commit
+`baeb1a5b368d15d98a5433a3aadd216f472bf9e2` and atomically published
+`/tmp/eos-task16-fix1-replacement-sdk`. Its durable log is
+`/tmp/eos-task16-fix1-replacement-builder-run1.log`; exact x build, host dist,
+and EOS rust-std dist completed successfully. Recomputed `sha256-tree-v1`
+digests matched the release manifest: ARM GNU
+`a407c7186f68473d2fb7a0bae59407261adef62f959fc181e5cd7eb7636a584d` and EOS
+`5e6c7db4d67a971307f59797a3bf092a516a8dfcd156a2706b7c337e19119910`.
+
+The SDK had 36 directories, 116 files, and no symlinks. Its EOS closure was
+exactly the five permitted MARTOS libraries, with no headers or sources; its
+example inventory was exactly `Cargo.toml` and `src/main.rs`. In isolated
+rustup/Cargo homes consuming the packaged Cargo template, plain
+`cargo +eos-1.97.1 build --manifest-path /tmp/eos-task16-fix1-smoke/Cargo.toml`
+passed. The resulting ARM EABI5 PIE passed base validation; authentication
+packaging and `--allow-auth-trailer` validation passed, and default validation
+rejected the trailer with status 2. Generated SDK-example Cargo state was removed.
+
 - A same-user process can still win the irreducible micro-race after the installer's final
   identity/fingerprint recheck and before rustup exec or no-rustup printing.
 - Atomic no-replace publication intentionally fails closed on filesystems that do not implement
