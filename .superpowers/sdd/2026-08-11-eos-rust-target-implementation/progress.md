@@ -52,3 +52,6 @@ Task 16: fix round 1/5 (6 addressed, 2 open — installer root identity was capt
 Task 16: evidence boundary (user constraint): the sole successful real SDK builder ran on clean recovery commit baeb1a5 and covers unchanged builder/package behavior; installer-only Fix Round 2 is covered by fresh 32/76/37/static tests and its focused root-replacement control, with no second real builder
 Task 16: fix round 2/5 (2 addressed, 0 open; commits a783c33..680eb7a)
 Task 16: complete (commits 166453d..680eb7a, review clean; nested backtrace remains 02ef1b5; hardware loader/authentication/unwind validation remains manual)
+Task 17: fix round 1/5 (2 addressed, 1 open — release preflight could select Python from an unverified SDK or CMake directory; commits 9446f77..42a5219)
+Task 17: fix round 2/5 (1 addressed, 0 open; commits 42a5219..65ec6ff)
+Task 17: complete (commits 951721d..65ec6ff, review clean; hardware execution remains Task 18)
