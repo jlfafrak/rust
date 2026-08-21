@@ -1,0 +1,50 @@
+name: EOS Rust release gates
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/eos.yml"
+      - "compiler/rustc_target/**"
+      - "library/**"
+      - "src/bootstrap/**"
+      - "src/tools/eos-abi/**"
+      - "src/tools/eos-libc/**"
+      - "src/tools/eos-sdk/**"
+      - "tests/eos/**"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-gates:
+    runs-on: [self-hosted, linux, x64, eos-rust]
+    timeout-minutes: 180
+    env:
+      EOS_RUST_SDK_ROOT: ${{ vars.EOS_RUST_SDK_ROOT }}
+      EOS_ARM_GNU_CC: ${{ vars.EOS_ARM_GNU_CC }}
+      EOS_ARM_GNU_OBJDUMP: ${{ vars.EOS_ARM_GNU_OBJDUMP }}
+      EOS_CMAKE_BIN_DIR: ${{ vars.EOS_CMAKE_BIN_DIR }}
+      EOS_CI_ARTIFACT_DIR: artifacts/eos
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Run EOS release gates
+        run: tests/eos/run-ci.sh
+      - name: Upload EOS SDK
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: eos-sdk
+          path: ${{ env.EOS_RUST_SDK_ROOT }}
+          if-no-files-found: error
+      - name: Upload EOS static tests
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: eos-static-tests
+          path: ${{ env.EOS_CI_ARTIFACT_DIR }}
+          if-no-files-found: error
