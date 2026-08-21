@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -12,6 +14,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -75,6 +78,24 @@ UNSUPPORTED_CAPABILITIES = (
     "per_child_cwd",
     "signals",
     "filesystem_durability",
+)
+SUPPORTED_CAPABILITIES = (
+    "allocation",
+    "arguments_environment_current_directory",
+    "standard_io",
+    "files_and_directories",
+    "threads",
+    "rust_tls",
+    "synchronization",
+    "monotonic_and_realtime_time",
+    "tcp",
+    "udp",
+    "numeric_socket_addresses",
+    "process_spawn_wait_kill",
+    "rust_panic_unwind",
+    "panic_destructor_cleanup",
+    "ffi_panic_containment",
+    "backtrace_addresses",
 )
 
 # Synthetic RSA-2048 fixture generated solely for these tests. It is not a release key.
@@ -205,23 +226,33 @@ class BoardResultGateTests(unittest.TestCase):
                 "linker_script_sha256": "835c2afac09937fb1b6f7dc93027134c61b34bf645eb2809bbaf1ece4994a674",
             },
             "profiles": [],
-            "acceptance": [
-                {"id": row, "status": "pass", "evidence": f"captured {row}"}
-                for row in ACCEPTANCE_ROWS
-            ],
             "capabilities": [
+                {"id": capability, "status": "pass"}
+                for capability in SUPPORTED_CAPABILITIES
+            ]
+            + [
                 {"id": capability, "status": "unsupported", "error": "Unsupported"}
                 for capability in UNSUPPORTED_CAPABILITIES
             ],
             "observed_failures": [],
         }
-        for profile_index, profile in enumerate(("debug", "release")):
+        for profile in ("debug", "release"):
             result["profiles"].append(
                 {
                     "name": profile,
-                    "load_addresses": [
-                        f"0x{0x10000000 + profile_index * 0x02000000:08x}",
-                        f"0x{0x18000000 + profile_index * 0x02000000:08x}",
+                    "runs": [
+                        {
+                            "load_address": address,
+                            "acceptance": [
+                                {
+                                    "id": row,
+                                    "status": "pass",
+                                    "evidence": f"captured {profile} {address} {row}",
+                                }
+                                for row in ACCEPTANCE_ROWS
+                            ],
+                        }
+                        for address in ("0x10000000", "0x18000000")
                     ],
                     "applications": [
                         {
@@ -247,6 +278,7 @@ class BoardResultGateTests(unittest.TestCase):
         *,
         release_manifest: Path | None = None,
         capabilities: Path = CAPABILITIES,
+        policy_overrides: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         paths = []
         for index, result in enumerate((first, second)):
@@ -258,20 +290,50 @@ class BoardResultGateTests(unittest.TestCase):
         command = [
             sys.executable,
             str(CHECKER),
-            "--manifest",
-            str(BOARD_MANIFEST),
-            "--schema",
-            str(RESULT_SCHEMA),
-            "--release-schema",
-            str(RELEASE_SCHEMA),
-            "--capabilities",
-            str(capabilities),
             "--release-manifest",
             str(release_manifest or self.release_manifest),
             "--trusted-key",
             str(self.key_file),
-            *map(str, paths),
         ]
+        if policy_overrides:
+            command.extend(
+                [
+                    "--manifest",
+                    str(BOARD_MANIFEST),
+                    "--schema",
+                    str(RESULT_SCHEMA),
+                    "--release-schema",
+                    str(RELEASE_SCHEMA),
+                    "--capabilities",
+                    str(capabilities),
+                ]
+            )
+        command.extend(map(str, paths))
+        if capabilities != CAPABILITIES and not policy_overrides:
+            module_name = f"task18_checker_{id(self)}"
+            spec = importlib.util.spec_from_file_location(module_name, CHECKER)
+            assert spec is not None and spec.loader is not None
+            checker = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = checker
+            spec.loader.exec_module(checker)
+            policy = checker.PolicyPaths(
+                manifest=BOARD_MANIFEST,
+                result_schema=RESULT_SCHEMA,
+                release_schema=RELEASE_SCHEMA,
+                capabilities=capabilities,
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            internal_arguments = command[2:]
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                try:
+                    returncode = checker._run_with_policy(internal_arguments, policy)
+                except checker.GateError as error:
+                    print(f"board result gate failed: {error}", file=sys.stderr)
+                    returncode = 2
+            return subprocess.CompletedProcess(
+                command, returncode, stdout.getvalue(), stderr.getvalue()
+            )
         return subprocess.run(command, text=True, capture_output=True, check=False)
 
     def assert_rejected(self, result: subprocess.CompletedProcess[str], phrase: str) -> None:
@@ -282,6 +344,13 @@ class BoardResultGateTests(unittest.TestCase):
         result = self.run_checker(self.result("XC7Z030"), self.result("XC7Z045"))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("verified signed XC7Z030 and XC7Z045 board results", result.stdout)
+
+    def test_public_cli_rejects_policy_override_options(self):
+        result = self.run_checker(
+            self.result("XC7Z030"), self.result("XC7Z045"), policy_overrides=True
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("unrecognized arguments", result.stderr)
 
     def test_rejects_missing_or_duplicate_board_part(self):
         self.assert_rejected(self.run_checker(self.result("XC7Z030"), None), "exactly two")
@@ -349,26 +418,34 @@ class BoardResultGateTests(unittest.TestCase):
         )
 
         missing_address = self.result("XC7Z030")
-        missing_address["profiles"][0]["load_addresses"] = missing_address["profiles"][0][
-            "load_addresses"
-        ][:1]
+        del missing_address["profiles"][0]["runs"][0]["load_address"]
         sign_result(missing_address)
         self.assert_rejected(
-            self.run_checker(missing_address, self.result("XC7Z045")), "load_addresses"
+            self.run_checker(missing_address, self.result("XC7Z045")), "load_address"
         )
 
         duplicate = self.result("XC7Z030")
-        duplicate["profiles"][0]["load_addresses"][1] = duplicate["profiles"][0][
-            "load_addresses"
-        ][0]
+        duplicate["profiles"][0]["runs"][1]["load_address"] = duplicate["profiles"][0][
+            "runs"
+        ][0]["load_address"]
         sign_result(duplicate)
         self.assert_rejected(
-            self.run_checker(duplicate, self.result("XC7Z045")), "unique items"
+            self.run_checker(duplicate, self.result("XC7Z045")), "distinct load addresses"
+        )
+
+        incomplete_matrix = self.result("XC7Z030")
+        incomplete_matrix["profiles"][1]["runs"][1]["load_address"] = "0x22000000"
+        sign_result(incomplete_matrix)
+        self.assert_rejected(
+            self.run_checker(incomplete_matrix, self.result("XC7Z045")),
+            "same two load addresses",
         )
 
     def test_rejects_missing_acceptance_row_and_observed_failure_list(self):
         missing_row = self.result("XC7Z030")
-        missing_row["acceptance"] = missing_row["acceptance"][:-1]
+        missing_row["profiles"][1]["runs"][1]["acceptance"] = missing_row["profiles"][1][
+            "runs"
+        ][1]["acceptance"][:-1]
         sign_result(missing_row)
         self.assert_rejected(
             self.run_checker(missing_row, self.result("XC7Z045")), "acceptance rows"
@@ -391,7 +468,7 @@ class BoardResultGateTests(unittest.TestCase):
         )
 
         failed = self.result("XC7Z030")
-        failed["acceptance"][0]["status"] = "fail"
+        failed["profiles"][0]["runs"][1]["acceptance"][0]["status"] = "fail"
         sign_result(failed)
         self.assert_rejected(
             self.run_checker(failed, self.result("XC7Z045")), "did not pass"
@@ -416,8 +493,11 @@ class BoardResultGateTests(unittest.TestCase):
 
     def test_false_optional_capabilities_require_matrix_false_and_unsupported(self):
         wrong_status = self.result("XC7Z030")
-        wrong_status["capabilities"][0]["status"] = "pass"
-        del wrong_status["capabilities"][0]["error"]
+        secure_random = next(
+            row for row in wrong_status["capabilities"] if row["id"] == "secure_random"
+        )
+        secure_random["status"] = "pass"
+        del secure_random["error"]
         sign_result(wrong_status)
         self.assert_rejected(
             self.run_checker(wrong_status, self.result("XC7Z045")),
@@ -438,6 +518,47 @@ class BoardResultGateTests(unittest.TestCase):
             ),
             "capability secure_random",
         )
+
+    def test_capability_matrix_requires_exact_supported_inventory_and_evidence(self):
+        original = CAPABILITIES.read_text(encoding="utf-8")
+        marker = '[[capability]]\nid = "allocation"\n'
+        start = original.index(marker)
+        next_start = original.index("[[capability]]", start + len(marker))
+        allocation_block = original[start:next_start]
+        mutations = {
+            "missing-allocation": original[:start] + original[next_start:],
+            "missing-contract-evidence": original.replace(
+                allocation_block,
+                allocation_block.replace(
+                    "contract_evidence = true", "contract_evidence = false"
+                ),
+            ),
+            "unexpected-capability": original
+            + textwrap.dedent(
+                """\
+
+                [[capability]]
+                id = "unreviewed_capability"
+                supported = false
+                contract_evidence = false
+                board_evidence = false
+                unsupported_error = "Unsupported"
+                evidence = "test-only unreviewed entry"
+                """
+            ),
+        }
+        for name, text in mutations.items():
+            with self.subTest(name=name):
+                matrix = self.root / f"capabilities-{name}.toml"
+                matrix.write_text(text, encoding="utf-8")
+                self.assert_rejected(
+                    self.run_checker(
+                        self.result("XC7Z030"),
+                        self.result("XC7Z045"),
+                        capabilities=matrix,
+                    ),
+                    "capability",
+                )
 
     def test_release_manifest_schema_rejects_bad_digest_and_archive_name(self):
         for name, replacement in (
@@ -469,6 +590,41 @@ class BoardResultGateTests(unittest.TestCase):
                     ),
                     "release manifest",
                 )
+
+    def test_rejects_boolean_release_layout_version_end_to_end(self):
+        self.release_manifest.write_text(
+            self.release_manifest.read_text(encoding="utf-8").replace(
+                "layout_version = 1", "layout_version = true"
+            ),
+            encoding="utf-8",
+        )
+        self.release_manifest_digest = hashlib.sha256(
+            self.release_manifest.read_bytes()
+        ).hexdigest()
+
+        self.assert_rejected(
+            self.run_checker(self.result("XC7Z030"), self.result("XC7Z045")),
+            "release manifest",
+        )
+
+    def test_rejects_boolean_result_schema_version_end_to_end(self):
+        first = self.result("XC7Z030")
+        second = self.result("XC7Z045")
+        first["schema_version"] = True
+        second["schema_version"] = True
+        sign_result(first)
+        sign_result(second)
+
+        self.assert_rejected(self.run_checker(first, second), "schema_version")
+
+    def test_rejects_impossible_utc_timestamp_end_to_end(self):
+        first = self.result("XC7Z030")
+        first["captured_at_utc"] = "2026-99-99T99:99:99Z"
+        sign_result(first)
+
+        self.assert_rejected(
+            self.run_checker(first, self.result("XC7Z045")), "captured_at_utc"
+        )
 
 
 if __name__ == "__main__":

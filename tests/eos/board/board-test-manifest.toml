@@ -31,6 +31,24 @@ acceptance_rows = [
     "ffi_panic_containment",
     "backtrace_addresses",
 ]
+supported_capabilities = [
+    "allocation",
+    "arguments_environment_current_directory",
+    "standard_io",
+    "files_and_directories",
+    "threads",
+    "rust_tls",
+    "synchronization",
+    "monotonic_and_realtime_time",
+    "tcp",
+    "udp",
+    "numeric_socket_addresses",
+    "process_spawn_wait_kill",
+    "rust_panic_unwind",
+    "panic_destructor_cleanup",
+    "ffi_panic_containment",
+    "backtrace_addresses",
+]
 required_false_capabilities = [
     "secure_random",
     "native_elf_tls",

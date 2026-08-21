@@ -20,8 +20,9 @@ distribution archive names, and lowercase SHA-256 digests.
 
 Follow `docs/eos/manual-board-test.md`. Organization operators manually transfer and start the
 same authenticated binaries on XC7Z030 and XC7Z045, capture two distinct PIE placements per
-profile, record all rows and observed failures, and obtain one organization signature for each
-result. No unsigned, partially populated, mismatched, or synthetic result is release evidence.
+profile, record the complete row set separately for each profile/address run plus all observed
+failures, and obtain one organization signature for each result. No unsigned, partially
+populated, mismatched, or synthetic result is release evidence.
 
 ## Final gates
 
@@ -44,13 +45,14 @@ src/tools/eos-sdk/bin/eos-elf-validate \
 The checker fails closed unless it receives exactly one signed result for each part family. Both
 results must match the reviewed SDK, Rust, libc, backtrace, ARM GNU, EOS baseline, native ABI,
 linker script, and release-manifest identities. They must contain debug and release profiles,
-identical cross-board application artifacts, two distinct load addresses per profile, the exact
-application/build-ID set, every passing v1 acceptance row, the complete capability audit, and an
-explicit empty observed-failure list.
+identical cross-board application artifacts, two uniquely keyed load-address runs per profile,
+the exact application/build-ID set, every passing v1 acceptance row in all four runs, the exact
+complete capability inventory, and an explicit empty observed-failure list.
 
-An optional capability may remain false when both board results report `unsupported` and
-`Unsupported`, matching the capability matrix. It may become true only after both contract and
-board evidence are recorded. The fixed v1 exclusions remain false.
+Every reviewed v1 optional capability remains false, and both board results must report
+`unsupported` with `Unsupported`, matching the capability matrix. Promoting one requires a
+reviewed policy change backed by both contract and board evidence. The fixed v1 exclusions
+remain false.
 
 If either physical board, either authentic result, the organization public key, or any matching
 release artifact is unavailable, record that exact environmental boundary and stop. Do not copy

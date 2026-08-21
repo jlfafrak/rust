@@ -25,7 +25,8 @@ For each part family:
    method.
 3. Through the EOS console, start each profile at two distinct organization-approved PIE load
    addresses. Do not put board network locations or credentials in the result.
-4. Capture console evidence for every v1 acceptance row:
+4. At each of the four profile/address combinations, capture a complete console evidence set for
+   every v1 acceptance row:
    `pie_load_relocation`, `arguments`, `environment`, `current_working_directory`,
    `standard_io`, `allocation`, `files_and_directories`, `threads`, `rust_tls`,
    `synchronization`, `monotonic_and_realtime_time`, `tcp`, `udp`,
@@ -34,13 +35,15 @@ For each part family:
 5. Record every observed failure. Use an empty `observed_failures` array only when none occurred;
    never omit the field or discard a failure.
 6. Record every audited capability row. A false matrix entry must be observed as `unsupported`
-   with error `Unsupported`. A supported optional row may be `pass` only after the capability
-   matrix itself records both contract and board evidence.
+   with error `Unsupported`. The reviewed v1 optional rows remain false; promoting one requires
+   a reviewed policy change backed by both contract and board evidence.
 7. Write one JSON result that satisfies `tests/eos/board/result.schema.json`.
 
-Both debug and release profiles require exactly two distinct load addresses and a GNU build ID
-plus authenticated-file SHA-256 for every listed application. A failed acceptance row or any
-observed failure blocks the release; it is not converted to an unsupported optional feature.
+Both debug and release profiles require exactly two `runs`, keyed by their distinct load
+addresses. Each run contains the exact complete v1 acceptance set; one global set is not evidence
+for the four separate combinations. Each profile also records a GNU build ID plus
+authenticated-file SHA-256 for every listed application. A failed acceptance row or any observed
+failure blocks the release; it is not converted to an unsupported optional feature.
 
 ## Signing boundary
 
@@ -89,7 +92,9 @@ python3 tests/eos/board/check_results.py \
 ```
 
 Repeat `--trusted-key` only when the organization is rotating approved public keys. The checker
-validates the full JSON schemas, the exact Task 16 TOML release-manifest shape, reviewed release
-identities, signatures, profile/address/application sets, all v1 rows, capability semantics, and
-cross-board binary identity. Synthetic fixtures in the unit tests are explicitly test-only and
-are not hardware or release evidence.
+validates the immutable checked-in JSON schemas and board/capability policies, the exact Task 16
+TOML release-manifest shape, reviewed release identities, signatures,
+profile/address/application sets, every v1 row in every run, capability semantics, and
+cross-board binary identity. Its public CLI accepts only the release manifest, repeatable trusted
+public keys, and exactly two result paths. Synthetic fixtures in the unit tests are explicitly
+test-only and are not hardware or release evidence.

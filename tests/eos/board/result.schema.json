@@ -6,10 +6,10 @@
   "additionalProperties": false,
   "required": [
     "schema_version", "board", "captured_at_utc", "identities", "profiles",
-    "acceptance", "capabilities", "observed_failures", "signature"
+    "capabilities", "observed_failures", "signature"
   ],
   "properties": {
-    "schema_version": {"const": 1},
+    "schema_version": {"type": "integer", "const": 1},
     "board": {
       "type": "object",
       "additionalProperties": false,
@@ -61,12 +61,35 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "load_addresses", "applications"],
+        "required": ["name", "runs", "applications"],
         "properties": {
           "name": {"enum": ["debug", "release"]},
-          "load_addresses": {
-            "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true,
-            "items": {"type": "string", "pattern": "^0x[0-9a-fA-F]{8}$"}
+          "runs": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["load_address", "acceptance"],
+              "properties": {
+                "load_address": {"type": "string", "pattern": "^0x[0-9a-fA-F]{8}$"},
+                "acceptance": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["id", "status", "evidence"],
+                    "properties": {
+                      "id": {"type": "string", "minLength": 1},
+                      "status": {"enum": ["pass", "fail"]},
+                      "evidence": {"type": "string", "minLength": 1}
+                    }
+                  }
+                }
+              }
+            }
           },
           "applications": {
             "type": "array",
@@ -82,20 +105,6 @@
               }
             }
           }
-        }
-      }
-    },
-    "acceptance": {
-      "type": "array",
-      "minItems": 1,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["id", "status", "evidence"],
-        "properties": {
-          "id": {"type": "string", "minLength": 1},
-          "status": {"enum": ["pass", "fail"]},
-          "evidence": {"type": "string", "minLength": 1}
         }
       }
     },

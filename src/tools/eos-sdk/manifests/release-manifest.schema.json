@@ -14,7 +14,7 @@
         "version": {"const": "1.97.1"},
         "toolchain": {"const": "eos-1.97.1"},
         "target": {"const": "armv7a-unknown-eos-eabi"},
-        "layout_version": {"const": 1}
+        "layout_version": {"type": "integer", "const": 1}
       }
     },
     "input_hashes": {

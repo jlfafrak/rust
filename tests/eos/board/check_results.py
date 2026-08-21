@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+from datetime import datetime
 import hashlib
 import hmac
 import json
@@ -13,7 +14,7 @@ from pathlib import Path
 import re
 import sys
 import tomllib
-from typing import Any
+from typing import Any, NamedTuple
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -27,6 +28,21 @@ DEFAULT_CAPABILITIES = (
 )
 SHA256_DIGEST_INFO = bytes.fromhex("3031300d060960864801650304020105000420")
 SUPPORTED_SIGNATURE = "RSASSA-PKCS1-v1_5-SHA256"
+
+
+class PolicyPaths(NamedTuple):
+    manifest: Path
+    result_schema: Path
+    release_schema: Path
+    capabilities: Path
+
+
+CHECKED_IN_POLICY = PolicyPaths(
+    manifest=DEFAULT_MANIFEST,
+    result_schema=DEFAULT_RESULT_SCHEMA,
+    release_schema=DEFAULT_RELEASE_SCHEMA,
+    capabilities=DEFAULT_CAPABILITIES,
+)
 
 
 class GateError(Exception):
@@ -87,13 +103,22 @@ def json_type_matches(value: Any, expected: str) -> bool:
     raise GateError(f"schema uses unsupported type {expected!r}")
 
 
+def json_schema_equal(left: Any, right: Any) -> bool:
+    """Compare JSON values without treating booleans as the integers zero and one."""
+    if isinstance(left, bool) or isinstance(right, bool):
+        return isinstance(left, bool) and isinstance(right, bool) and left == right
+    return left == right
+
+
 def validate_schema(value: Any, schema: dict[str, Any], path: str = "$") -> None:
     """Validate the JSON Schema subset used by the two checked-in v1 schemas."""
     if not isinstance(schema, dict):
         raise GateError(f"invalid schema node at {path}")
-    if "const" in schema and value != schema["const"]:
+    if "const" in schema and not json_schema_equal(value, schema["const"]):
         raise GateError(f"{path} must equal {schema['const']!r}")
-    if "enum" in schema and value not in schema["enum"]:
+    if "enum" in schema and not any(
+        json_schema_equal(value, candidate) for candidate in schema["enum"]
+    ):
         raise GateError(f"{path} is not one of {schema['enum']!r}")
     expected_type = schema.get("type")
     if expected_type is not None:
@@ -189,6 +214,7 @@ def load_board_manifest(path: Path) -> dict[str, Any]:
         "profiles",
         "applications",
         "acceptance_rows",
+        "supported_capabilities",
         "required_false_capabilities",
         "optional_capabilities",
         "expected",
@@ -203,10 +229,19 @@ def load_board_manifest(path: Path) -> dict[str, Any]:
     for name in (
         "applications",
         "acceptance_rows",
+        "supported_capabilities",
         "required_false_capabilities",
         "optional_capabilities",
     ):
         require_exact_string_list(manifest, name)
+    capability_groups = (
+        manifest["supported_capabilities"],
+        manifest["required_false_capabilities"],
+        manifest["optional_capabilities"],
+    )
+    reviewed_capabilities = [item for group in capability_groups for item in group]
+    if len(reviewed_capabilities) != len(set(reviewed_capabilities)):
+        raise GateError("board test manifest capability inventories must be disjoint")
     expected = manifest.get("expected")
     signature = manifest.get("signature")
     if not isinstance(expected, dict) or not expected:
@@ -295,19 +330,38 @@ def load_capabilities(path: Path, manifest: dict[str, Any]) -> dict[str, dict[st
             raise GateError(f"capability {capability_id} lacks stable Unsupported semantics")
         capabilities[capability_id] = entry
 
-    for capability_id in manifest["required_false_capabilities"]:
-        entry = capabilities.get(capability_id)
-        if entry is None or entry["supported"]:
-            raise GateError(f"capability {capability_id} must remain false in v1")
-    for capability_id in manifest["optional_capabilities"]:
-        entry = capabilities.get(capability_id)
-        if entry is None:
-            raise GateError(f"capability {capability_id} is missing from the matrix")
-        if entry["supported"] and not (
-            entry["contract_evidence"] and entry["board_evidence"]
-        ):
+    reviewed = tuple(
+        manifest["supported_capabilities"]
+        + manifest["required_false_capabilities"]
+        + manifest["optional_capabilities"]
+    )
+    if set(capabilities) != set(reviewed):
+        missing = sorted(set(reviewed) - set(capabilities))
+        extra = sorted(set(capabilities) - set(reviewed))
+        raise GateError(
+            f"capability matrix differs from exact reviewed inventory "
+            f"(missing={missing}, extra={extra})"
+        )
+    for capability_id in manifest["supported_capabilities"]:
+        entry = capabilities[capability_id]
+        if not entry["supported"] or not entry["contract_evidence"]:
             raise GateError(
-                f"optional capability {capability_id} is true without contract and board evidence"
+                f"capability {capability_id} must be true with contract evidence"
+            )
+        if "unsupported_error" in entry:
+            raise GateError(f"supported capability {capability_id} cannot claim Unsupported")
+    false_capabilities = tuple(
+        manifest["required_false_capabilities"] + manifest["optional_capabilities"]
+    )
+    for capability_id in false_capabilities:
+        entry = capabilities[capability_id]
+        if entry["supported"] or entry.get("unsupported_error") != "Unsupported":
+            raise GateError(
+                f"capability {capability_id} must remain false with stable Unsupported semantics"
+            )
+        if entry["contract_evidence"] and entry["board_evidence"]:
+            raise GateError(
+                f"capability {capability_id} is false despite complete evidence"
             )
     return capabilities
 
@@ -401,6 +455,14 @@ def validate_result_semantics(
     release_digest: str,
     capabilities: dict[str, dict[str, Any]],
 ) -> None:
+    captured_at = result["captured_at_utc"]
+    try:
+        parsed_timestamp = datetime.strptime(captured_at, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as error:
+        raise GateError(f"result {source} captured_at_utc is not a valid UTC timestamp") from error
+    if parsed_timestamp.strftime("%Y-%m-%dT%H:%M:%SZ") != captured_at:
+        raise GateError(f"result {source} captured_at_utc is not canonical")
+
     expected = dict(manifest["expected"])
     expected["release_manifest_sha256"] = release_digest
     identities = result["identities"]
@@ -418,27 +480,44 @@ def validate_result_semantics(
     if set(profiles) != set(manifest["profiles"]) or len(profiles) != len(result["profiles"]):
         raise GateError(f"result {source} must contain debug and release exactly once")
     expected_applications = set(manifest["applications"])
+    profile_load_addresses: dict[str, set[str]] = {}
     for name, profile in profiles.items():
-        if len(set(profile["load_addresses"])) != 2:
+        load_addresses = [run["load_address"] for run in profile["runs"]]
+        if len(load_addresses) != 2 or len(set(load_addresses)) != 2:
             raise GateError(f"result {source} {name} profile needs two distinct load addresses")
+        profile_load_addresses[name] = set(load_addresses)
         applications = {item["name"]: item for item in profile["applications"]}
         if (
             set(applications) != expected_applications
             or len(applications) != len(profile["applications"])
         ):
             raise GateError(f"result {source} {name} profile application/build_id set is incomplete")
-
-    acceptance = exact_rows(result["acceptance"], "acceptance")
-    if set(acceptance) != set(manifest["acceptance_rows"]):
-        raise GateError(f"result {source} does not contain the exact v1 acceptance rows")
-    failed = sorted(row_id for row_id, row in acceptance.items() if row["status"] != "pass")
-    if failed:
-        raise GateError(f"result {source} acceptance rows did not pass: {', '.join(failed)}")
+        for run in profile["runs"]:
+            acceptance = exact_rows(run["acceptance"], "acceptance")
+            if set(acceptance) != set(manifest["acceptance_rows"]):
+                raise GateError(
+                    f"result {source} {name} {run['load_address']} does not contain "
+                    "the exact v1 acceptance rows"
+                )
+            failed = sorted(
+                row_id for row_id, row in acceptance.items() if row["status"] != "pass"
+            )
+            if failed:
+                raise GateError(
+                    f"result {source} {name} {run['load_address']} acceptance rows "
+                    f"did not pass: {', '.join(failed)}"
+                )
+    if len({frozenset(addresses) for addresses in profile_load_addresses.values()}) != 1:
+        raise GateError(
+            f"result {source} debug and release profiles must use the same two load addresses"
+        )
     if result["observed_failures"]:
         raise GateError(f"result {source} records observed failures and cannot release")
 
     audited = tuple(
-        manifest["required_false_capabilities"] + manifest["optional_capabilities"]
+        manifest["supported_capabilities"]
+        + manifest["required_false_capabilities"]
+        + manifest["optional_capabilities"]
     )
     reported = exact_rows(result["capabilities"], "capability")
     if set(reported) != set(audited):
@@ -482,10 +561,6 @@ def parse_args(arguments: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Verify exactly one signed XC7Z030 and XC7Z045 manual result."
     )
-    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    parser.add_argument("--schema", type=Path, default=DEFAULT_RESULT_SCHEMA)
-    parser.add_argument("--release-schema", type=Path, default=DEFAULT_RELEASE_SCHEMA)
-    parser.add_argument("--capabilities", type=Path, default=DEFAULT_CAPABILITIES)
     parser.add_argument("--release-manifest", type=Path, required=True)
     parser.add_argument(
         "--trusted-key",
@@ -498,16 +573,16 @@ def parse_args(arguments: list[str]) -> argparse.Namespace:
     return parser.parse_args(arguments)
 
 
-def run(arguments: list[str]) -> int:
+def _run_with_policy(arguments: list[str], policy: PolicyPaths) -> int:
     options = parse_args(arguments)
     if len(options.results) != 2:
         raise GateError("exactly two board result paths are required")
-    manifest = load_board_manifest(options.manifest)
-    result_schema = load_json(options.schema, "board-result JSON schema")
+    manifest = load_board_manifest(policy.manifest)
+    result_schema = load_json(policy.result_schema, "board-result JSON schema")
     _, release_digest = validate_release_manifest(
-        options.release_manifest, options.release_schema, manifest["expected"]
+        options.release_manifest, policy.release_schema, manifest["expected"]
     )
-    capabilities = load_capabilities(options.capabilities, manifest)
+    capabilities = load_capabilities(policy.capabilities, manifest)
     trusted_keys = load_trusted_keys(
         options.trusted_key, manifest["signature"]["minimum_rsa_bits"]
     )
@@ -541,6 +616,10 @@ def run(arguments: list[str]) -> int:
     compare_board_artifacts(by_part["XC7Z030"], by_part["XC7Z045"], manifest)
     print("verified signed XC7Z030 and XC7Z045 board results against reviewed release inputs")
     return 0
+
+
+def run(arguments: list[str]) -> int:
+    return _run_with_policy(arguments, CHECKED_IN_POLICY)
 
 
 def main() -> int:
