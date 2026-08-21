@@ -524,3 +524,29 @@ clean worktree including untracked state after commit, parent chain through Fix 
 original Task 17 commit, and unchanged backtrace gitlink/checkout
 `02ef1b533157e8ddbd0f9295c867e79b59e9bbbd`. No concerns remain; the full-tree hashes retain the
 already documented preflight I/O cost, and hardware execution remains manual Task 18 scope.
+
+## Final-release Task 2 follow-up — complete board application evidence
+
+Final-release integration found that the original Task 17 artifact set did not cover every
+application named by board policy and that several application sources could not honestly prove
+their mandatory rows. Task 2 corrects that evidence without changing the target, ABI, linker,
+validator, authentication, unwind policy, capability matrix, CI entrypoint, or manual hardware
+boundary.
+
+The process application now discovers and spawns its own executable in `--child` mode, with no
+nonexistent fixed path and no unsupported per-child environment or working-directory overrides.
+The network application completes fixed-byte numeric loopback TCP and UDP exchanges before a
+separate DNS probe accepts only EOS `Unsupported`. The unwind application force-captures,
+formats, requires, and prints a backtrace before retaining the existing catch/drop and TLS abort
+probes.
+
+The static gate now covers the exact eight-application board-policy set in debug and release.
+`ffi-containment` is a real C-to-Rust executable: reviewed full ARM GCC compiles
+`tests/eos/abi/ffi_caller.c` with the pinned ARMv7-A/cortex-a9/NEON-VFPv3/softfp flags, then
+`eos-rust-link` final-links that object with the reviewed Rust staticlib and a SHA-1 build ID.
+The same validator, symbol-table, authentication-trailer, build-ID, and retention helper used by
+Cargo applications gates the result. The focused integration suite passed 38/38; detailed RED,
+GREEN, artifact, and scope evidence is in
+`.superpowers/sdd/2026-08-21-eos-final-release-integration/task-2-report.md`.
+The follow-up product commit is `6fa0501ea2fa488dcf1c0d024ce7de271f0d7dab` with subject
+`test: make EOS board probes release-complete`.
