@@ -8,6 +8,21 @@ TARGET=armv7a-unknown-eos-eabi
 : "${EOS_ARM_GNU_CC:?EOS_ARM_GNU_CC must name the reviewed ARM GNU 14.3.1 compiler}"
 : "${EOS_ARM_GNU_OBJDUMP:?EOS_ARM_GNU_OBJDUMP must name the reviewed binutils 2.44 objdump}"
 
+INITIAL_PYTHON=$(command -v python3) || {
+    printf 'required runner Python is unavailable in the initial PATH\n' >&2
+    exit 2
+}
+TRUSTED_PYTHON=$(readlink -f "$INITIAL_PYTHON")
+if [[ ! -f "$TRUSTED_PYTHON" || ! -x "$TRUSTED_PYTHON" ]]; then
+    printf 'required runner Python is not an executable file: %s\n' "$TRUSTED_PYTHON" >&2
+    exit 2
+fi
+if ! "$TRUSTED_PYTHON" -c 'import sys, tomllib; raise SystemExit(sys.version_info < (3, 11))'; then
+    printf 'required runner Python must be Python 3.11 or newer with tomllib: %s\n' \
+        "$TRUSTED_PYTHON" >&2
+    exit 2
+fi
+
 SDK_ROOT=$(cd "$EOS_RUST_SDK_ROOT" && pwd -P)
 ARM_CC=$(readlink -f "$EOS_ARM_GNU_CC")
 ARM_OBJDUMP=$(readlink -f "$EOS_ARM_GNU_OBJDUMP")
@@ -17,10 +32,7 @@ CMAKE_BIN_DIR=${EOS_CMAKE_BIN_DIR:-}
 
 if [[ -n "$CMAKE_BIN_DIR" ]]; then
     CMAKE_BIN_DIR=$(cd "$CMAKE_BIN_DIR" && pwd -P)
-    PATH="$CMAKE_BIN_DIR:$PATH"
 fi
-PATH="$SDK_ROOT/bin:$PATH"
-export PATH
 export EOS_RUST_SDK_ROOT="$SDK_ROOT"
 export EOS_ARM_GNU_CC="$ARM_CC"
 export EOS_ARM_GNU_OBJDUMP="$ARM_OBJDUMP"
@@ -28,7 +40,13 @@ export LANG=C
 export LC_ALL=C
 export PYTHONPYCACHEPREFIX=${PYTHONPYCACHEPREFIX:-/tmp/eos-ci-pycache}
 
-python3 "$ROOT/tests/eos/host/test_static_elves.py" --verify-release-identity
+"$TRUSTED_PYTHON" "$ROOT/tests/eos/host/test_static_elves.py" --verify-release-identity
+
+if [[ -n "$CMAKE_BIN_DIR" ]]; then
+    PATH="$CMAKE_BIN_DIR:$PATH"
+fi
+PATH="$SDK_ROOT/bin:$PATH"
+export PATH
 
 for executable in \
     "$SDK_ROOT/bin/rustc" \
@@ -44,7 +62,7 @@ do
         exit 2
     fi
 done
-for command_name in cmake ctest python3 readelf objdump clang
+for command_name in cmake ctest readelf objdump clang
 do
     if ! command -v "$command_name" >/dev/null 2>&1; then
         printf 'required EOS CI command is unavailable: %s\n' "$command_name" >&2
@@ -82,7 +100,7 @@ sed -i \
 
 cd "$ROOT"
 
-python3 -m unittest -v tests.eos.host.test_toolchain_lock
+"$TRUSTED_PYTHON" -m unittest -v tests.eos.host.test_toolchain_lock
 
 ./x test \
     --stage 1 \
@@ -105,15 +123,15 @@ ctest --test-dir "$CI_TEMP/eos-abi-host" --output-on-failure
 
 EOS_RUST_RUSTC="$ROOT/build/$HOST_TRIPLE/stage1/bin/rustc" \
 PATH="$ROOT/build/$HOST_TRIPLE/stage1/bin:$PATH" \
-python3 -m unittest -v \
+"$TRUSTED_PYTHON" -m unittest -v \
     tests.eos.host.test_libc_links \
     tests.eos.host.test_libc_source_provenance
 PATH="$ROOT/build/$HOST_TRIPLE/stage1/bin:$PATH" \
-python3 -m unittest -v \
+"$TRUSTED_PYTHON" -m unittest -v \
     tests.eos.host.test_bootstrap_target \
     tests.eos.host.test_pal_cfg_scope \
     tests.eos.host.test_ffi_unwind_policy
-env -u EOS_RUST_SDK_ROOT python3 -m unittest discover \
+env -u EOS_RUST_SDK_ROOT "$TRUSTED_PYTHON" -m unittest discover \
     -s "$ROOT/src/tools/eos-sdk/tests" \
     -p 'test_*.py' \
     -v
@@ -125,10 +143,10 @@ env -u EOS_RUST_SDK_ROOT python3 -m unittest discover \
     library/sysroot
 
 EOS_RUST_RUSTC="$ROOT/build/$HOST_TRIPLE/stage1/bin/rustc" \
-    python3 "$ROOT/tests/eos/abi/compare_layouts.py" \
+    "$TRUSTED_PYTHON" "$ROOT/tests/eos/abi/compare_layouts.py" \
     "$ARTIFACT_ROOT/static-tests/layouts"
 
-python3 -m unittest -v tests.eos.host.test_static_elves
+"$TRUSTED_PYTHON" -m unittest -v tests.eos.host.test_static_elves
 
 printf 'EOS CI gates passed; SDK evidence: %s; static artifacts: %s\n' \
     "$ARTIFACT_ROOT/sdk" "$ARTIFACT_ROOT/static-tests"

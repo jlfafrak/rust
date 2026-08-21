@@ -903,12 +903,21 @@ class CiEntryPointPolicyTests(unittest.TestCase):
             victim.write_bytes(contents + b"\nsubstituted\n")
             victim.chmod(mode)
 
+            marker = Path(temporary) / "sdk-python-ran"
+            python_shim = substitute / "bin" / "python3"
+            python_shim.write_text(
+                "#!/bin/sh\n: > \"$EOS_PYTHON_SHIM_MARKER\"\nexit 0\n",
+                encoding="utf-8",
+            )
+            python_shim.chmod(0o700)
+
             control_bin = Path(temporary) / "control-bin"
             control_bin.mkdir()
             for command in ("bash", "dirname", "python3", "readlink"):
                 os.symlink(shutil.which(command), control_bin / command)
             environment = os.environ.copy()
             environment["EOS_RUST_SDK_ROOT"] = str(substitute)
+            environment["EOS_PYTHON_SHIM_MARKER"] = str(marker)
             environment["PATH"] = str(control_bin)
             result = run(
                 [ROOT / "tests" / "eos" / "run-ci.sh"],
@@ -917,6 +926,58 @@ class CiEntryPointPolicyTests(unittest.TestCase):
                 check=False,
             )
             self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(marker.exists(), "SDK python3 ran before identity verification")
+            self.assertIn("reviewed Task 16 SDK tree identity mismatch", result.stderr)
+
+    def test_ci_entrypoint_rejects_mutation_before_cmake_python_can_run(self) -> None:
+        reviewed = Path(os.environ["EOS_RUST_SDK_ROOT"]).resolve(strict=True)
+        with tempfile.TemporaryDirectory(
+            prefix=".eos-sdk-cmake-python-", dir=reviewed.parent
+        ) as temporary:
+            temporary_root = Path(temporary)
+            substitute = temporary_root / "sdk"
+            shutil.copytree(
+                reviewed,
+                substitute,
+                symlinks=True,
+                copy_function=os.link,
+            )
+            victim = substitute / "share" / "licenses" / "rust" / "LICENSE-MIT"
+            mode = victim.stat().st_mode
+            contents = victim.read_bytes()
+            victim.unlink()
+            victim.write_bytes(contents + b"\nsubstituted\n")
+            victim.chmod(mode)
+
+            marker = temporary_root / "cmake-python-ran"
+            cmake_bin = temporary_root / "cmake-bin"
+            cmake_bin.mkdir()
+            python_shim = cmake_bin / "python3"
+            python_shim.write_text(
+                "#!/bin/sh\n: > \"$EOS_PYTHON_SHIM_MARKER\"\nexit 0\n",
+                encoding="utf-8",
+            )
+            python_shim.chmod(0o700)
+
+            control_bin = temporary_root / "control-bin"
+            control_bin.mkdir()
+            for command in ("bash", "dirname", "python3", "readlink"):
+                os.symlink(shutil.which(command), control_bin / command)
+            environment = os.environ.copy()
+            environment["EOS_RUST_SDK_ROOT"] = str(substitute)
+            environment["EOS_CMAKE_BIN_DIR"] = str(cmake_bin)
+            environment["EOS_PYTHON_SHIM_MARKER"] = str(marker)
+            environment["PATH"] = str(control_bin)
+            result = run(
+                [ROOT / "tests" / "eos" / "run-ci.sh"],
+                cwd=ROOT,
+                env=environment,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(
+                marker.exists(), "CMake python3 ran before identity verification"
+            )
             self.assertIn("reviewed Task 16 SDK tree identity mismatch", result.stderr)
 
     def test_workflow_only_runs_ci_entrypoint_and_uploads_gate_artifacts(self) -> None:
