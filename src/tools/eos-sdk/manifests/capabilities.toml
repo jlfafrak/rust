@@ -1,0 +1,268 @@
+[matrix]
+schema_version = 1
+target = "armv7a-unknown-eos-eabi"
+unsupported_error = "Unsupported"
+
+[[capability]]
+id = "allocation"
+supported = true
+contract_evidence = true
+board_evidence = false
+evidence = "libeos_rust_abi host allocation contract tests"
+
+[[capability]]
+id = "arguments_environment_current_directory"
+supported = true
+contract_evidence = true
+board_evidence = false
+evidence = "runtime and process host contract tests"
+
+[[capability]]
+id = "standard_io"
+supported = true
+contract_evidence = true
+board_evidence = false
+evidence = "descriptor and standard-stream host contract tests"
+
+[[capability]]
+id = "files_and_directories"
+supported = true
+contract_evidence = true
+board_evidence = false
+evidence = "filesystem and descriptor host contract tests"
+
+[[capability]]
+id = "threads"
+supported = true
+contract_evidence = true
+board_evidence = false
+evidence = "thread lifecycle host contract tests"
+
+[[capability]]
+id = "rust_tls"
+supported = true
+contract_evidence = true
+board_evidence = false
+evidence = "reserved-slot TLS adapter and destructor host tests"
+
+[[capability]]
+id = "synchronization"
+supported = true
+contract_evidence = true
+board_evidence = false
+evidence = "mutex, condition, rwlock, once, and parking host tests"
+
+[[capability]]
+id = "monotonic_and_realtime_time"
+supported = true
+contract_evidence = true
+board_evidence = false
+evidence = "clock conversion and deadline host contract tests"
+
+[[capability]]
+id = "tcp"
+supported = true
+contract_evidence = true
+board_evidence = false
+evidence = "socket host contract tests"
+
+[[capability]]
+id = "udp"
+supported = true
+contract_evidence = true
+board_evidence = false
+evidence = "socket host contract tests"
+
+[[capability]]
+id = "numeric_socket_addresses"
+supported = true
+contract_evidence = true
+board_evidence = false
+evidence = "numeric address parsing and formatting host tests"
+
+[[capability]]
+id = "process_spawn_wait_kill"
+supported = true
+contract_evidence = true
+board_evidence = false
+evidence = "process and descriptor-inheritance host contract tests"
+
+[[capability]]
+id = "rust_panic_unwind"
+supported = true
+contract_evidence = true
+board_evidence = false
+evidence = "Rust unwind and linked ARM EHABI static gates"
+
+[[capability]]
+id = "panic_destructor_cleanup"
+supported = true
+contract_evidence = true
+board_evidence = false
+evidence = "Rust unwind fixture and containment contract tests"
+
+[[capability]]
+id = "ffi_panic_containment"
+supported = true
+contract_evidence = true
+board_evidence = false
+evidence = "ordinary-FFI containment contract and static gates"
+
+[[capability]]
+id = "backtrace_addresses"
+supported = true
+contract_evidence = true
+board_evidence = false
+evidence = "trace-only backtrace build and build-id retention gates"
+
+[[capability]]
+id = "secure_random"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "v1 supplies non-cryptographic HashMap seed diversification only"
+
+[[capability]]
+id = "native_elf_tls"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "v1 uses the EOS TLS adapter instead of PT_TLS"
+
+[[capability]]
+id = "hard_float_abi"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "v1 has one softfp procedure-call ABI target"
+
+[[capability]]
+id = "process_exec_replacement"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "v1 process support is spawn, wait, status, and termination"
+
+[[capability]]
+id = "cross_language_unwind"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "panics are contained before ordinary C/EOS boundaries"
+
+[[capability]]
+id = "automatic_board_deployment"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "physical board execution is an organization-controlled manual release step"
+
+[[capability]]
+id = "dns"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "no matching contract and two-board evidence"
+
+[[capability]]
+id = "ipv6"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "numeric conversion alone does not prove on-target IPv6 transport"
+
+[[capability]]
+id = "multicast"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "no matching contract and two-board evidence"
+
+[[capability]]
+id = "symlinks"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "the MARTOS 14.0.39 port returns ENOTSUP"
+
+[[capability]]
+id = "hard_links"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "the MARTOS 14.0.39 port returns ENOTSUP"
+
+[[capability]]
+id = "ownership"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "the MARTOS 14.0.39 port returns ENOTSUP"
+
+[[capability]]
+id = "permission_bit_fidelity"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "no matching contract and two-board evidence"
+
+[[capability]]
+id = "mmap_protection"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "no matching contract and two-board evidence"
+
+[[capability]]
+id = "dynamic_loading"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "no matching contract and two-board evidence"
+
+[[capability]]
+id = "per_child_env"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "no matching contract and two-board evidence"
+
+[[capability]]
+id = "per_child_cwd"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "no matching contract and two-board evidence"
+
+[[capability]]
+id = "signals"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "no v1 signal contract"
+
+[[capability]]
+id = "filesystem_durability"
+supported = false
+contract_evidence = false
+board_evidence = false
+unsupported_error = "Unsupported"
+evidence = "no matching contract and two-board evidence"

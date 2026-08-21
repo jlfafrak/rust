@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eos.invalid/schemas/eos-rust-board-result-v1.json",
+  "title": "Signed EOS Rust manual board result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "board", "captured_at_utc", "identities", "profiles",
+    "acceptance", "capabilities", "observed_failures", "signature"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "board": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["part", "module", "eos_version"],
+      "properties": {
+        "part": {"enum": ["XC7Z030", "XC7Z045"]},
+        "module": {"type": "string", "minLength": 1},
+        "eos_version": {"type": "string", "minLength": 1}
+      }
+    },
+    "captured_at_utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "identities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sdk_package_sha256_tree_v1", "release_manifest_sha256", "sdk_version",
+        "toolchain", "target", "layout_version", "rust_fork", "rust_upstream",
+        "libc_upstream", "backtrace", "arm_gnu_release",
+        "arm_gnu_sha256_tree_v1", "eos_sdk_baseline", "eos_sdk_sha256_tree_v1",
+        "native_abi_major", "native_abi_minor", "linker_script_sha256"
+      ],
+      "properties": {
+        "sdk_package_sha256_tree_v1": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "release_manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "sdk_version": {"type": "string", "minLength": 1},
+        "toolchain": {"type": "string", "minLength": 1},
+        "target": {"type": "string", "minLength": 1},
+        "layout_version": {"type": "integer", "minimum": 1},
+        "rust_fork": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "rust_upstream": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "libc_upstream": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "backtrace": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "arm_gnu_release": {"type": "string", "minLength": 1},
+        "arm_gnu_sha256_tree_v1": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "eos_sdk_baseline": {"type": "string", "minLength": 1},
+        "eos_sdk_sha256_tree_v1": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "native_abi_major": {"type": "integer", "minimum": 0},
+        "native_abi_minor": {"type": "integer", "minimum": 0},
+        "linker_script_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "profiles": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "load_addresses", "applications"],
+        "properties": {
+          "name": {"enum": ["debug", "release"]},
+          "load_addresses": {
+            "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^0x[0-9a-fA-F]{8}$"}
+          },
+          "applications": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "build_id", "authenticated_sha256"],
+              "properties": {
+                "name": {"type": "string", "minLength": 1},
+                "build_id": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+                "authenticated_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "acceptance": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status", "evidence"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "status": {"enum": ["pass", "fail"]},
+          "evidence": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "status": {"enum": ["pass", "unsupported", "fail"]},
+          "error": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "observed_failures": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "key_id", "value"],
+      "properties": {
+        "algorithm": {"const": "RSASSA-PKCS1-v1_5-SHA256"},
+        "key_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+        "value": {"type": "string", "pattern": "^[A-Za-z0-9+/]+={0,2}$"}
+      }
+    }
+  }
+}
