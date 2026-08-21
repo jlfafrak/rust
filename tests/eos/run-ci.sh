@@ -28,6 +28,8 @@ export LANG=C
 export LC_ALL=C
 export PYTHONPYCACHEPREFIX=${PYTHONPYCACHEPREFIX:-/tmp/eos-ci-pycache}
 
+python3 "$ROOT/tests/eos/host/test_static_elves.py" --verify-release-identity
+
 for executable in \
     "$SDK_ROOT/bin/rustc" \
     "$SDK_ROOT/bin/cargo" \
