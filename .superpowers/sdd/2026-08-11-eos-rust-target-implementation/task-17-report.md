@@ -550,3 +550,19 @@ GREEN, artifact, and scope evidence is in
 `.superpowers/sdd/2026-08-21-eos-final-release-integration/task-2-report.md`.
 The follow-up product commit is `6fa0501ea2fa488dcf1c0d024ce7de271f0d7dab` with subject
 `test: make EOS board probes release-complete`.
+
+### Final-release Task 2 Fix Round 1 hardening
+
+Final review found that the Task 2 C compile and GCC probes inherited ambient compiler search
+variables and that the static gates did not reject incomplete UDP/backtrace evidence or a final
+containment ELF that left the Rust archive unextracted. The corrected gate uses an allowlisted
+`LANG`/`LC_ALL`/`PATH` environment for GCC probes and every controlled C invocation, and requires
+the resolved executable cc1 to remain beneath the reviewed ARM GNU root. A hostile executable
+cc1 plus poisoned header control is ignored without execution/use.
+
+Mutation fixtures now reject removed UDP payload verification and removed backtrace formatting,
+content enforcement, or printing. Final `ffi-containment` retention additionally requires global
+`main` and `eos_ffi_containment_probe`; a real C-only link that does not reference the archive is
+rejected. The expanded Task 2 combined suite passed 42/42 in 350.518s. Full RED/GREEN commands
+and outputs are in the Task 2 report. No Task 17 workflow, SDK, target, ABI, linker, application,
+board policy, hardware, or deployment behavior changed.

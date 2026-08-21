@@ -161,3 +161,102 @@ The requested documentation follow-up uses subject
 Before staging, path-scoped whitespace checks passed for the tracked Task 17 report and the
 ignored/untracked Task 2 report. The subsequent cached audit is required to confirm the same
 two-path scope, `100644` modes, and clean diff before the docs-only commit is created.
+
+## Fix Round 1 — hermetic compiler closure and mutation-complete evidence
+
+### Review findings and root cause
+
+Final review reported 0 Critical, 2 Important, and 0 Minor findings. Both Important findings were
+reproduced against the real gate before production edits.
+
+The C caller compile called `run()` without `env`, so Python inherited the runner environment.
+`arm_gcc()` likewise queried `--version` and `-print-prog-name=cc1` in the ambient environment
+and only checked that the reported cc1 existed. Consequently GCC search variables could select
+an unreviewed frontend or header even though the compiler tree itself passed its cryptographic
+identity check.
+
+The application-realism controls also checked broad source tokens/order rather than the complete
+evidence operations. The common retention helper required `.symtab` but did not require the C
+entry point and Rust containment export in the final symbol table, so a C-only final link could
+leave the Rust archive unextracted and still be retained/authenticated.
+
+### Independent RED controls
+
+The exact focused RED command was:
+
+```text
+EOS_RUST_SDK_ROOT=/tmp/eos-task16-fix1-replacement-sdk \
+EOS_ARM_GNU_CC=/home/dev/code/arm-toolchain-build/custom-arm-libs/bin/arm-none-eabi-gcc \
+EOS_ARM_GNU_OBJDUMP=/home/dev/code/arm-toolchain-build/custom-arm-libs/bin/arm-none-eabi-objdump \
+PYTHONPYCACHEPREFIX=/tmp/eos-final-task2-fix1-red-pycache \
+python3 -m unittest -v \
+  tests.eos.host.test_static_elves.ApplicationEvidencePolicyTests.test_application_gate_rejects_removed_udp_verification \
+  tests.eos.host.test_static_elves.ApplicationEvidencePolicyTests.test_application_gate_rejects_incomplete_backtrace_evidence \
+  tests.eos.host.test_static_elves.StaticElfGateTests.test_ffi_caller_ignores_hostile_compiler_environment \
+  tests.eos.host.test_static_elves.StaticElfGateTests.test_ffi_gate_rejects_final_elf_without_extracted_rust_symbol
+```
+
+It ran four tests in 15.256s and failed 4/4 for the intended reasons:
+
+- removing the UDP receive comparison encountered no application evidence verifier;
+- replacing backtrace formatting, nonempty-content enforcement, or evidence printing encountered
+  no application evidence verifier;
+- injected `GCC_EXEC_PREFIX`, `COMPILER_PATH`, `CPATH`, `C_INCLUDE_PATH`,
+  `CPLUS_INCLUDE_PATH`, and `OBJC_INCLUDE_PATH` influenced the real C build and made it fail; and
+- a real final link from a C-only `main` plus the Rust archive was accepted because no assertion
+  required `eos_ffi_containment_probe` to have been extracted.
+
+### Minimal fixes and focused GREEN
+
+The gate now creates a minimal compiler environment containing only `LANG=C`, `LC_ALL=C`, and
+the platform default `PATH`. Both GCC identity/cc1 probes and every controlled C compile or
+relocatable GCC link use it. The cc1 query must now return an absolute, executable regular file
+that resolves beneath the cryptographically reviewed ARM GNU root. On the reviewed closure it
+resolves to:
+
+```text
+/home/dev/code/arm-toolchain-build/custom-arm-libs/libexec/gcc/arm-none-eabi/14.3.1/cc1
+```
+
+The hostile control supplies an executable cc1 that would write a marker and a poisoned
+`stdint.h` that would stop compilation. The real FFI build completes while the marker remains
+absent, proving neither hostile frontend execution nor hostile header use.
+
+The application evidence verifier now requires both fixed UDP send/receive directions, exact
+payload comparisons, and the stable UDP evidence line. It separately requires forced backtrace
+capture, formatting, captured status, nonempty content, and printing. Mutation fixtures delete
+or replace each required operation and are rejected before artifact acceptance.
+
+For `ffi-containment`, the common retention helper now parses the final ELF symbol table and
+requires both global `main` and global `eos_ffi_containment_probe`. The real C-only negative
+final link is rejected for the missing Rust export; the reviewed C caller extracts the archive
+and retains both symbols.
+
+The exact focused command above, with
+`PYTHONPYCACHEPREFIX=/tmp/eos-final-task2-fix1-green-pycache`, then ran 4/4 in 81.542s: `OK`.
+
+### Complete GREEN and strict checks
+
+The required combined command was rerun unchanged from Task 2:
+
+```text
+EOS_RUST_SDK_ROOT=/tmp/eos-task16-fix1-replacement-sdk \
+EOS_ARM_GNU_CC=/home/dev/code/arm-toolchain-build/custom-arm-libs/bin/arm-none-eabi-gcc \
+EOS_ARM_GNU_OBJDUMP=/home/dev/code/arm-toolchain-build/custom-arm-libs/bin/arm-none-eabi-objdump \
+EOS_CI_ARTIFACT_DIR=/tmp/eos-final-task2-artifacts \
+PYTHONPYCACHEPREFIX=/tmp/eos-final-task2-pycache \
+python3 -m unittest -v tests.eos.host.test_static_elves tests.eos.board.test_check_results
+```
+
+It ran 42 tests in 350.518s and passed with zero failures and zero skips. Python 3.14
+`-Wall -Werror -m py_compile tests/eos/host/test_static_elves.py` passed. Path-scoped
+`git diff --check` passed for the gate and reports.
+
+The Fix Round 1 product/evidence delta is confined to `tests/eos/host/test_static_elves.py`, this
+report, and the Task 17 evidence follow-up. No application source, ABI fixture, board policy,
+SDK, linker, validator, authentication, capability, CI, ledger, backtrace gitlink, hardware, or
+Task 3+ file changed. The release artifact remains an ARM ELF32 `ET_DYN` EABI5 soft-float PIE;
+independent final `readelf -sW` output contains both required global symbols. Hardware execution
+remains the manual release boundary.
+
+Fix Round 1 commit subject: `test: harden EOS application evidence gates`

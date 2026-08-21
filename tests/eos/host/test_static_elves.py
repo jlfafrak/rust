@@ -134,6 +134,14 @@ def configured_tool(variable: str, description: str) -> Path:
     return tool
 
 
+def compiler_environment() -> dict[str, str]:
+    return {
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": os.defpath,
+    }
+
+
 @functools.cache
 def verify_release_identity(sdk: Path, gcc: Path, objdump: Path) -> Path:
     if sha256_tree_v1(sdk) != REVIEWED_SDK_TREE_SHA256:
@@ -222,7 +230,9 @@ def arm_objdump(sdk: Path) -> Path:
             configured_tool("EOS_ARM_GNU_CC", "ARM GNU 14.3.1 compiler"),
             resolved,
         )
-        version = run([resolved, "--version"], cwd=ROOT).stdout.splitlines()
+        version = run(
+            [resolved, "--version"], cwd=ROOT, env=compiler_environment()
+        ).stdout.splitlines()
         if version and re.search(r"\b2\.44(?:\.\d+)?\b", version[0]):
             return resolved
         raise AssertionError(f"ARM objdump is not pinned binutils 2.44: {resolved}")
@@ -240,19 +250,31 @@ def arm_gcc(sdk: Path) -> Path:
         raise AssertionError(
             "complete ARM GNU compiler is unavailable; set EOS_ARM_GNU_CC"
         ) from error
-    verify_release_identity(
+    arm_root = verify_release_identity(
         sdk,
         resolved,
         configured_tool("EOS_ARM_GNU_OBJDUMP", "binutils 2.44 objdump"),
     )
-    version = run([resolved, "--version"], cwd=ROOT).stdout.splitlines()
+    environment = compiler_environment()
+    version = run(
+        [resolved, "--version"], cwd=ROOT, env=environment
+    ).stdout.splitlines()
     if not version or re.search(r"\b14\.3\.1\b", version[0]) is None:
         raise AssertionError(f"ARM GCC is not pinned version 14.3.1: {resolved}")
-    cc1 = run([resolved, "-print-prog-name=cc1"], cwd=ROOT).stdout.strip()
+    cc1 = run(
+        [resolved, "-print-prog-name=cc1"], cwd=ROOT, env=environment
+    ).stdout.strip()
     cc1_path = Path(cc1)
-    if not cc1_path.is_absolute():
-        cc1_path = resolved.parent / cc1_path
-    if not cc1_path.resolve(strict=False).is_file():
+    try:
+        cc1_resolved = cc1_path.resolve(strict=True)
+        cc1_resolved.relative_to(arm_root)
+    except (OSError, ValueError) as error:
+        raise AssertionError(
+            f"ARM GCC cc1 resolves outside the reviewed compiler closure: {cc1_path}"
+        ) from error
+    if not cc1_path.is_absolute() or not cc1_resolved.is_file() or not os.access(
+        cc1_resolved, os.X_OK
+    ):
         raise AssertionError(
             f"ARM GCC has no usable cc1 compilation closure: {resolved}; set EOS_ARM_GNU_CC"
         )
@@ -292,6 +314,36 @@ def build_environment(sdk: Path, home: Path) -> dict[str, str]:
     return environment
 
 
+def verify_application_evidence_sources(root: Path) -> None:
+    network = (
+        root / "tests" / "eos" / "apps" / "network" / "src" / "main.rs"
+    ).read_text(encoding="utf-8")
+    udp_evidence = (
+        'assert_eq!(first.send(b"EOS")?, 3);',
+        "assert_eq!(second.recv(&mut datagram)?, 3);",
+        'assert_eq!(&datagram, b"EOS", "UDP peer must receive fixed bytes");',
+        'assert_eq!(second.send(b"UDP")?, 3);',
+        "assert_eq!(first.recv(&mut datagram)?, 3);",
+        'assert_eq!(&datagram, b"UDP", "UDP origin must receive fixed bytes");',
+        'println!("network udp: numeric-loopback exchange=EOS/UDP");',
+    )
+    if any(fragment not in network for fragment in udp_evidence):
+        raise AssertionError("network probe lacks complete fixed-datagram UDP evidence")
+
+    unwind = (
+        root / "tests" / "eos" / "apps" / "unwind" / "src" / "main.rs"
+    ).read_text(encoding="utf-8")
+    backtrace_evidence = (
+        "Backtrace::force_capture()",
+        'let formatted = format!("{backtrace}");',
+        "BacktraceStatus::Captured",
+        "!formatted.trim().is_empty()",
+        'println!("EOS Rust backtrace probe:\\n{formatted}");',
+    )
+    if any(fragment not in unwind for fragment in backtrace_evidence):
+        raise AssertionError("unwind probe lacks complete printable backtrace evidence")
+
+
 def build_id(readelf: Path, elf: Path, cwd: Path) -> str:
     notes = run([readelf, "-nW", elf], cwd=cwd).stdout
     match = re.search(r"Build ID:\s*([0-9a-f]+)", notes)
@@ -323,6 +375,8 @@ def retain_application_artifacts(
     cwd: Path,
     environment: dict[str, str],
     artifacts: Path,
+    *,
+    required_global_symbols: tuple[str, ...] = (),
 ) -> tuple[Path, Path, str]:
     validator = sdk / "bin" / "eos-elf-validate"
     packager = sdk / "bin" / "eos-auth-package"
@@ -331,6 +385,19 @@ def retain_application_artifacts(
     sections = run([readelf, "-SW", candidate], cwd=cwd).stdout
     if ".symtab" not in sections:
         raise AssertionError(f"base ELF was stripped before retention: {candidate}")
+    if required_global_symbols:
+        symbols = run([readelf, "-sW", candidate], cwd=cwd).stdout
+        global_symbols = {
+            fields[7]
+            for line in symbols.splitlines()
+            if len(fields := line.split()) >= 8 and fields[4] == "GLOBAL"
+        }
+        missing_symbols = sorted(set(required_global_symbols) - global_symbols)
+        if missing_symbols:
+            raise AssertionError(
+                "final ELF lacks required global symbol(s): "
+                + ", ".join(missing_symbols)
+            )
     identifier = build_id(readelf, candidate, cwd)
 
     artifacts.mkdir(parents=True, exist_ok=True)
@@ -423,6 +490,7 @@ def build_ffi_containment_application(
             caller_object,
         ],
         cwd=app,
+        env=compiler_environment(),
     )
 
     candidate = app / "ffi-containment.elf"
@@ -446,6 +514,7 @@ def build_ffi_containment_application(
         app,
         environment,
         artifacts,
+        required_global_symbols=("main", "eos_ffi_containment_probe"),
     )
 
 
@@ -489,7 +558,11 @@ def arm_attributes(
 
 
 def require_gcc_target_configuration(gcc: Path, cwd: Path) -> str:
-    configuration = run([gcc, "-Q", "--help=target", *TARGET_FLAGS], cwd=cwd).stdout
+    configuration = run(
+        [gcc, "-Q", "--help=target", *TARGET_FLAGS],
+        cwd=cwd,
+        env=compiler_environment(),
+    ).stdout
     required = (
         (r"^\s*-march=\s+armv7-a\+simd\s*$", "ARMv7-A architecture"),
         (r"^\s*-mtune=\s+cortex-a9\s*$", "cortex-a9 tuning"),
@@ -650,12 +723,12 @@ def build_softfp_objects(sdk: Path, work: Path, artifacts: Path) -> None:
         "-c",
         c_source,
     ]
-    run([*common_c, "-o", c_soft], cwd=work)
+    run([*common_c, "-o", c_soft], cwd=work, env=compiler_environment())
     hard_c = [
         "-mfloat-abi=hard" if flag == "-mfloat-abi=softfp" else flag
         for flag in common_c
     ]
-    run([*hard_c, "-o", c_hard], cwd=work)
+    run([*hard_c, "-o", c_hard], cwd=work, env=compiler_environment())
     run(
         [
             rustc,
@@ -711,7 +784,11 @@ def build_softfp_objects(sdk: Path, work: Path, artifacts: Path) -> None:
     abi_sequence = compare_softfp_abi_sequences(c_disassembly, rust_disassembly)
 
     pair = work / "softfp-pair.o"
-    run([gcc, *TARGET_FLAGS, "-nostdlib", "-r", c_soft, rust, "-o", pair], cwd=work)
+    run(
+        [gcc, *TARGET_FLAGS, "-nostdlib", "-r", c_soft, rust, "-o", pair],
+        cwd=work,
+        env=compiler_environment(),
+    )
     hard_pair = run(
         [
             gcc,
@@ -725,6 +802,7 @@ def build_softfp_objects(sdk: Path, work: Path, artifacts: Path) -> None:
             work / "hardfp-pair.o",
         ],
         cwd=work,
+        env=compiler_environment(),
         check=False,
     )
     if hard_pair.returncode == 0:
@@ -774,10 +852,83 @@ class ApplicationEvidencePolicyTests(unittest.TestCase):
         self.assertNotIn("to_socket_addrs()?", source)
         self.assertLess(source.index("TcpStream::connect"), source.index("to_socket_addrs()"))
         self.assertLess(source.index("UdpSocket::bind"), source.index("to_socket_addrs()"))
+        verify_application_evidence_sources(ROOT)
 
     def test_unwind_probe_force_captures_backtrace_evidence(self) -> None:
         source = self.application_source("unwind")
         self.assertIn("Backtrace::force_capture()", source)
+        verify_application_evidence_sources(ROOT)
+
+    def evidence_verifier(self):
+        verifier = globals().get("verify_application_evidence_sources")
+        self.assertIsNotNone(verifier, "application evidence verifier is missing")
+        return verifier
+
+    def isolated_evidence_apps(self, root: Path) -> Path:
+        for name in ("network", "unwind"):
+            source = ROOT / "tests" / "eos" / "apps" / name
+            destination = root / "tests" / "eos" / "apps" / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, destination)
+        return root
+
+    def test_application_gate_rejects_removed_udp_verification(self) -> None:
+        verifier = self.evidence_verifier()
+        with tempfile.TemporaryDirectory(prefix="eos-network-mutation-") as temporary:
+            fixture_root = self.isolated_evidence_apps(Path(temporary))
+            source_path = (
+                fixture_root / "tests" / "eos" / "apps" / "network" / "src" / "main.rs"
+            )
+            source = source_path.read_text(encoding="utf-8")
+            verification = (
+                '    assert_eq!(&datagram, b"EOS", "UDP peer must receive fixed bytes");\n'
+            )
+            self.assertIn(verification, source)
+            source_path.write_text(source.replace(verification, ""), encoding="utf-8")
+            with self.assertRaisesRegex(AssertionError, "UDP evidence"):
+                verifier(fixture_root)
+
+    def test_application_gate_rejects_incomplete_backtrace_evidence(self) -> None:
+        verifier = self.evidence_verifier()
+        mutations = (
+            (
+                "formatting",
+                '    let formatted = format!("{backtrace}");\n',
+                "    let formatted = String::new();\n",
+            ),
+            (
+                "content",
+                '        !formatted.trim().is_empty(),\n',
+                "        true,\n",
+            ),
+            (
+                "printing",
+                '    println!("EOS Rust backtrace probe:\\n{formatted}");\n',
+                "    let _ = &formatted;\n",
+            ),
+        )
+        for name, original, replacement in mutations:
+            with self.subTest(mutation=name):
+                with tempfile.TemporaryDirectory(
+                    prefix=f"eos-backtrace-{name}-"
+                ) as temporary:
+                    fixture_root = self.isolated_evidence_apps(Path(temporary))
+                    source_path = (
+                        fixture_root
+                        / "tests"
+                        / "eos"
+                        / "apps"
+                        / "unwind"
+                        / "src"
+                        / "main.rs"
+                    )
+                    source = source_path.read_text(encoding="utf-8")
+                    self.assertIn(original, source)
+                    source_path.write_text(
+                        source.replace(original, replacement), encoding="utf-8"
+                    )
+                    with self.assertRaisesRegex(AssertionError, "backtrace evidence"):
+                        verifier(fixture_root)
 
     def test_static_application_set_equals_board_policy(self) -> None:
         manifest = tomllib.loads(
@@ -806,6 +957,7 @@ class StaticElfGateTests(unittest.TestCase):
         cls.temporary.cleanup()
 
     def test_representative_applications_cross_link_debug_and_release(self) -> None:
+        verify_application_evidence_sources(ROOT)
         for app_name in APPLICATIONS:
             for profile in PROFILES:
                 with self.subTest(application=app_name, profile=profile):
@@ -823,6 +975,64 @@ class StaticElfGateTests(unittest.TestCase):
                     self.assertTrue(authenticated.is_file())
                     self.assertTrue(retained.with_suffix(".build-id").is_file())
                     self.assertRegex(identifier, r"^[0-9a-f]{40}$")
+
+    def test_ffi_caller_ignores_hostile_compiler_environment(self) -> None:
+        test_root = self.work / "hostile-compiler-control"
+        hostile = test_root / "hostile"
+        hostile.mkdir(parents=True)
+        marker = test_root / "hostile-cc1-ran"
+        cc1 = hostile / "cc1"
+        cc1.write_text(
+            '#!/bin/sh\n: > "$EOS_HOSTILE_CC1_MARKER"\nexit 99\n',
+            encoding="utf-8",
+        )
+        cc1.chmod(0o700)
+        include = hostile / "include"
+        include.mkdir()
+        (include / "stdint.h").write_text(
+            "#error hostile ambient header was used\n", encoding="utf-8"
+        )
+        hostile_environment = {
+            "C_INCLUDE_PATH": str(include),
+            "COMPILER_PATH": str(hostile),
+            "CPATH": str(include),
+            "CPLUS_INCLUDE_PATH": str(include),
+            "EOS_HOSTILE_CC1_MARKER": str(marker),
+            "GCC_EXEC_PREFIX": f"{hostile}{os.sep}",
+            "OBJC_INCLUDE_PATH": str(include),
+        }
+        with mock.patch.dict(os.environ, hostile_environment, clear=False):
+            try:
+                build_ffi_containment_application(
+                    self.sdk,
+                    "debug",
+                    test_root / "work",
+                    test_root / "artifacts",
+                )
+            except AssertionError as error:
+                self.fail(f"ambient compiler environment influenced the build: {error}")
+        self.assertFalse(marker.exists(), "hostile cc1 was executed")
+
+    def test_ffi_gate_rejects_final_elf_without_extracted_rust_symbol(self) -> None:
+        fixture_root = self.work / "ffi-unextracted-rust-fixture"
+        source = ROOT / "tests" / "eos" / "apps" / "ffi-containment"
+        destination = fixture_root / "tests" / "eos" / "apps" / "ffi-containment"
+        destination.parent.mkdir(parents=True)
+        shutil.copytree(source, destination)
+        caller = fixture_root / "tests" / "eos" / "abi" / "ffi_caller.c"
+        caller.parent.mkdir(parents=True)
+        caller.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+
+        with mock.patch.dict(globals(), {"ROOT": fixture_root}):
+            with self.assertRaisesRegex(
+                AssertionError, "eos_ffi_containment_probe"
+            ):
+                build_ffi_containment_application(
+                    self.sdk,
+                    "release",
+                    self.work / "ffi-unextracted-rust-work",
+                    self.work / "ffi-unextracted-rust-artifacts",
+                )
 
     def test_softfp_objects_match_and_hard_float_control_fails(self) -> None:
         build_softfp_objects(self.sdk, self.work, self.artifacts)
@@ -926,6 +1136,7 @@ class StaticElfGateTests(unittest.TestCase):
                 run(
                     [gcc, *flags, "-mfloat-abi=softfp", "-O2", "-c", source, "-o", obj],
                     cwd=self.work,
+                    env=compiler_environment(),
                 )
                 with self.assertRaisesRegex(AssertionError, message):
                     arm_attributes(readelf, obj, self.work)
