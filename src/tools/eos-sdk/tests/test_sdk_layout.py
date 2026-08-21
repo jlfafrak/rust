@@ -773,6 +773,24 @@ Path(os.environ["RUSTUP_LOG"]).write_text(json.dumps(sys.argv[1:]), encoding="ut
                 installer.main([str(sdk)])
             external.assert_not_called()
 
+    def test_installer_rejects_root_replaced_during_initial_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            sdk = temporary / "sdk"
+            create_installed_sdk(sdk)
+            installer = load_installer_module()
+            original = installer.validate_tree_entries
+
+            def replace_after_resolve(root, description):
+                if description == "SDK":
+                    sdk.rename(temporary / "resolved-sdk")
+                    create_installed_sdk(sdk)
+                return original(root, description)
+
+            with mock.patch.object(installer, "validate_tree_entries", side_effect=replace_after_resolve):
+                with self.assertRaisesRegex(installer.InstallError, "identity changed during validation"):
+                    installer.validate_sdk(sdk)
+
 
 class BuilderContractTests(unittest.TestCase):
     def setUp(self):

@@ -141,6 +141,14 @@ passed. The resulting ARM EABI5 PIE passed base validation; authentication
 packaging and `--allow-auth-trailer` validation passed, and default validation
 rejected the trailer with status 2. Generated SDK-example Cargo state was removed.
 
+## Fix Round 2
+
+Review found that initial SDK-root identity capture followed semantic validation. A focused
+replacement-at-initial-validation control was RED (no `InstallError`); identity capture is now
+immediately after resolve/type validation, before every tree and artifact check. The focused
+control and existing package-mutation and pre-rustup root-replacement controls are GREEN (3/3).
+The documented same-user post-final-recheck micro-race remains the only irreducible boundary.
+
 - A same-user process can still win the irreducible micro-race after the installer's final
   identity/fingerprint recheck and before rustup exec or no-rustup printing.
 - Atomic no-replace publication intentionally fails closed on filesystems that do not implement

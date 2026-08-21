@@ -261,6 +261,10 @@ def validate_sdk(argument: Path) -> ValidatedSdk:
         raise InstallError(f"SDK root is unavailable: {argument}: {error}") from error
     if not root.is_dir():
         raise InstallError(f"SDK root is not a directory: {root}")
+    try:
+        before = root.stat()
+    except OSError as error:
+        raise InstallError(f"unable to capture SDK root identity: {error}") from error
     validate_tree_entries(root, "SDK")
     layout = load_layout(root)
     load_release_manifest(root)
@@ -299,10 +303,6 @@ def validate_sdk(argument: Path) -> ValidatedSdk:
         raise InstallError("missing target shared library std")
     for library in shared_std:
         rooted_file(root, str(library.relative_to(root)), "target shared library std")
-    try:
-        before = root.stat()
-    except OSError as error:
-        raise InstallError(f"unable to capture SDK root identity: {error}") from error
     fingerprint = package_fingerprint(root)
     try:
         after = root.stat()
