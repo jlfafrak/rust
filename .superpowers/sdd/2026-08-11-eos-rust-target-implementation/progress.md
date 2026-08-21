@@ -48,3 +48,7 @@ Task 14: complete (commits 47f0c30..7122fab, review clean; final linked EHABI ga
 Task 15: fix round 1/5 (4 addressed, 2 new open; commits 596c23b..2bee665)
 Task 15: fix round 2/5 (2 addressed, 0 open; commits 2bee665..329404f)
 Task 15: complete (commits 596c23b..329404f; nested backtrace commit 28ec93b..02ef1b5; review clean; hardware loader/authentication/unwind validation remains manual)
+Task 16: fix round 1/5 (6 addressed, 2 open — installer root identity was captured after semantic validation; the initial-validation root-replacement control remained open; commits fbd7cf8..a783c33)
+Task 16: evidence boundary (user constraint): the sole successful real SDK builder ran on clean recovery commit baeb1a5 and covers unchanged builder/package behavior; installer-only Fix Round 2 is covered by fresh 32/76/37/static tests and its focused root-replacement control, with no second real builder
+Task 16: fix round 2/5 (2 addressed, 0 open; commits a783c33..680eb7a)
+Task 16: complete (commits 166453d..680eb7a, review clean; nested backtrace remains 02ef1b5; hardware loader/authentication/unwind validation remains manual)
