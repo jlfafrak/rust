@@ -45,9 +45,10 @@ src/tools/eos-sdk/bin/eos-elf-validate \
 The checker fails closed unless it receives exactly one signed result for each part family. Both
 results must match the reviewed SDK, Rust, libc, backtrace, ARM GNU, EOS baseline, native ABI,
 linker script, and release-manifest identities. They must contain debug and release profiles,
-identical cross-board application artifacts, two uniquely keyed load-address runs per profile,
-the exact application/build-ID set, every passing v1 acceptance row in all four runs, the exact
-complete capability inventory, and an explicit empty observed-failure list.
+identical cross-board application artifacts, two numerically distinct canonical lowercase
+load-address runs per profile, the exact application/build-ID set, every passing v1 acceptance
+row in all four runs, the exact complete capability inventory, and an explicit empty
+observed-failure list.
 
 Every reviewed v1 optional capability remains false, and both board results must report
 `unsupported` with `Unsupported`, matching the capability matrix. Promoting one requires a

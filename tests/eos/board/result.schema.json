@@ -73,7 +73,7 @@
               "additionalProperties": false,
               "required": ["load_address", "acceptance"],
               "properties": {
-                "load_address": {"type": "string", "pattern": "^0x[0-9a-fA-F]{8}$"},
+                "load_address": {"type": "string", "pattern": "^0x[0-9a-f]{8}$"},
                 "acceptance": {
                   "type": "array",
                   "minItems": 1,

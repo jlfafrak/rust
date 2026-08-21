@@ -278,6 +278,7 @@ class BoardResultGateTests(unittest.TestCase):
         *,
         release_manifest: Path | None = None,
         capabilities: Path = CAPABILITIES,
+        result_schema: Path = RESULT_SCHEMA,
         policy_overrides: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         paths = []
@@ -309,7 +310,9 @@ class BoardResultGateTests(unittest.TestCase):
                 ]
             )
         command.extend(map(str, paths))
-        if capabilities != CAPABILITIES and not policy_overrides:
+        if (
+            capabilities != CAPABILITIES or result_schema != RESULT_SCHEMA
+        ) and not policy_overrides:
             module_name = f"task18_checker_{id(self)}"
             spec = importlib.util.spec_from_file_location(module_name, CHECKER)
             assert spec is not None and spec.loader is not None
@@ -318,7 +321,7 @@ class BoardResultGateTests(unittest.TestCase):
             spec.loader.exec_module(checker)
             policy = checker.PolicyPaths(
                 manifest=BOARD_MANIFEST,
-                result_schema=RESULT_SCHEMA,
+                result_schema=result_schema,
                 release_schema=RELEASE_SCHEMA,
                 capabilities=capabilities,
             )
@@ -439,6 +442,31 @@ class BoardResultGateTests(unittest.TestCase):
         self.assert_rejected(
             self.run_checker(incomplete_matrix, self.result("XC7Z045")),
             "same two load addresses",
+        )
+
+    def test_rejects_case_aliased_load_addresses(self):
+        results = [self.result("XC7Z030"), self.result("XC7Z045")]
+        for result in results:
+            for profile in result["profiles"]:
+                profile["runs"][0]["load_address"] = "0xabcdef00"
+                profile["runs"][1]["load_address"] = "0xABCDEF00"
+            sign_result(result)
+
+        self.assert_rejected(
+            self.run_checker(*results),
+            "load_address",
+        )
+
+        permissive_schema = self.root / "case-insensitive-result.schema.json"
+        permissive_schema.write_text(
+            RESULT_SCHEMA.read_text(encoding="utf-8").replace(
+                "^0x[0-9a-f]{8}$", "^0x[0-9a-fA-F]{8}$"
+            ),
+            encoding="utf-8",
+        )
+        self.assert_rejected(
+            self.run_checker(*results, result_schema=permissive_schema),
+            "distinct load addresses",
         )
 
     def test_rejects_missing_acceptance_row_and_observed_failure_list(self):

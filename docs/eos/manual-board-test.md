@@ -24,7 +24,9 @@ For each part family:
 2. Transfer the authenticated debug and release bundles by the organization's approved manual
    method.
 3. Through the EOS console, start each profile at two distinct organization-approved PIE load
-   addresses. Do not put board network locations or credentials in the result.
+   addresses. Record each as canonical lowercase `0x` plus eight hexadecimal digits; differently
+   cased spellings of one numeric address are not distinct. Do not put board network locations or
+   credentials in the result.
 4. At each of the four profile/address combinations, capture a complete console evidence set for
    every v1 acceptance row:
    `pie_load_relocation`, `arguments`, `environment`, `current_working_directory`,

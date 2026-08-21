@@ -480,12 +480,13 @@ def validate_result_semantics(
     if set(profiles) != set(manifest["profiles"]) or len(profiles) != len(result["profiles"]):
         raise GateError(f"result {source} must contain debug and release exactly once")
     expected_applications = set(manifest["applications"])
-    profile_load_addresses: dict[str, set[str]] = {}
+    profile_load_addresses: dict[str, set[int]] = {}
     for name, profile in profiles.items():
         load_addresses = [run["load_address"] for run in profile["runs"]]
-        if len(load_addresses) != 2 or len(set(load_addresses)) != 2:
+        numeric_load_addresses = [int(address, 16) for address in load_addresses]
+        if len(load_addresses) != 2 or len(set(numeric_load_addresses)) != 2:
             raise GateError(f"result {source} {name} profile needs two distinct load addresses")
-        profile_load_addresses[name] = set(load_addresses)
+        profile_load_addresses[name] = set(numeric_load_addresses)
         applications = {item["name"]: item for item in profile["applications"]}
         if (
             set(applications) != expected_applications
