@@ -238,9 +238,10 @@ immutable manual board-result checker through the initially resolved, verified
 
 The invocation occurs before static artifact generation, does not alter the target, ABI, linker,
 validator, authentication, unwind, or capability policy, and introduces no deployment,
-credentials, keys, or board interaction. `CiEntryPointPolicyTests` contains a RED/green
-mutation-sensitive control: deleting that exact invocation raises `CI entrypoint omits the board
-result gate`.
+credentials, keys, or board interaction. `CiEntryPointPolicyTests` executes a temporary copy of
+the entrypoint with an initial-path Python shim that logs real argument vectors. It requires the
+identity preflight before the exact board-suite invocation and rejects a quoted-heredoc mutation
+that leaves the invocation text present but prevents the shell from executing it.
 
 Fresh Task 4 evidence is the board checker suite (21 unittest methods, 42 behavioral checks) and
 the new entrypoint-policy control. The broader focused class was also run: its three

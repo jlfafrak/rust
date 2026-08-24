@@ -1326,29 +1326,89 @@ class CiEntryPointPolicyTests(unittest.TestCase):
     def test_ci_entrypoint_runs_board_result_gate_after_identity_preflight(self) -> None:
         script = ROOT / "tests" / "eos" / "run-ci.sh"
         source = script.read_text(encoding="utf-8")
-        preflight = (
-            '"$TRUSTED_PYTHON" '
-            '"$ROOT/tests/eos/host/test_static_elves.py" --verify-release-identity'
-        )
-        board_gate = '"$TRUSTED_PYTHON" -m unittest -v tests.eos.board.test_check_results'
-        static_artifact_generation = (
-            '"$TRUSTED_PYTHON" "$ROOT/tests/eos/abi/compare_layouts.py"'
+        board_arguments = ("-m", "unittest", "-v", "tests.eos.board.test_check_results")
+
+        def logged_invocations(
+            candidate: str,
+        ) -> tuple[list[tuple[str, ...]], tuple[str, str]]:
+            with tempfile.TemporaryDirectory(prefix="eos-ci-board-control-") as temporary:
+                temporary_root = Path(temporary)
+                fixture_root = temporary_root / "repo"
+                fixture_script = fixture_root / "tests" / "eos" / "run-ci.sh"
+                fixture_script.parent.mkdir(parents=True)
+                fixture_script.write_text(candidate, encoding="utf-8")
+                fixture_script.chmod(0o700)
+
+                sdk = temporary_root / "sdk"
+                sdk.mkdir()
+                arm_bin = temporary_root / "arm" / "bin"
+                arm_bin.mkdir(parents=True)
+                arm_gcc = arm_bin / "arm-none-eabi-gcc"
+                arm_objdump = arm_bin / "arm-none-eabi-objdump"
+                arm_gcc.touch()
+                arm_objdump.touch()
+
+                control_bin = temporary_root / "control-bin"
+                control_bin.mkdir()
+                for command in ("bash", "dirname", "readlink"):
+                    resolved = shutil.which(command)
+                    self.assertIsNotNone(resolved, f"required control command missing: {command}")
+                    os.symlink(resolved, control_bin / command)
+
+                log = temporary_root / "python-invocations"
+                identity = fixture_root / "tests" / "eos" / "host" / "test_static_elves.py"
+                python_shim = control_bin / "python3"
+                python_shim.write_text(
+                    "#!/bin/sh\n"
+                    "printf '%s\\t' \"$@\" >> \"$EOS_PYTHON_INVOCATION_LOG\"\n"
+                    "printf '\\n' >> \"$EOS_PYTHON_INVOCATION_LOG\"\n"
+                    "if [ \"$1\" = '-c' ]; then exit 0; fi\n"
+                    "if [ \"$1\" = \"$EOS_EXPECTED_IDENTITY\" ] && "
+                    "[ \"$2\" = '--verify-release-identity' ]; then exit 0; fi\n"
+                    "if [ \"$1\" = '-m' ] && [ \"$2\" = 'unittest' ] && "
+                    "[ \"$3\" = '-v' ] && "
+                    "[ \"$4\" = 'tests.eos.board.test_check_results' ]; then exit 0; fi\n"
+                    "printf 'unexpected trusted Python invocation\\n' >&2\n"
+                    "exit 97\n",
+                    encoding="utf-8",
+                )
+                python_shim.chmod(0o700)
+                environment = os.environ.copy()
+                environment.update(
+                    {
+                        "EOS_RUST_SDK_ROOT": str(sdk),
+                        "EOS_ARM_GNU_CC": str(arm_gcc),
+                        "EOS_ARM_GNU_OBJDUMP": str(arm_objdump),
+                        "EOS_EXPECTED_IDENTITY": str(identity),
+                        "EOS_PYTHON_INVOCATION_LOG": str(log),
+                        "PATH": str(control_bin),
+                    }
+                )
+                result = run([fixture_script], cwd=fixture_root, env=environment, check=False)
+                self.assertNotEqual(result.returncode, 0)
+                return (
+                    [
+                        tuple(field for field in line.split("\t") if field)
+                        for line in log.read_text(encoding="utf-8").splitlines()
+                    ],
+                    (str(identity), "--verify-release-identity"),
         )
 
-        def board_gate_position(candidate: str) -> int:
-            match = re.search(rf"^{re.escape(board_gate)}$", candidate, re.MULTILINE)
-            if match is None:
-                raise AssertionError("CI entrypoint omits the board result gate")
-            return match.start()
+        invocations, identity_arguments = logged_invocations(source)
+        self.assertIn(identity_arguments, invocations)
+        self.assertIn(board_arguments, invocations)
+        self.assertLess(invocations.index(identity_arguments), invocations.index(board_arguments))
 
-        self.assertIn(preflight, source)
-        self.assertIn(static_artifact_generation, source)
-        self.assertGreater(board_gate_position(source), source.index(preflight))
-        self.assertLess(
-            board_gate_position(source), source.index(static_artifact_generation)
+        disabled = source.replace(
+            '"$TRUSTED_PYTHON" -m unittest -v tests.eos.board.test_check_results\n',
+            ": <<'TASK4_DISABLED_BOARD_GATE'\n"
+            '"$TRUSTED_PYTHON" -m unittest -v tests.eos.board.test_check_results\n'
+            "TASK4_DISABLED_BOARD_GATE\n",
+            1,
         )
-        with self.assertRaisesRegex(AssertionError, "omits the board result gate"):
-            board_gate_position(source.replace(board_gate + "\n", "", 1))
+        self.assertIn("TASK4_DISABLED_BOARD_GATE", disabled)
+        with self.assertRaises(AssertionError):
+            self.assertIn(board_arguments, logged_invocations(disabled)[0])
 
     def test_workflow_only_runs_ci_entrypoint_and_uploads_gate_artifacts(self) -> None:
         workflow = ROOT / ".github" / "workflows" / "eos.yml"

@@ -42,7 +42,25 @@ waiver: the exact integrated entrypoint must run against the new final SDK in Ta
 recorded fresh evidence remains Task 2 artifacts 42/42 and Task 3 focused/full SDK-board suites
 35/35, 79/79, and 21/21.
 
-## PREBUILD_HEAD
+## Fix Round 1 — executable board-gate control and build-head boundary
 
-The clean production/test/report prebuild head is
-`4f82cf559f03d424fe031775c4934072dd2ce0ca` (`ci: gate EOS manual release policy`).
+The original policy test inspected matching source lines, which a valid quoted heredoc could
+preserve while preventing the shell from executing the board checker. The independent mutation
+replaced the executable command with such a heredoc: the old text-only test incorrectly stayed
+GREEN, proving the false-positive. The replacement control copies `run-ci.sh` to a temporary
+fixture, supplies only a fake SDK directory, ARM path files, and initial-path commands required
+to reach the gate, and resolves a fake initial `python3` as `TRUSTED_PYTHON`. That shim logs every
+argument vector and succeeds only for the Python version check, identity preflight, and exact
+board-suite invocation. The control requires the identity call before the exact
+`-m unittest -v tests.eos.board.test_check_results` call. The temporary quoted-heredoc mutation
+then omits that logged invocation and is RED; the restored real entrypoint is GREEN. The fixture
+fails only after the gate at its intentionally incomplete later tool check.
+
+The full requested unittest command returned nonzero solely from the two SDK-dependent existing
+setup errors (`test_ci_entrypoint_rejects_mutated_sdk_before_running_tools` and
+`test_ci_entrypoint_rejects_mutation_before_cmake_python_can_run`), both caused by the absent
+`EOS_RUST_SDK_ROOT`; the 24 environment-available tests passed.
+
+There is no frozen Task 5 build hash in this report. Task 5 must use the final Task 4 Fix Round
+head recorded in the SDD ledger and revalidate that head immediately before its one permitted
+builder invocation. This Fix Round makes one combined test/report commit and no docs-only child.
