@@ -190,7 +190,14 @@ bundle validation were therefore not invoked, and no unit-test fixture or synthe
 substituted. Genuine organization-signed XC7Z030 and XC7Z045 runs, their matching public key, and
 the release bundle remain the manual release blocker.
 
-repository implementation ready; hardware release pending signed XC7Z030/XC7Z045 evidence
+~~repository implementation ready; hardware release pending signed XC7Z030/XC7Z045 evidence~~
+
+**SUPERSEDED by final-review fix wave 1:** the readiness statement above is withdrawn. The
+retained `/tmp/eos-final-release-sdk` has noncanonical package permissions and remains immutable
+evidence of the rejected build. Repository readiness is pending a controller-owned replacement
+build to fresh `/tmp/eos-final-release-sdk-r2`, review of its exact package modes, new content and
+mode-aware SDK identity pins, and the required replacement regressions. Authentic signed
+XC7Z030/XC7Z045 evidence remains a separate hardware release boundary.
 
 This statement does not claim that the overall hardware release is complete. Independent final
 review and progress-ledger bookkeeping remain controller responsibilities after this report-only
