@@ -1323,6 +1323,33 @@ class CiEntryPointPolicyTests(unittest.TestCase):
             )
             self.assertIn("reviewed Task 16 SDK tree identity mismatch", result.stderr)
 
+    def test_ci_entrypoint_runs_board_result_gate_after_identity_preflight(self) -> None:
+        script = ROOT / "tests" / "eos" / "run-ci.sh"
+        source = script.read_text(encoding="utf-8")
+        preflight = (
+            '"$TRUSTED_PYTHON" '
+            '"$ROOT/tests/eos/host/test_static_elves.py" --verify-release-identity'
+        )
+        board_gate = '"$TRUSTED_PYTHON" -m unittest -v tests.eos.board.test_check_results'
+        static_artifact_generation = (
+            '"$TRUSTED_PYTHON" "$ROOT/tests/eos/abi/compare_layouts.py"'
+        )
+
+        def board_gate_position(candidate: str) -> int:
+            match = re.search(rf"^{re.escape(board_gate)}$", candidate, re.MULTILINE)
+            if match is None:
+                raise AssertionError("CI entrypoint omits the board result gate")
+            return match.start()
+
+        self.assertIn(preflight, source)
+        self.assertIn(static_artifact_generation, source)
+        self.assertGreater(board_gate_position(source), source.index(preflight))
+        self.assertLess(
+            board_gate_position(source), source.index(static_artifact_generation)
+        )
+        with self.assertRaisesRegex(AssertionError, "omits the board result gate"):
+            board_gate_position(source.replace(board_gate + "\n", "", 1))
+
     def test_workflow_only_runs_ci_entrypoint_and_uploads_gate_artifacts(self) -> None:
         workflow = ROOT / ".github" / "workflows" / "eos.yml"
         self.assertTrue(workflow.is_file(), "missing EOS workflow")

@@ -225,6 +225,35 @@ and the unchanged backtrace gitlink/checkout.
 - Bootstrap emits its existing missing-`change-id` notice and an absent optional `llvm-strip`
   notice; neither affects the successful target sysroot or release gates.
 
+## Task 4 follow-up — manual board-result policy under the CI entrypoint
+
+The single workflow command remains `tests/eos/run-ci.sh`; it performs no physical board action.
+Immediately after the reviewed release-identity preflight, the entrypoint now invokes the
+immutable manual board-result checker through the initially resolved, verified
+`"$TRUSTED_PYTHON"`:
+
+```text
+"$TRUSTED_PYTHON" -m unittest -v tests.eos.board.test_check_results
+```
+
+The invocation occurs before static artifact generation, does not alter the target, ABI, linker,
+validator, authentication, unwind, or capability policy, and introduces no deployment,
+credentials, keys, or board interaction. `CiEntryPointPolicyTests` contains a RED/green
+mutation-sensitive control: deleting that exact invocation raises `CI entrypoint omits the board
+result gate`.
+
+Fresh Task 4 evidence is the board checker suite (21 unittest methods, 42 behavioral checks) and
+the new entrypoint-policy control. The broader focused class was also run: its three
+environment-independent policy tests and new gate test passed, while its two existing
+identity-mutation tests could not initialize because the environment reset removed the reviewed
+SDK at `/tmp/eos-task16-fix1-replacement-sdk`. The reviewed CMake runtime is likewise absent.
+No SDK builder was invoked and no replacement SDK was created: the one permitted real builder
+invocation remains reserved for Task 5. Therefore the historical Task 4 old-SDK full
+`run-ci.sh` execution is intentionally not re-run here. The exact integrated entrypoint remains
+mandatory and will be exercised against the new final SDK in Task 6; this boundary does not
+weaken any CI gate. Previously recorded fresh component evidence remains Task 2 artifact suite
+42/42, Task 3 focused/full SDK-board suites 35/35, 79/79, and 21/21.
+
 ## Fix Round 1 — superseding ABI and release-identity evidence
 
 This section supersedes the original report's claims about softfp sequence comparison, attribute

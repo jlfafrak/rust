@@ -41,6 +41,7 @@ export LC_ALL=C
 export PYTHONPYCACHEPREFIX=${PYTHONPYCACHEPREFIX:-/tmp/eos-ci-pycache}
 
 "$TRUSTED_PYTHON" "$ROOT/tests/eos/host/test_static_elves.py" --verify-release-identity
+"$TRUSTED_PYTHON" -m unittest -v tests.eos.board.test_check_results
 
 if [[ -n "$CMAKE_BIN_DIR" ]]; then
     PATH="$CMAKE_BIN_DIR:$PATH"
