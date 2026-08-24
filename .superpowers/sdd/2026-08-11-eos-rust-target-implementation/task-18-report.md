@@ -374,3 +374,26 @@ python3 -m unittest -v tests.eos.board.test_check_results
 
 The synthetic fixture now mirrors the real six-entry archive-name shape. The tests remain
 synthetic and test-only; no board action, signature, release result, or hardware claim was made.
+
+## Final integration Task 5 — generated board release identity
+
+The final SDK at `/tmp/eos-final-release-sdk` carries release manifest SHA-256
+`6aab31c83e79e891dc86b37df843f645d39720e48d0eba0351e4666b75a01150` and generated board-policy
+SHA-256 `52210320c433c32256c7d5b74ab3ca57d29890a49c6434e89217b702d4613eba`. The generated policy
+matches frozen Rust fork `61fcff440daed52c444398d00f6a680b215db5f7`, upstream Rust
+`8bab26f4f68e0e26f0bb7960be334d5b520ea452`, libc
+`71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8`, backtrace
+`02ef1b533157e8ddbd0f9295c867e79b59e9bbbd`, the exact ARM/EOS input-tree hashes, ABI 1.0, and
+linker-script SHA-256 `835c2afac09937fb1b6f7dc93027134c61b34bf645eb2809bbaf1ece4994a674`.
+
+The pre-pin board gate rejected the final release manifest with
+`release manifest does not match exact reviewed release-manifest digest`. Updating the checked-in
+generated release digest and Rust fork value makes that identity validation pass. The test-only
+cryptographic fixture also advances to the same final Rust fork and exact six distribution hashes
+so the synthetic checker regression exercises the final pinned release bytes. The packaged checker
+defaults resolve to the adjacent board policy/result schema and SDK-level release/capability
+manifests, and an argument-free invocation fails closed without claiming hardware success.
+
+No trusted key, private key, board result, result bundle, credential, deployment action, or
+synthetic hardware outcome was added. Authentic organization-signed XC7Z030 and XC7Z045 results
+remain manual and incomplete, so the overall hardware release gate remains open.

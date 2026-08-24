@@ -305,3 +305,36 @@ output. The packaged checker retains immutable source-tree defaults and, only un
 capability manifests. Final verification passed the focused SDK layout suite (35/35), full EOS
 SDK discovery (79/79), and the Task 1 board checker suite (21/21). No real SDK builder or physical
 board action was launched for this follow-up.
+
+## Final integration Task 5 — final release SDK identity
+
+The single final integration builder invocation started from exact clean outer HEAD
+`61fcff440daed52c444398d00f6a680b215db5f7`, with the backtrace gitlink and checkout both exact
+`02ef1b533157e8ddbd0f9295c867e79b59e9bbbd`. It used CMake/CTest 3.31.10 from
+`/tmp/eos-final-runtime/bin`, ARM GNU 14.3.Rel1 from
+`/home/dev/code/arm-toolchain-build/custom-arm-libs`, EOS MARTOS-SMP-14.0.39 from
+`/home/dev/code/gpt-test/lib/martos-smp-14.0.39`, and published
+`/tmp/eos-final-release-sdk`. Builder PID `602935` exited `0`; the durable log is
+`/tmp/eos-final-task5-build.2W5yli6mfp/build.log`. No second builder was launched.
+
+Independent final inspection found 141 regular files, 55 directories beneath the root (56
+including the root), and zero symlinks. The package has the exact five byte-identical EOS runtime
+libraries, exact ten-file ARM runtime subset, exact 23-file board bundle, exact two-file example,
+40 byte-identical source assets, required precompiled target sysroot, and no proprietary EOS
+headers/sources, generated Cargo lock/target state, keys, results, credentials, or poison files.
+The independently recomputed identities are:
+
+```text
+SDK sha256-tree-v1       919c17065b7b33626ade510f63c4febb2fda56413c6215f9ebeca019e67f7ae7
+release manifest SHA-256 6aab31c83e79e891dc86b37df843f645d39720e48d0eba0351e4666b75a01150
+ARM input sha256-tree-v1 a407c7186f68473d2fb7a0bae59407261adef62f959fc181e5cd7eb7636a584d
+EOS input sha256-tree-v1 5e6c7db4d67a971307f59797a3bf092a516a8dfcd156a2706b7c337e19119910
+board policy SHA-256     52210320c433c32256c7d5b74ab3ca57d29890a49c6434e89217b702d4613eba
+```
+
+All six distribution identities, source revisions, Rust/Cargo/rustdoc 1.97.1-dev, GCC 14.3.1,
+binutils 2.44.0.20250616, ELF32 ARM EABI5 softfp/VFPv3/NEONv1 attributes, and the exact 120-symbol
+native ABI export surface passed. The packaged checker resolved only in-package defaults and
+failed closed without hardware inputs; the installer validated the exact closure without rustup
+mutation. The conclusive inspection log is
+`/tmp/eos-final-task5-build.2W5yli6mfp/inspection-final.qj3ZTzu1PZ.log`.

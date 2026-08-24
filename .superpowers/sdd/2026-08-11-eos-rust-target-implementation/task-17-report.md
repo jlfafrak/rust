@@ -596,3 +596,21 @@ content enforcement, or printing. Final `ffi-containment` retention additionally
 rejected. The expanded Task 2 combined suite passed 42/42 in 350.518s. Full RED/GREEN commands
 and outputs are in the Task 2 report. No Task 17 workflow, SDK, target, ABI, linker, application,
 board policy, hardware, or deployment behavior changed.
+
+## Final integration Task 5 — final release identity pins
+
+The single authorized final builder published `/tmp/eos-final-release-sdk` from exact frozen
+source HEAD `61fcff440daed52c444398d00f6a680b215db5f7` and exited `0`; its invocation count is exactly
+one. Independent `sha256-tree-v1` recomputation pinned the complete SDK to
+`919c17065b7b33626ade510f63c4febb2fda56413c6215f9ebeca019e67f7ae7`. The release manifest pins
+the unchanged full ARM GNU input
+`a407c7186f68473d2fb7a0bae59407261adef62f959fc181e5cd7eb7636a584d`, EOS input
+`5e6c7db4d67a971307f59797a3bf092a516a8dfcd156a2706b7c337e19119910`, upstream Rust/libc/
+backtrace revisions, and the new exact Rust fork revision.
+
+Before the pin update, the real static identity gate rejected the new package with
+`reviewed Task 16 SDK tree identity mismatch`. After updating only the reviewed SDK-tree and Rust
+fork pins, the same focused identity call passes against the final SDK and the canonical external
+ARM GNU tools. Task 5 does not run the final Task 17 CI entrypoint; that fresh full regression is
+reserved for final integration Task 6. No CI behavior, target, ABI, linker, validator,
+authentication, unwind, random, or capability semantic changed.

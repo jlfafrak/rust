@@ -75,12 +75,12 @@ optional_capabilities = [
 ]
 
 [expected]
-release_manifest_sha256 = "fac60315f383ea6341e874a01d2b802e09419f1e5137e5b20129e3f9a160c4b5"
+release_manifest_sha256 = "6aab31c83e79e891dc86b37df843f645d39720e48d0eba0351e4666b75a01150"
 sdk_version = "1.97.1"
 toolchain = "eos-1.97.1"
 target = "armv7a-unknown-eos-eabi"
 layout_version = 1
-rust_fork = "baeb1a5b368d15d98a5433a3aadd216f472bf9e2"
+rust_fork = "61fcff440daed52c444398d00f6a680b215db5f7"
 rust_upstream = "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
 libc_upstream = "71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8"
 backtrace = "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd"

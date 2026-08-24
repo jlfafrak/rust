@@ -167,18 +167,18 @@ class BoardResultGateTests(unittest.TestCase):
                 eos_sdk = "5e6c7db4d67a971307f59797a3bf092a516a8dfcd156a2706b7c337e19119910"
 
                 [source_revisions]
-                rust_fork = "baeb1a5b368d15d98a5433a3aadd216f472bf9e2"
+                rust_fork = "61fcff440daed52c444398d00f6a680b215db5f7"
                 rust_upstream = "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
                 libc_upstream = "71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8"
                 backtrace = "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd"
 
                 [distribution_hashes]
-                "cargo-1.97.1-dev-x86_64-unknown-linux-gnu.tar.gz" = "9e829a813c8a564cdaec4f67cc211c79d714bfc80341364d8b473355e57c08c0"
-                "cargo-1.97.1-dev-x86_64-unknown-linux-gnu.tar.xz" = "c9506399dd578571b953cb12eb8e981ddd6eec472f76c45baa8011d343fab6c9"
-                "rust-std-1.97.1-dev-armv7a-unknown-eos-eabi.tar.gz" = "f67ca0532b7ec4b1681a699f5687258733c3eed31559ac4956d73283dfa5fe86"
-                "rust-std-1.97.1-dev-armv7a-unknown-eos-eabi.tar.xz" = "52f51b6804a036f2b4f9388b8bc4463b44e9c58bb3258a9d7d65807718a4ee0b"
-                "rustc-1.97.1-dev-x86_64-unknown-linux-gnu.tar.gz" = "31578b8d5e12734182e7f8d9f72d9b3dbf56a3c9e1e5713882fdb4ce929fcf8c"
-                "rustc-1.97.1-dev-x86_64-unknown-linux-gnu.tar.xz" = "26d4f1b0b0f4075d429e0e393f4e41fad37e89227c55156a0f8f328cad540490"
+                "cargo-1.97.1-dev-x86_64-unknown-linux-gnu.tar.gz" = "633bcf40e6654364800c403fd70a0a3cd861469adfbefbd909e24322895f09d1"
+                "cargo-1.97.1-dev-x86_64-unknown-linux-gnu.tar.xz" = "2e7ec8fc262ba7fed2e08fb77f7dc5d518a4580adbddf6ae6f6930033f1f7983"
+                "rust-std-1.97.1-dev-armv7a-unknown-eos-eabi.tar.gz" = "75f9cde5c45f2482b8bd8bc1c3e6a296e252240de7d147dde9a2815f9ea19e4b"
+                "rust-std-1.97.1-dev-armv7a-unknown-eos-eabi.tar.xz" = "1362e288b13fff2833577ef6b233b357da4367718b75f887f73c52eb58b4d192"
+                "rustc-1.97.1-dev-x86_64-unknown-linux-gnu.tar.gz" = "289f4d74fd7aa8765cec014487c556afb7a8b8396308396174dd40b9da77c37d"
+                "rustc-1.97.1-dev-x86_64-unknown-linux-gnu.tar.xz" = "e9e9f5b220ef63af595da669fd572a273ec005738903a82281353f8307aa5804"
                 """
             ),
             encoding="utf-8",
@@ -218,7 +218,7 @@ class BoardResultGateTests(unittest.TestCase):
                 "toolchain": "eos-1.97.1",
                 "target": "armv7a-unknown-eos-eabi",
                 "layout_version": 1,
-                "rust_fork": "baeb1a5b368d15d98a5433a3aadd216f472bf9e2",
+                "rust_fork": "61fcff440daed52c444398d00f6a680b215db5f7",
                 "rust_upstream": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
                 "libc_upstream": "71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8",
                 "backtrace": "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd",
@@ -602,7 +602,7 @@ class BoardResultGateTests(unittest.TestCase):
             ("digest", 'arm_gnu_installed = "wrong"'),
             (
                 "archive",
-                '"../cargo.tar.xz" = "c9506399dd578571b953cb12eb8e981ddd6eec472f76c45baa8011d343fab6c9"',
+                '"../cargo.tar.xz" = "2e7ec8fc262ba7fed2e08fb77f7dc5d518a4580adbddf6ae6f6930033f1f7983"',
             ),
         ):
             with self.subTest(name=name):
@@ -615,7 +615,7 @@ class BoardResultGateTests(unittest.TestCase):
                     )
                 else:
                     text = text.replace(
-                        '"cargo-1.97.1-dev-x86_64-unknown-linux-gnu.tar.xz" = "c9506399dd578571b953cb12eb8e981ddd6eec472f76c45baa8011d343fab6c9"',
+                        '"cargo-1.97.1-dev-x86_64-unknown-linux-gnu.tar.xz" = "2e7ec8fc262ba7fed2e08fb77f7dc5d518a4580adbddf6ae6f6930033f1f7983"',
                         replacement,
                     )
                 corrupt.write_text(text, encoding="utf-8")
@@ -633,7 +633,7 @@ class BoardResultGateTests(unittest.TestCase):
         second = self.result("XC7Z045")
         self.release_manifest.write_text(
             self.release_manifest.read_text(encoding="utf-8").replace(
-                "c9506399dd578571b953cb12eb8e981ddd6eec472f76c45baa8011d343fab6c9",
+                "2e7ec8fc262ba7fed2e08fb77f7dc5d518a4580adbddf6ae6f6930033f1f7983",
                 "0" * 64,
             ),
             encoding="utf-8",
