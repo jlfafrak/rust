@@ -108,7 +108,8 @@ board policy SHA-256     52210320c433c32256c7d5b74ab3ca57d29890a49c6434e89217b70
 The release manifest identifies Rust fork 61fcff440daed52c444398d00f6a680b215db5f7,
 upstream Rust 8bab26f4f68e0e26f0bb7960be334d5b520ea452, libc
 71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8, and backtrace
-02ef1b533157e8ddbd0f9295c867e79b59e9bbbd. Its six exact distribution identities are:
+02ef1b533157e8ddbd0f9295c867e79b59e9bbbd. The verified generated release manifest records these
+six distribution identities:
 
 ~~~text
 cargo tar.gz    633bcf40e6654364800c403fd70a0a3cd861469adfbefbd909e24322895f09d1
@@ -118,6 +119,12 @@ rust-std tar.xz 1362e288b13fff2833577ef6b233b357da4367718b75f887f73c52eb58b4d192
 rustc tar.gz    289f4d74fd7aa8765cec014487c556afb7a8b8396308396174dd40b9da77c37d
 rustc tar.xz    e9e9f5b220ef63af595da669fd572a273ec005738903a82281353f8307aa5804
 ~~~
+
+Evidence boundary: the six intermediate distribution archives were cleaned with the builder's
+scratch state and are not part of the published SDK, so their final payload hashes cannot now be
+independently recomputed. Their names and digests are cryptographically bound by the verified
+generated release manifest and originate from builder-side hashing. This supports the recorded
+manifest identities, but is not a post-build payload rehash claim.
 
 The generated board policy exactly derives the release digest, revisions, input hashes, ABI 1.0,
 and linker-script SHA-256 835c2afac09937fb1b6f7dc93027134c61b34bf645eb2809bbaf1ece4994a674.
@@ -157,9 +164,11 @@ policy, and Task 16/17/18 reports. A deliberately broader focused board-suite ru
 that its synthetic release fixture still carried the superseded fork/distribution identities; it
 failed at the newly advanced exact policy before reaching 18 intended test cases. The controller
 authorized tests/eos/board/test_check_results.py as a narrow sixth, test-only cryptographic
-release-pin file because leaving it stale would knowingly break Task 6 CI. Only its final fork,
-six distribution hashes, signed result identity, and corresponding mutation literals changed.
-No checker or production behavior was relaxed.
+release-pin file because leaving it stale would knowingly break Task 6 CI. The pin commit changed
+its final fork, six distribution hashes, signed result identity, and most corresponding mutation
+literals. A focused review follow-up corrected the remaining same-snapshot mutation literal from
+the obsolete digest to the exact pinned cargo tar.xz digest and asserted that the replacement
+actually changes the fixture bytes. No checker or production behavior was relaxed.
 
 Final verification was:
 

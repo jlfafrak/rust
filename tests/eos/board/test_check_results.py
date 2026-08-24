@@ -658,9 +658,10 @@ class BoardResultGateTests(unittest.TestCase):
 
         parsed_bytes = self.release_manifest.read_bytes()
         replacement_bytes = parsed_bytes.replace(
-            b"c9506399dd578571b953cb12eb8e981ddd6eec472f76c45baa8011d343fab6c9",
+            b"2e7ec8fc262ba7fed2e08fb77f7dc5d518a4580adbddf6ae6f6930033f1f7983",
             b"0" * 64,
         )
+        self.assertNotEqual(replacement_bytes, parsed_bytes)
         original_read_bytes = Path.read_bytes
         original_read_text = Path.read_text
         reads = 0
