@@ -6,6 +6,11 @@ toolchain contract is implemented and has the cited automated evidence. It does 
 manual XC7Z030 and XC7Z045 release evidence. A release still needs signed results from both part
 families.
 
+Each SDK contains the reviewed matrix at `manifests/capabilities.toml` and the manual procedure,
+checker, schemas, policy, and exact application sources under `share/board-test/`. The bundle
+contains no board result, signing key, credential, board location, transfer command, or deployment
+automation.
+
 An unavailable operation reports Rust `ErrorKind::Unsupported`, or the documented native
 `ENOTSUP` that maps to it. It never reports success. The stable spelling recorded by the matrix
 and board results is `Unsupported`.

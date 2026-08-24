@@ -275,3 +275,33 @@ Cargo, base ELF validation, authentication packaging, allowed-trailer validation
 trailer rejection all passed. Fix Round 2 changes only installer/test/report code and was not
 given a second real builder. The scoped re-review explicitly approved this evidence boundary and
 returned all findings addressed with no new Critical or Important breakage.
+
+## Final-release Task 3 manual board-test bundle addendum
+
+The Task 3 packaging follow-up replaces recursive static manifest/template staging with explicit
+reviewed file copies and adds a flat `share/board-test/` bundle. Its 23-file closure contains the
+generated board policy, checker and result schema, three manual documents, exactly two source
+files for each of `hello-std`, `filesystem`, `threads-tls`, `network`, `process`, `ffi-abi`,
+`unwind`, and `ffi-containment`, plus the reviewed `tests/eos/abi/ffi_caller.c`. SDK-level
+`manifests/capabilities.toml` and `manifests/release-manifest.schema.json` are also hard-coded in
+the 48-path SDK layout and installer inventories. Generated lockfiles/targets, unrelated apps,
+keys, results, credentials, board locations, transfer instructions, deployment material, and
+proprietary EOS headers/sources remain outside the package.
+
+`write_manifests` now writes one release-manifest byte sequence, parses and returns that same
+snapshot, and `render_board_policy` derives every release-specific expected identity plus the
+non-self-referential `release_manifest_sha256` from it and reviewed source inputs. A disposable
+deterministic fake-build snapshot produced release digest
+`3beb847eccf66a7ff38c2759c30365fcc556f35ecb2c82db438e2ac00bd67a32`; the packaged policy
+contained the identical digest and linker-script hash
+`835c2afac09937fb1b6f7dc93027134c61b34bf645eb2809bbaf1ece4994a674`. An independent two-root
+control proves fake release bytes are deterministic.
+
+The installer requires exact equality with `sdk-layout.toml`, rejects any extra board-bundle
+entry, recursively rejects broken/escaping links and unsupported entry types, fingerprints the
+entire package, and rechecks package bytes and root identity immediately before rustup or manual
+output. The packaged checker retains immutable source-tree defaults and, only under the exact
+`share/board-test` layout, resolves its adjacent policy/result schema and SDK-level release and
+capability manifests. Final verification passed the focused SDK layout suite (35/35), full EOS
+SDK discovery (79/79), and the Task 1 board checker suite (21/21). No real SDK builder or physical
+board action was launched for this follow-up.

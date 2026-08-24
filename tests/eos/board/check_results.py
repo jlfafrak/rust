@@ -17,15 +17,16 @@ import tomllib
 from typing import Any, NamedTuple
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_MANIFEST = Path(__file__).with_name("board-test-manifest.toml")
-DEFAULT_RESULT_SCHEMA = Path(__file__).with_name("result.schema.json")
-DEFAULT_RELEASE_SCHEMA = (
-    REPO_ROOT / "src" / "tools" / "eos-sdk" / "manifests" / "release-manifest.schema.json"
-)
-DEFAULT_CAPABILITIES = (
-    REPO_ROOT / "src" / "tools" / "eos-sdk" / "manifests" / "capabilities.toml"
-)
+SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIRECTORY.parents[2]
+DEFAULT_MANIFEST = SCRIPT_DIRECTORY / "board-test-manifest.toml"
+DEFAULT_RESULT_SCHEMA = SCRIPT_DIRECTORY / "result.schema.json"
+if SCRIPT_DIRECTORY.name == "board-test" and SCRIPT_DIRECTORY.parent.name == "share":
+    default_manifests = SCRIPT_DIRECTORY.parent.parent / "manifests"
+else:
+    default_manifests = REPO_ROOT / "src" / "tools" / "eos-sdk" / "manifests"
+DEFAULT_RELEASE_SCHEMA = default_manifests / "release-manifest.schema.json"
+DEFAULT_CAPABILITIES = default_manifests / "capabilities.toml"
 SHA256_DIGEST_INFO = bytes.fromhex("3031300d060960864801650304020105000420")
 SUPPORTED_SIGNATURE = "RSASSA-PKCS1-v1_5-SHA256"
 

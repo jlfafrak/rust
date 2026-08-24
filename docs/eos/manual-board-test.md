@@ -10,7 +10,14 @@ operational details outside the repository and outside result files.
 Use one reviewed SDK package and its unmodified `manifests/release-manifest.toml`. Retain the
 unstripped ELF, GNU build ID, and authenticated ELF SHA-256 value for every application in both
 debug and release profiles. The required application names, identities, rows, and part families
-are fixed by `tests/eos/board/board-test-manifest.toml`.
+are fixed by the release-specific `share/board-test/board-test-manifest.toml`. The SDK builder
+generates that policy from the exact release-manifest bytes it packages while retaining the
+reviewed semantic sets and signature policy from `tests/eos/board/board-test-manifest.toml`.
+
+The exact reviewed Rust application sources and `ffi_caller.c` are under
+`share/board-test/apps/` and `share/board-test/abi/`. The bundle deliberately excludes generated
+lockfiles and targets, unrelated applications, keys, results, credentials, board locations,
+transfer instructions, and deployment material.
 
 Use the identical authenticated application bytes on XC7Z030 and XC7Z045 wherever the shared
 target permits it. The checker compares every corresponding build ID and authenticated SHA-256
@@ -39,7 +46,7 @@ For each part family:
 6. Record every audited capability row. A false matrix entry must be observed as `unsupported`
    with error `Unsupported`. The reviewed v1 optional rows remain false; promoting one requires
    a reviewed policy change backed by both contract and board evidence.
-7. Write one JSON result that satisfies `tests/eos/board/result.schema.json`.
+7. Write one JSON result that satisfies `share/board-test/result.schema.json`.
 
 Both debug and release profiles require exactly two `runs`, keyed by their distinct load
 addresses. Each run contains the exact complete v1 acceptance set; one global set is not evidence
@@ -86,7 +93,7 @@ Run the checker with the exact reviewed release manifest, organization-supplied 
 the two independently captured result paths:
 
 ```text
-python3 tests/eos/board/check_results.py \
+python3 <reviewed-sdk>/share/board-test/check_results.py \
   --release-manifest <reviewed-sdk>/manifests/release-manifest.toml \
   --trusted-key <organization-public-key.json> \
   <xc7z030-result.json> \
@@ -95,8 +102,8 @@ python3 tests/eos/board/check_results.py \
 
 Repeat `--trusted-key` only when the organization is rotating approved public keys. The checker
 reads the supplied release manifest once, then parses and hashes that same byte snapshot. Its
-SHA-256 must equal the exact reviewed release-manifest digest in the immutable checked-in board
-policy. It also validates the immutable checked-in JSON schemas and board/capability policies,
+SHA-256 must equal the exact digest in the packaged, release-specific board policy. It also
+validates the immutable packaged JSON schemas and board/capability policies,
 the exact Task 16 TOML release-manifest shape, reviewed release identities, signatures,
 profile/address/application sets, every v1 row in every run, capability semantics, and
 cross-board binary identity. Its public CLI accepts only the release manifest, repeatable trusted

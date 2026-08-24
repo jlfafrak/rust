@@ -33,7 +33,9 @@ REQUIRED_PATHS = (
     "linker/app_linker_script.ld",
     "manifests/toolchain.lock.toml",
     "manifests/allowed-dynamic-symbols.txt",
+    "manifests/capabilities.toml",
     "manifests/release-manifest.toml",
+    "manifests/release-manifest.schema.json",
     "share/templates/config.toml",
     "share/templates/cargo-config.toml",
     "share/licenses/rust/COPYRIGHT",
@@ -42,9 +44,37 @@ REQUIRED_PATHS = (
     "share/source-revisions.toml",
     "share/examples/hello-std/Cargo.toml",
     "share/examples/hello-std/src/main.rs",
+    "share/board-test/board-test-manifest.toml",
+    "share/board-test/check_results.py",
+    "share/board-test/result.schema.json",
+    "share/board-test/docs/capabilities.md",
+    "share/board-test/docs/manual-board-test.md",
+    "share/board-test/docs/releasing.md",
+    "share/board-test/apps/hello-std/Cargo.toml",
+    "share/board-test/apps/hello-std/src/main.rs",
+    "share/board-test/apps/filesystem/Cargo.toml",
+    "share/board-test/apps/filesystem/src/main.rs",
+    "share/board-test/apps/threads-tls/Cargo.toml",
+    "share/board-test/apps/threads-tls/src/main.rs",
+    "share/board-test/apps/network/Cargo.toml",
+    "share/board-test/apps/network/src/main.rs",
+    "share/board-test/apps/process/Cargo.toml",
+    "share/board-test/apps/process/src/main.rs",
+    "share/board-test/apps/ffi-abi/Cargo.toml",
+    "share/board-test/apps/ffi-abi/src/main.rs",
+    "share/board-test/apps/unwind/Cargo.toml",
+    "share/board-test/apps/unwind/src/main.rs",
+    "share/board-test/apps/ffi-containment/Cargo.toml",
+    "share/board-test/apps/ffi-containment/src/lib.rs",
+    "share/board-test/abi/ffi_caller.c",
 )
 EOS_RUNTIME_PATHS = tuple(
     path.removeprefix("eos/") for path in REQUIRED_PATHS if path.startswith("eos/")
+)
+BOARD_TEST_PATHS = tuple(
+    path.removeprefix("share/board-test/")
+    for path in REQUIRED_PATHS
+    if path.startswith("share/board-test/")
 )
 HEX_40 = re.compile(r"[0-9a-f]{40}")
 HEX_64 = re.compile(r"[0-9a-f]{64}")
@@ -167,6 +197,21 @@ def validate_eos_runtime_closure(root: Path) -> None:
         raise InstallError("EOS package does not match the exact runtime closure")
 
 
+def validate_board_test_closure(root: Path) -> None:
+    allowed: set[str] = set()
+    for relative in BOARD_TEST_PATHS:
+        path = Path(relative)
+        allowed.add(path.as_posix())
+        allowed.update(
+            parent.as_posix()
+            for parent in path.parents
+            if parent != Path(".")
+        )
+    actual = {path.relative_to(root).as_posix() for path in root.rglob("*")}
+    if actual != allowed:
+        raise InstallError("SDK package does not match the exact board-test closure")
+
+
 def load_layout(root: Path) -> dict:
     path = rooted_file(root, "manifests/sdk-layout.toml", "SDK layout manifest")
     try:
@@ -285,9 +330,13 @@ def validate_sdk(argument: Path) -> ValidatedSdk:
             raise InstallError(f"required tool is not executable: {artifact}")
     arm_root = rooted_directory(root, "arm-gnu", "ARM GNU installation")
     eos_root = rooted_directory(root, "eos", "EOS SDK runtime")
+    board_test_root = rooted_directory(
+        root, "share/board-test", "manual board-test bundle"
+    )
     validate_tree_entries(arm_root, "ARM GNU installation")
     validate_tree_entries(eos_root, "EOS SDK runtime tree")
     validate_eos_runtime_closure(eos_root)
+    validate_board_test_closure(board_test_root)
 
     library_directory = rooted_directory(
         root, f"lib/rustlib/{TARGET}/lib", "EOS target sysroot library directory"

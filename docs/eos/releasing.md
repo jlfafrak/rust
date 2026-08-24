@@ -12,15 +12,15 @@ no physical-board action.
 
 The release manifest passed to the board checker is the unmodified Task 16
 `manifests/release-manifest.toml`. Its parsed data must satisfy
-`src/tools/eos-sdk/manifests/release-manifest.schema.json`, including the exact four top-level
+the packaged `manifests/release-manifest.schema.json`, including the exact four top-level
 tables, fixed release identity, `sha256-tree-v1` input hashes, source-revision shapes, safe
 distribution archive names, and lowercase SHA-256 digests. The checker parses and hashes one byte
-snapshot of that file; the digest must equal the exact checked-in reviewed value before either
-signed board result can be accepted.
+snapshot of that file; the digest must equal the value in the generated
+`share/board-test/board-test-manifest.toml` before either signed board result can be accepted.
 
 ## Manual evidence
 
-Follow `docs/eos/manual-board-test.md`. Organization operators manually transfer and start the
+Follow the SDK's `share/board-test/docs/manual-board-test.md`. Organization operators manually transfer and start the
 same authenticated binaries on XC7Z030 and XC7Z045, capture two distinct PIE placements per
 profile, record the complete row set separately for each profile/address run plus all observed
 failures, and obtain one organization signature for each result. No unsigned, partially
@@ -33,7 +33,7 @@ With authentic files available, run:
 ```text
 tests/eos/run-ci.sh
 
-python3 tests/eos/board/check_results.py \
+python3 <reviewed-sdk>/share/board-test/check_results.py \
   --release-manifest <reviewed-sdk>/manifests/release-manifest.toml \
   --trusted-key <organization-public-key.json> \
   release-results/xc7z030.json \

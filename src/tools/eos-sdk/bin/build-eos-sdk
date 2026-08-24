@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from typing import Any
 
 
 TARGET = "armv7a-unknown-eos-eabi"
@@ -453,18 +454,24 @@ def stage_static_assets(source: Path, eos: Path, stage: Path) -> None:
         "src/tools/eos-sdk/linker/app_linker_script.ld",
         stage / "linker",
     )
-    manifests = rooted_file(
-        source,
-        "src/tools/eos-sdk/manifests/toolchain.lock.toml",
-        "toolchain lock",
-    ).parent
-    shutil.copytree(manifests, stage / "manifests", dirs_exist_ok=True)
-    templates = rooted_file(
-        source,
-        "src/tools/eos-sdk/templates/config.toml",
-        "bootstrap template",
-    ).parent
-    shutil.copytree(templates, stage / "share" / "templates")
+    for name in (
+        "allowed-dynamic-symbols.txt",
+        "capabilities.toml",
+        "release-manifest.schema.json",
+        "sdk-layout.toml",
+        "toolchain.lock.toml",
+    ):
+        copy_source_file(
+            source,
+            f"src/tools/eos-sdk/manifests/{name}",
+            stage / "manifests",
+        )
+    for name in ("config.toml", "cargo-config.toml"):
+        copy_source_file(
+            source,
+            f"src/tools/eos-sdk/templates/{name}",
+            stage / "share" / "templates",
+        )
     for name in ("COPYRIGHT", "LICENSE-APACHE", "LICENSE-MIT"):
         copy_source_file(source, name, stage / "share" / "licenses" / "rust")
     example = stage / "share" / "examples" / "hello-std"
@@ -478,6 +485,38 @@ def stage_static_assets(source: Path, eos: Path, stage: Path) -> None:
         "tests/eos/apps/hello-std/src/main.rs",
         example / "src",
     )
+    board_bundle = stage / "share" / "board-test"
+    for relative, destination in (
+        ("tests/eos/board/check_results.py", board_bundle),
+        ("tests/eos/board/result.schema.json", board_bundle),
+        ("docs/eos/capabilities.md", board_bundle / "docs"),
+        ("docs/eos/manual-board-test.md", board_bundle / "docs"),
+        ("docs/eos/releasing.md", board_bundle / "docs"),
+        ("tests/eos/abi/ffi_caller.c", board_bundle / "abi"),
+    ):
+        copy_source_file(source, relative, destination)
+    application_sources = {
+        "hello-std": "main.rs",
+        "filesystem": "main.rs",
+        "threads-tls": "main.rs",
+        "network": "main.rs",
+        "process": "main.rs",
+        "ffi-abi": "main.rs",
+        "unwind": "main.rs",
+        "ffi-containment": "lib.rs",
+    }
+    for application, rust_source in application_sources.items():
+        destination = board_bundle / "apps" / application
+        copy_source_file(
+            source,
+            f"tests/eos/apps/{application}/Cargo.toml",
+            destination,
+        )
+        copy_source_file(
+            source,
+            f"tests/eos/apps/{application}/src/{rust_source}",
+            destination / "src",
+        )
 
 
 def render_bootstrap_config(template: Path, host: str, arm: Path, build: Path) -> str:
@@ -847,13 +886,94 @@ def toml_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=True)
 
 
+def render_board_policy(
+    source_policy: Path,
+    release: dict[str, Any],
+    release_bytes: bytes,
+) -> str:
+    try:
+        source_text = source_policy.read_text(encoding="utf-8")
+        source_data = tomllib.loads(source_text)
+        parsed_release = tomllib.loads(release_bytes.decode("utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
+        raise BuildError(f"unable to render board-test policy: {error}") from error
+    if parsed_release != release:
+        raise BuildError("release manifest bytes do not match parsed release data")
+    if set(source_data) != {
+        "schema_version",
+        "parts",
+        "profiles",
+        "applications",
+        "acceptance_rows",
+        "supported_capabilities",
+        "required_false_capabilities",
+        "optional_capabilities",
+        "expected",
+        "signature",
+    }:
+        raise BuildError("source board-test policy has unexpected top-level schema")
+    try:
+        expected_start = source_text.index("[expected]\n")
+        signature_start = source_text.index("[signature]\n", expected_start)
+        source_root = source_policy.parents[3]
+        lock_path = rooted_file(
+            source_root,
+            "src/tools/eos-sdk/manifests/toolchain.lock.toml",
+            "toolchain lock",
+        )
+        linker_path = rooted_file(
+            source_root,
+            "src/tools/eos-sdk/linker/app_linker_script.ld",
+            "EOS linker script",
+        )
+        lock = tomllib.loads(lock_path.read_text(encoding="utf-8"))
+        release_identity = release["release"]
+        revisions = release["source_revisions"]
+        input_hashes = release["input_hashes"]
+        expected = {
+            "release_manifest_sha256": hashlib.sha256(release_bytes).hexdigest(),
+            "sdk_version": release_identity["version"],
+            "toolchain": release_identity["toolchain"],
+            "target": release_identity["target"],
+            "layout_version": release_identity["layout_version"],
+            "rust_fork": revisions["rust_fork"],
+            "rust_upstream": revisions["rust_upstream"],
+            "libc_upstream": revisions["libc_upstream"],
+            "backtrace": revisions["backtrace"],
+            "arm_gnu_release": lock["arm_gnu"]["release"],
+            "arm_gnu_sha256_tree_v1": input_hashes["arm_gnu_installed"],
+            "eos_sdk_baseline": lock["eos_sdk"]["baseline"],
+            "eos_sdk_sha256_tree_v1": input_hashes["eos_sdk"],
+            "native_abi_major": lock["eos_rust_abi"]["major"],
+            "native_abi_minor": lock["eos_rust_abi"]["minor"],
+            "linker_script_sha256": file_hash(linker_path),
+        }
+    except (IndexError, KeyError, OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
+        raise BuildError(f"unable to derive board-test release identity: {error}") from error
+    expected_lines = ["[expected]"]
+    for key, value in expected.items():
+        rendered = str(value) if isinstance(value, int) else toml_string(value)
+        expected_lines.append(f"{key} = {rendered}")
+    rendered_policy = (
+        source_text[:expected_start]
+        + "\n".join(expected_lines)
+        + "\n\n"
+        + source_text[signature_start:]
+    )
+    try:
+        tomllib.loads(rendered_policy)
+    except tomllib.TOMLDecodeError as error:
+        raise BuildError(f"rendered board-test policy is invalid: {error}") from error
+    return rendered_policy
+
+
 def write_manifests(
     stage: Path,
     build_dir: Path,
     lock: dict,
     revisions: dict[str, str],
     input_hashes: dict[str, str],
-) -> None:
+) -> tuple[dict[str, Any], bytes]:
     dist = directory(str(build_dir / "dist"), "Rust distribution directory")
     archives = sorted(path for path in dist.iterdir() if path.is_file())
     names = [path.name for path in archives]
@@ -908,9 +1028,13 @@ baseline = {toml_string(lock["eos_sdk"]["baseline"])}
         for name, digest in distribution_hashes.items()
     )
     lines.append("")
-    (stage / "manifests" / "release-manifest.toml").write_text(
-        "\n".join(lines), encoding="utf-8"
-    )
+    release_bytes = "\n".join(lines).encode("utf-8")
+    (stage / "manifests" / "release-manifest.toml").write_bytes(release_bytes)
+    try:
+        release = tomllib.loads(release_bytes.decode("utf-8"))
+    except (UnicodeError, tomllib.TOMLDecodeError) as error:
+        raise BuildError(f"generated release manifest is invalid: {error}") from error
+    return release, release_bytes
 
 
 def validate_staged_sdk(stage: Path) -> None:
@@ -1045,7 +1169,20 @@ def build(arguments: argparse.Namespace) -> Path:
             rust_build = run_rust_build(
                 source, rust_work, stage, host_triple()
             )
-            write_manifests(stage, rust_build, lock, revisions, input_hashes)
+            release, release_bytes = write_manifests(
+                stage, rust_build, lock, revisions, input_hashes
+            )
+            source_policy = rooted_file(
+                source,
+                "tests/eos/board/board-test-manifest.toml",
+                "board-test policy",
+            )
+            rendered_policy = render_board_policy(
+                source_policy, release, release_bytes
+            )
+            (stage / "share" / "board-test" / "board-test-manifest.toml").write_text(
+                rendered_policy, encoding="utf-8"
+            )
         validate_staged_sdk(stage)
         final_input_hashes = {
             "arm_gnu_installed": tree_hash(arm),

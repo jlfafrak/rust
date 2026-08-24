@@ -1,5 +1,6 @@
 import importlib.machinery
 import importlib.util
+import hashlib
 import tomllib
 import json
 import os
@@ -43,7 +44,9 @@ EXPECTED_REQUIRED_PATHS = (
     "linker/app_linker_script.ld",
     "manifests/toolchain.lock.toml",
     "manifests/allowed-dynamic-symbols.txt",
+    "manifests/capabilities.toml",
     "manifests/release-manifest.toml",
+    "manifests/release-manifest.schema.json",
     "share/templates/config.toml",
     "share/templates/cargo-config.toml",
     "share/licenses/rust/COPYRIGHT",
@@ -52,6 +55,52 @@ EXPECTED_REQUIRED_PATHS = (
     "share/source-revisions.toml",
     "share/examples/hello-std/Cargo.toml",
     "share/examples/hello-std/src/main.rs",
+    "share/board-test/board-test-manifest.toml",
+    "share/board-test/check_results.py",
+    "share/board-test/result.schema.json",
+    "share/board-test/docs/capabilities.md",
+    "share/board-test/docs/manual-board-test.md",
+    "share/board-test/docs/releasing.md",
+    "share/board-test/apps/hello-std/Cargo.toml",
+    "share/board-test/apps/hello-std/src/main.rs",
+    "share/board-test/apps/filesystem/Cargo.toml",
+    "share/board-test/apps/filesystem/src/main.rs",
+    "share/board-test/apps/threads-tls/Cargo.toml",
+    "share/board-test/apps/threads-tls/src/main.rs",
+    "share/board-test/apps/network/Cargo.toml",
+    "share/board-test/apps/network/src/main.rs",
+    "share/board-test/apps/process/Cargo.toml",
+    "share/board-test/apps/process/src/main.rs",
+    "share/board-test/apps/ffi-abi/Cargo.toml",
+    "share/board-test/apps/ffi-abi/src/main.rs",
+    "share/board-test/apps/unwind/Cargo.toml",
+    "share/board-test/apps/unwind/src/main.rs",
+    "share/board-test/apps/ffi-containment/Cargo.toml",
+    "share/board-test/apps/ffi-containment/src/lib.rs",
+    "share/board-test/abi/ffi_caller.c",
+)
+EXPECTED_MANIFEST_FILES = {
+    "allowed-dynamic-symbols.txt",
+    "capabilities.toml",
+    "release-manifest.schema.json",
+    "release-manifest.toml",
+    "sdk-layout.toml",
+    "toolchain.lock.toml",
+}
+EXPECTED_BOARD_BUNDLE_FILES = {
+    path.removeprefix("share/board-test/")
+    for path in EXPECTED_REQUIRED_PATHS
+    if path.startswith("share/board-test/")
+}
+BOARD_APPLICATIONS = (
+    "hello-std",
+    "filesystem",
+    "threads-tls",
+    "network",
+    "process",
+    "ffi-abi",
+    "unwind",
+    "ffi-containment",
 )
 
 
@@ -171,10 +220,36 @@ def create_fake_source(root: Path) -> None:
         REPO_ROOT / "tests" / "eos" / "fixtures" / libc_fixture.name,
         libc_fixture,
     )
-    shutil.copytree(
-        REPO_ROOT / "tests" / "eos" / "apps" / "hello-std",
-        root / "tests" / "eos" / "apps" / "hello-std",
+    board_source_files = (
+        "tests/eos/board/board-test-manifest.toml",
+        "tests/eos/board/check_results.py",
+        "tests/eos/board/result.schema.json",
+        "docs/eos/capabilities.md",
+        "docs/eos/manual-board-test.md",
+        "docs/eos/releasing.md",
+        "tests/eos/abi/ffi_caller.c",
+        "tests/eos/apps/hello-std/Cargo.toml",
+        "tests/eos/apps/hello-std/src/main.rs",
+        "tests/eos/apps/filesystem/Cargo.toml",
+        "tests/eos/apps/filesystem/src/main.rs",
+        "tests/eos/apps/threads-tls/Cargo.toml",
+        "tests/eos/apps/threads-tls/src/main.rs",
+        "tests/eos/apps/network/Cargo.toml",
+        "tests/eos/apps/network/src/main.rs",
+        "tests/eos/apps/process/Cargo.toml",
+        "tests/eos/apps/process/src/main.rs",
+        "tests/eos/apps/ffi-abi/Cargo.toml",
+        "tests/eos/apps/ffi-abi/src/main.rs",
+        "tests/eos/apps/unwind/Cargo.toml",
+        "tests/eos/apps/unwind/src/main.rs",
+        "tests/eos/apps/ffi-containment/Cargo.toml",
+        "tests/eos/apps/ffi-containment/src/lib.rs",
     )
+    for relative in board_source_files:
+        source = REPO_ROOT / relative
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
     for license_name in ("COPYRIGHT", "LICENSE-APACHE", "LICENSE-MIT"):
         shutil.copy2(REPO_ROOT / license_name, root / license_name)
     (root / "library" / "backtrace").mkdir(parents=True)
@@ -301,11 +376,15 @@ def create_fake_arm_gnu(root: Path, version: str = "14.3.1") -> None:
         textwrap.dedent(
             f"""\
             #!/usr/bin/env python3
+            from pathlib import Path
             import sys
             if "-dumpfullversion" in sys.argv:
                 print({version!r})
             elif "-print-libgcc-file-name" in sys.argv:
-                print({str(libgcc)!r})
+                print(
+                    Path(__file__).resolve().parents[1]
+                    / "lib/gcc/arm-none-eabi/14.3.1/libgcc.a"
+                )
             else:
                 raise SystemExit(0)
             """
@@ -726,6 +805,20 @@ Path(os.environ["RUSTUP_LOG"]).write_text(json.dumps(sys.argv[1:]), encoding="ut
                 self.assertEqual(result.returncode, 2)
                 self.assertIn("release manifest", result.stderr)
 
+    def test_installer_rejects_extra_board_bundle_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            sdk = temporary / "sdk"
+            create_installed_sdk(sdk)
+            poison = sdk / "share" / "board-test" / "results" / "xc7z030.json"
+            poison.parent.mkdir(parents=True)
+            poison.write_text("must not be installed\n", encoding="utf-8")
+
+            result = run_installer(sdk, path=str(temporary / "no-rustup"))
+
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("exact board-test closure", result.stderr)
+
     def test_installer_rechecks_package_fingerprint_before_no_rustup_output(self):
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
@@ -734,8 +827,8 @@ Path(os.environ["RUSTUP_LOG"]).write_text(json.dumps(sys.argv[1:]), encoding="ut
             installer = load_installer_module()
 
             def mutate_package(_name):
-                (sdk / "bin" / "rustc").write_text(
-                    "#!/bin/sh\nexit 7\n", encoding="utf-8"
+                (sdk / "share" / "board-test" / "check_results.py").write_text(
+                    "mutated board checker\n", encoding="utf-8"
                 )
                 return None
 
@@ -813,13 +906,31 @@ class BuilderContractTests(unittest.TestCase):
         self.temporary_directory.cleanup()
 
     def test_builder_runs_all_gates_and_stages_a_relocatable_complete_sdk(self):
-        source_example = self.source / "tests" / "eos" / "apps" / "hello-std"
-        (source_example / "Cargo.lock").write_text("generated lock\n", encoding="utf-8")
-        generated_target = source_example / "target"
-        generated_target.mkdir(exist_ok=True)
-        (generated_target / "do-not-package").write_text(
-            "generated artifact\n", encoding="utf-8"
+        for application in BOARD_APPLICATIONS:
+            source_application = self.source / "tests" / "eos" / "apps" / application
+            (source_application / "Cargo.lock").write_text(
+                "generated lock\n", encoding="utf-8"
+            )
+            generated_target = source_application / "target"
+            generated_target.mkdir(exist_ok=True)
+            (generated_target / "do-not-package").write_text(
+                "generated artifact\n", encoding="utf-8"
+            )
+        unrelated = self.source / "tests" / "eos" / "apps" / "unrelated"
+        unrelated.mkdir(parents=True)
+        (unrelated / "Cargo.toml").write_text("[package]\nname = 'poison'\n", encoding="utf-8")
+        poison_files = (
+            "tests/eos/board/private-key.pem",
+            "tests/eos/board/results/xc7z030.json",
+            "tests/eos/board/credentials.json",
+            "docs/eos/board-locations.md",
+            "tests/eos/abi/transfer-command.txt",
+            "src/tools/eos-sdk/manifests/unreviewed-policy.toml",
         )
+        for relative in poison_files:
+            poison = self.source / relative
+            poison.parent.mkdir(parents=True, exist_ok=True)
+            poison.write_text("must not be packaged\n", encoding="utf-8")
 
         result = run_builder(
             self.source,
@@ -867,6 +978,56 @@ class BuilderContractTests(unittest.TestCase):
         )
         self.assertFalse((packaged_example / "Cargo.lock").exists())
         self.assertFalse((packaged_example / "target").exists())
+        manifests = self.output / "manifests"
+        self.assertEqual(
+            {
+                path.relative_to(manifests).as_posix()
+                for path in manifests.rglob("*")
+                if path.is_file() or path.is_symlink()
+            },
+            EXPECTED_MANIFEST_FILES,
+        )
+        board_bundle = self.output / "share" / "board-test"
+        self.assertEqual(
+            {
+                path.relative_to(board_bundle).as_posix()
+                for path in board_bundle.rglob("*")
+                if path.is_file() or path.is_symlink()
+            },
+            EXPECTED_BOARD_BUNDLE_FILES,
+        )
+        for application in BOARD_APPLICATIONS:
+            packaged_application = board_bundle / "apps" / application
+            self.assertFalse((packaged_application / "Cargo.lock").exists())
+            self.assertFalse((packaged_application / "target").exists())
+        self.assertFalse((board_bundle / "apps" / "unrelated").exists())
+        for forbidden_name in (
+            "private-key.pem",
+            "xc7z030.json",
+            "credentials.json",
+            "board-locations.md",
+            "transfer-command.txt",
+            "unreviewed-policy.toml",
+        ):
+            self.assertFalse(any(path.name == forbidden_name for path in self.output.rglob("*")))
+        packaged_checker = board_bundle / "check_results.py"
+        loader = importlib.machinery.SourceFileLoader(
+            f"_packaged_board_checker_{id(object())}", str(packaged_checker)
+        )
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        self.assertIsNotNone(spec)
+        checker = importlib.util.module_from_spec(spec)
+        loader.exec_module(checker)
+        self.assertEqual(
+            checker.CHECKED_IN_POLICY,
+            checker.PolicyPaths(
+                manifest=board_bundle / "board-test-manifest.toml",
+                result_schema=board_bundle / "result.schema.json",
+                release_schema=self.output / "manifests" / "release-manifest.schema.json",
+                capabilities=self.output / "manifests" / "capabilities.toml",
+            ),
+        )
+        self.assertTrue(all(path.is_file() for path in checker.CHECKED_IN_POLICY))
 
         release = tomllib.loads(
             (self.output / "manifests" / "release-manifest.toml").read_text(
@@ -944,6 +1105,121 @@ class BuilderContractTests(unittest.TestCase):
             self.output, path=str(self.temporary / "no-rustup")
         )
         self.assertEqual(install_check.returncode, 0, install_check.stderr)
+
+    def test_builder_regenerates_board_policy_from_written_release_manifest(self):
+        source_policy = self.source / "tests" / "eos" / "board" / "board-test-manifest.toml"
+        policy_text = source_policy.read_text(encoding="utf-8")
+        prefix, expected_and_signature = policy_text.split("[expected]\n", 1)
+        _, signature = expected_and_signature.split("[signature]\n", 1)
+        stale_expected = textwrap.dedent(
+            f"""\
+            [expected]
+            release_manifest_sha256 = "{'f' * 64}"
+            sdk_version = "stale-version"
+            toolchain = "stale-toolchain"
+            target = "stale-target"
+            layout_version = 99
+            rust_fork = "{'f' * 40}"
+            rust_upstream = "{'e' * 40}"
+            libc_upstream = "{'d' * 40}"
+            backtrace = "{'c' * 40}"
+            arm_gnu_release = "stale-arm"
+            arm_gnu_sha256_tree_v1 = "{'b' * 64}"
+            eos_sdk_baseline = "stale-eos"
+            eos_sdk_sha256_tree_v1 = "{'a' * 64}"
+            native_abi_major = 99
+            native_abi_minor = 98
+            linker_script_sha256 = "{'9' * 64}"
+
+            [signature]
+            """
+        )
+        source_policy.write_text(prefix + stale_expected + signature, encoding="utf-8")
+
+        result = run_builder(
+            self.source,
+            self.arm_gnu,
+            self.eos_sdk,
+            self.output,
+            self.fake_bin,
+            self.log,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        release_bytes = (self.output / "manifests" / "release-manifest.toml").read_bytes()
+        release = tomllib.loads(release_bytes.decode("utf-8"))
+        packaged_policy = (
+            self.output / "share" / "board-test" / "board-test-manifest.toml"
+        )
+        self.assertTrue(packaged_policy.is_file())
+        policy = tomllib.loads(
+            packaged_policy.read_text(encoding="utf-8")
+        )
+        expected = policy["expected"]
+        self.assertEqual(
+            expected,
+            {
+                "release_manifest_sha256": hashlib.sha256(release_bytes).hexdigest(),
+                "sdk_version": release["release"]["version"],
+                "toolchain": release["release"]["toolchain"],
+                "target": release["release"]["target"],
+                "layout_version": release["release"]["layout_version"],
+                "rust_fork": release["source_revisions"]["rust_fork"],
+                "rust_upstream": release["source_revisions"]["rust_upstream"],
+                "libc_upstream": release["source_revisions"]["libc_upstream"],
+                "backtrace": release["source_revisions"]["backtrace"],
+                "arm_gnu_release": "14.3.Rel1",
+                "arm_gnu_sha256_tree_v1": release["input_hashes"]["arm_gnu_installed"],
+                "eos_sdk_baseline": "MARTOS-SMP-14.0.39",
+                "eos_sdk_sha256_tree_v1": release["input_hashes"]["eos_sdk"],
+                "native_abi_major": 1,
+                "native_abi_minor": 0,
+                "linker_script_sha256": hashlib.sha256(
+                    (self.source / "src/tools/eos-sdk/linker/app_linker_script.ld").read_bytes()
+                ).hexdigest(),
+            },
+        )
+        source_policy_data = tomllib.loads(source_policy.read_text(encoding="utf-8"))
+        self.assertEqual(
+            {key: value for key, value in policy.items() if key != "expected"},
+            {key: value for key, value in source_policy_data.items() if key != "expected"},
+        )
+
+    def test_fake_builder_release_manifest_is_deterministic(self):
+        second_source = self.temporary / "second-source"
+        second_arm_gnu = self.temporary / "second-arm-gnu-input"
+        second_eos_sdk = self.temporary / "second-eos-input"
+        second_fake_bin = self.temporary / "second-fake-bin"
+        second_log = self.temporary / "second-commands.jsonl"
+        second_output = self.output.parent / "second-eos-sdk"
+        create_fake_source(second_source)
+        create_fake_arm_gnu(second_arm_gnu)
+        create_fake_eos_sdk(second_eos_sdk)
+        create_fake_build_commands(second_fake_bin)
+
+        first = run_builder(
+            self.source,
+            self.arm_gnu,
+            self.eos_sdk,
+            self.output,
+            self.fake_bin,
+            self.log,
+        )
+        second = run_builder(
+            second_source,
+            second_arm_gnu,
+            second_eos_sdk,
+            second_output,
+            second_fake_bin,
+            second_log,
+        )
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(
+            (self.output / "manifests" / "release-manifest.toml").read_bytes(),
+            (second_output / "manifests" / "release-manifest.toml").read_bytes(),
+        )
 
     def test_builder_hashes_the_complete_supplied_input_roots(self):
         arm_omitted = self.arm_gnu / "share" / "not-staged.txt"
