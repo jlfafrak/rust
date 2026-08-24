@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import stat
@@ -43,6 +44,8 @@ AUTH_TRAILER_LENGTH = len(AUTH_MARKER) + 64 + 1
 REVIEWED_SDK_TREE_SHA256 = (
     "919c17065b7b33626ade510f63c4febb2fda56413c6215f9ebeca019e67f7ae7"
 )
+# Populated only after the controller-owned replacement SDK build is reviewed.
+REVIEWED_SDK_TREE_MODE_SHA256: str | None = None
 REVIEWED_ARM_GNU_TREE_SHA256 = (
     "a407c7186f68473d2fb7a0bae59407261adef62f959fc181e5cd7eb7636a584d"
 )
@@ -60,6 +63,22 @@ REVIEWED_SOURCE_REVISIONS = {
     "rust_upstream": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
     "libc_upstream": "71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8",
     "backtrace": "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd",
+}
+EXPECTED_PACKAGE_MODE_POLICY = {
+    "algorithm": "sha256-tree-mode-v1",
+    "root": "0755",
+    "directory": "0755",
+    "regular_file": "0644",
+    "executable_file": "0755",
+    "executable_subtrees": [
+        "bin",
+        "arm-gnu/bin",
+        "arm-gnu/arm-none-eabi/bin",
+        "lib/rustlib/<host-triple>/bin",
+    ],
+    "executable_files": [
+        "arm-gnu/libexec/gcc/arm-none-eabi/14.3.1/collect2",
+    ],
 }
 
 
@@ -121,6 +140,86 @@ def sha256_tree_v1(root: Path) -> str:
     return digest.hexdigest()
 
 
+def sha256_tree_mode_v1(root: Path) -> str:
+    """Hash root/entry type, path, permission mode, and file bytes/link target."""
+    digest = hashlib.sha256()
+    try:
+        root_mode = stat.S_IMODE(root.stat().st_mode)
+        digest.update(f"R\0{root_mode:o}\0".encode("ascii"))
+        entries = sorted(
+            root.rglob("*"), key=lambda entry: entry.relative_to(root).as_posix()
+        )
+        for path in entries:
+            relative = path.relative_to(root).as_posix().encode("utf-8")
+            status = path.lstat()
+            mode = f"{stat.S_IMODE(status.st_mode):o}".encode("ascii")
+            if stat.S_ISLNK(status.st_mode):
+                target = os.readlink(path).encode("utf-8")
+                digest.update(b"L\0" + relative + b"\0" + mode + b"\0" + target + b"\0")
+            elif stat.S_ISREG(status.st_mode):
+                digest.update(b"F\0" + relative + b"\0" + mode + b"\0")
+                with path.open("rb") as source:
+                    while chunk := source.read(1024 * 1024):
+                        digest.update(chunk)
+                digest.update(b"\0")
+            elif stat.S_ISDIR(status.st_mode):
+                digest.update(b"D\0" + relative + b"\0" + mode + b"\0")
+            else:
+                raise AssertionError(f"unsupported release-tree entry: {path}")
+    except OSError as error:
+        raise AssertionError(f"unable to hash release tree {root}: {error}") from error
+    return digest.hexdigest()
+
+
+def sdk_host_triple() -> str:
+    machine = platform.machine().lower()
+    if sys.platform.startswith("linux") and machine in {"x86_64", "amd64"}:
+        return "x86_64-unknown-linux-gnu"
+    if sys.platform.startswith("linux") and machine in {"aarch64", "arm64"}:
+        return "aarch64-unknown-linux-gnu"
+    raise AssertionError(f"unsupported SDK host platform: {sys.platform}/{machine}")
+
+
+def expected_sdk_file_mode(relative: Path, host: str) -> int:
+    executable_roots = (
+        Path("bin"),
+        Path("arm-gnu/bin"),
+        Path("arm-gnu/arm-none-eabi/bin"),
+        Path("lib") / "rustlib" / host / "bin",
+    )
+    if relative == Path("arm-gnu/libexec/gcc/arm-none-eabi/14.3.1/collect2"):
+        return 0o755
+    if any(relative.is_relative_to(root) for root in executable_roots):
+        return 0o755
+    return 0o644
+
+
+def validate_sdk_package_modes(root: Path, host: str) -> None:
+    try:
+        root_mode = stat.S_IMODE(root.lstat().st_mode)
+        if root_mode != 0o755:
+            raise AssertionError(
+                f"reviewed SDK package mode mismatch for root: expected 0755, found {root_mode:04o}"
+            )
+        for path in root.rglob("*"):
+            status = path.lstat()
+            if stat.S_ISDIR(status.st_mode):
+                expected = 0o755
+            elif stat.S_ISREG(status.st_mode):
+                expected = expected_sdk_file_mode(path.relative_to(root), host)
+            else:
+                continue
+            actual = stat.S_IMODE(status.st_mode)
+            if actual != expected:
+                relative = path.relative_to(root).as_posix()
+                raise AssertionError(
+                    "reviewed SDK package mode mismatch for "
+                    f"{relative}: expected {expected:04o}, found {actual:04o}"
+                )
+    except OSError as error:
+        raise AssertionError(f"unable to validate reviewed SDK package modes: {error}") from error
+
+
 def configured_tool(variable: str, description: str) -> Path:
     configured = os.environ.get(variable)
     if not configured:
@@ -146,6 +245,18 @@ def compiler_environment() -> dict[str, str]:
 def verify_release_identity(sdk: Path, gcc: Path, objdump: Path) -> Path:
     if sha256_tree_v1(sdk) != REVIEWED_SDK_TREE_SHA256:
         raise AssertionError(f"reviewed Task 16 SDK tree identity mismatch: {sdk}")
+    layout_path = sdk / "manifests" / "sdk-layout.toml"
+    try:
+        layout = tomllib.loads(layout_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
+        raise AssertionError(f"reviewed SDK layout manifest is invalid: {error}") from error
+    if layout.get("package_modes") != EXPECTED_PACKAGE_MODE_POLICY:
+        raise AssertionError("reviewed SDK package mode policy does not match the exact contract")
+    validate_sdk_package_modes(sdk, sdk_host_triple())
+    if REVIEWED_SDK_TREE_MODE_SHA256 is None:
+        raise AssertionError("reviewed SDK sha256-tree-mode-v1 identity is pending")
+    if sha256_tree_mode_v1(sdk) != REVIEWED_SDK_TREE_MODE_SHA256:
+        raise AssertionError(f"reviewed SDK mode-aware tree identity mismatch: {sdk}")
     manifest_path = sdk / "manifests" / "release-manifest.toml"
     try:
         manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
@@ -1158,6 +1269,82 @@ class StaticElfGateTests(unittest.TestCase):
 
 
 class ReleaseIdentityGateTests(unittest.TestCase):
+    def test_mode_aware_sdk_tree_identity_binds_root_entry_modes_bytes_and_links(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            root = Path(directory)
+            root.chmod(0o755)
+            docs = root / "docs"
+            docs.mkdir(mode=0o755)
+            readme = docs / "readme.txt"
+            readme.write_bytes(b"hello\n")
+            readme.chmod(0o644)
+            tool = root / "tool"
+            tool.write_bytes(b"#!/bin/sh\n")
+            tool.chmod(0o755)
+            current = root / "current"
+            current.symlink_to("docs/readme.txt")
+
+            expected = "623304f4622194acdf7779eb2485cdfb3502765dca5b4ea6fc354d3e41b2aedf"
+            self.assertEqual(sha256_tree_mode_v1(root), expected)
+            legacy_identity = sha256_tree_v1(root)
+
+            root.chmod(0o700)
+            self.assertNotEqual(sha256_tree_mode_v1(root), expected)
+            self.assertEqual(sha256_tree_v1(root), legacy_identity)
+            root.chmod(0o755)
+            readme.chmod(0o600)
+            self.assertNotEqual(sha256_tree_mode_v1(root), expected)
+            self.assertEqual(sha256_tree_v1(root), legacy_identity)
+            readme.chmod(0o644)
+            current.unlink()
+            current.symlink_to("tool")
+            self.assertNotEqual(sha256_tree_mode_v1(root), expected)
+
+    def test_static_sdk_mode_gate_accepts_only_the_exact_executable_allowlist(self) -> None:
+        host = "x86_64-unknown-linux-gnu"
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            root = Path(directory)
+            files = {
+                "bin/rustc": 0o755,
+                "arm-gnu/bin/arm-none-eabi-gcc": 0o755,
+                "arm-gnu/arm-none-eabi/bin/as": 0o755,
+                "arm-gnu/libexec/gcc/arm-none-eabi/14.3.1/collect2": 0o755,
+                "arm-gnu/libexec/gcc/arm-none-eabi/14.3.1/liblto_plugin.so": 0o644,
+                f"lib/rustlib/{host}/bin/rust-lld": 0o755,
+                "lib/rustlib/armv7a-unknown-eos-eabi/lib/libstd-fixture.so": 0o644,
+                "share/doc.txt": 0o644,
+            }
+            for relative, mode in files.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"fixture\n")
+                path.chmod(mode)
+            root.chmod(0o755)
+            for path in root.rglob("*"):
+                if path.is_dir():
+                    path.chmod(0o755)
+
+            validate_sdk_package_modes(root, host)
+
+            cases = (
+                (Path("."), 0o777),
+                (Path("share"), 0o700),
+                (Path("bin/rustc"), 0o644),
+                (Path("share/doc.txt"), 0o755),
+                (Path("share/doc.txt"), 0o4644),
+                (Path("share/doc.txt"), 0o664),
+            )
+            for relative, mode in cases:
+                with self.subTest(path=str(relative), mode=f"{mode:04o}"):
+                    path = root / relative
+                    original = stat.S_IMODE(path.stat().st_mode)
+                    path.chmod(mode)
+                    try:
+                        with self.assertRaisesRegex(AssertionError, "package mode"):
+                            validate_sdk_package_modes(root, host)
+                    finally:
+                        path.chmod(original)
+
     def test_sdk_shape_does_not_accept_a_same_name_substitute(self) -> None:
         with tempfile.TemporaryDirectory(prefix="eos-sdk-substitute-") as temporary:
             substitute = Path(temporary)

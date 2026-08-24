@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import stat
@@ -79,6 +80,22 @@ BOARD_TEST_PATHS = tuple(
 HEX_40 = re.compile(r"[0-9a-f]{40}")
 HEX_64 = re.compile(r"[0-9a-f]{64}")
 ARCHIVE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*\.tar\.(?:xz|gz)")
+PACKAGE_MODE_POLICY = {
+    "algorithm": "sha256-tree-mode-v1",
+    "root": "0755",
+    "directory": "0755",
+    "regular_file": "0644",
+    "executable_file": "0755",
+    "executable_subtrees": [
+        "bin",
+        "arm-gnu/bin",
+        "arm-gnu/arm-none-eabi/bin",
+        "lib/rustlib/<host-triple>/bin",
+    ],
+    "executable_files": [
+        "arm-gnu/libexec/gcc/arm-none-eabi/14.3.1/collect2",
+    ],
+}
 
 
 class InstallError(Exception):
@@ -87,6 +104,15 @@ class InstallError(Exception):
 
 def matches_hex(value: object, pattern: re.Pattern[str]) -> bool:
     return isinstance(value, str) and pattern.fullmatch(value) is not None
+
+
+def host_triple() -> str:
+    machine = platform.machine().lower()
+    if sys.platform.startswith("linux") and machine in {"x86_64", "amd64"}:
+        return "x86_64-unknown-linux-gnu"
+    if sys.platform.startswith("linux") and machine in {"aarch64", "arm64"}:
+        return "aarch64-unknown-linux-gnu"
+    raise InstallError(f"unsupported SDK host platform: {sys.platform}/{machine}")
 
 
 class ValidatedSdk:
@@ -152,7 +178,8 @@ def validate_tree_entries(root: Path, description: str) -> None:
             raise InstallError(f"unsupported {description} filesystem entry: {path}")
 
 
-def package_fingerprint(root: Path) -> str:
+def sha256_tree_mode_v1(root: Path) -> str:
+    """Hash root/entry type, path, permission mode, and file bytes/link target."""
     digest = hashlib.sha256()
     try:
         root_mode = stat.S_IMODE(root.stat().st_mode)
@@ -180,6 +207,47 @@ def package_fingerprint(root: Path) -> str:
     except OSError as error:
         raise InstallError(f"unable to fingerprint SDK package: {error}") from error
     return digest.hexdigest()
+
+
+def expected_sdk_file_mode(relative: Path, host: str) -> int:
+    executable_roots = (
+        Path("bin"),
+        Path("arm-gnu/bin"),
+        Path("arm-gnu/arm-none-eabi/bin"),
+        Path("lib") / "rustlib" / host / "bin",
+    )
+    if relative == Path("arm-gnu/libexec/gcc/arm-none-eabi/14.3.1/collect2"):
+        return 0o755
+    if any(relative.is_relative_to(root) for root in executable_roots):
+        return 0o755
+    return 0o644
+
+
+def validate_sdk_modes(root: Path) -> None:
+    host = host_triple()
+    try:
+        root_mode = stat.S_IMODE(root.lstat().st_mode)
+        if root_mode != 0o755:
+            raise InstallError(
+                f"SDK package mode mismatch for root: expected 0755, found {root_mode:04o}"
+            )
+        for path in root.rglob("*"):
+            status = path.lstat()
+            if stat.S_ISDIR(status.st_mode):
+                expected = 0o755
+            elif stat.S_ISREG(status.st_mode):
+                expected = expected_sdk_file_mode(path.relative_to(root), host)
+            else:
+                continue
+            actual = stat.S_IMODE(status.st_mode)
+            if actual != expected:
+                relative = path.relative_to(root).as_posix()
+                raise InstallError(
+                    "SDK package mode mismatch for "
+                    f"{relative}: expected {expected:04o}, found {actual:04o}"
+                )
+    except OSError as error:
+        raise InstallError(f"unable to validate SDK package modes: {error}") from error
 
 
 def validate_eos_runtime_closure(root: Path) -> None:
@@ -230,8 +298,9 @@ def load_layout(root: Path) -> dict:
         "paths": list(REQUIRED_PATHS),
     }
     if (
-        set(layout) != {"sdk", "required"}
+        set(layout) != {"sdk", "package_modes", "required"}
         or layout.get("sdk") != expected_sdk
+        or layout.get("package_modes") != PACKAGE_MODE_POLICY
         or layout.get("required") != expected_required
     ):
         raise InstallError("SDK layout does not match the exact Task 16 contract")
@@ -312,6 +381,7 @@ def validate_sdk(argument: Path) -> ValidatedSdk:
         raise InstallError(f"unable to capture SDK root identity: {error}") from error
     validate_tree_entries(root, "SDK")
     layout = load_layout(root)
+    validate_sdk_modes(root)
     load_release_manifest(root)
     required = layout["required"]
     host_tools = required.get("host_tools")
@@ -352,7 +422,7 @@ def validate_sdk(argument: Path) -> ValidatedSdk:
         raise InstallError("missing target shared library std")
     for library in shared_std:
         rooted_file(root, str(library.relative_to(root)), "target shared library std")
-    fingerprint = package_fingerprint(root)
+    fingerprint = sha256_tree_mode_v1(root)
     try:
         after = root.stat()
     except OSError as error:
@@ -373,7 +443,7 @@ def revalidate_sdk(validated: ValidatedSdk) -> None:
         raise InstallError(f"SDK root changed after validation: {error}") from error
     if (status.st_dev, status.st_ino) != (validated.device, validated.inode):
         raise InstallError("SDK root identity changed after validation")
-    if package_fingerprint(validated.root) != validated.fingerprint:
+    if sha256_tree_mode_v1(validated.root) != validated.fingerprint:
         raise InstallError("SDK package changed after validation")
 
 

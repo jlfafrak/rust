@@ -4,6 +4,22 @@ version = "1.97.1"
 toolchain = "eos-1.97.1"
 target = "armv7a-unknown-eos-eabi"
 
+[package_modes]
+algorithm = "sha256-tree-mode-v1"
+root = "0755"
+directory = "0755"
+regular_file = "0644"
+executable_file = "0755"
+executable_subtrees = [
+    "bin",
+    "arm-gnu/bin",
+    "arm-gnu/arm-none-eabi/bin",
+    "lib/rustlib/<host-triple>/bin",
+]
+executable_files = [
+    "arm-gnu/libexec/gcc/arm-none-eabi/14.3.1/collect2",
+]
+
 [required]
 host_tools = ["rustc", "cargo", "rustdoc"]
 target_libraries = ["core", "alloc", "std", "panic_unwind", "proc_macro", "test"]

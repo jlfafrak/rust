@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -102,6 +103,22 @@ BOARD_APPLICATIONS = (
     "unwind",
     "ffi-containment",
 )
+EXPECTED_PACKAGE_MODES = {
+    "algorithm": "sha256-tree-mode-v1",
+    "root": "0755",
+    "directory": "0755",
+    "regular_file": "0644",
+    "executable_file": "0755",
+    "executable_subtrees": [
+        "bin",
+        "arm-gnu/bin",
+        "arm-gnu/arm-none-eabi/bin",
+        "lib/rustlib/<host-triple>/bin",
+    ],
+    "executable_files": [
+        "arm-gnu/libexec/gcc/arm-none-eabi/14.3.1/collect2",
+    ],
+}
 
 
 def link_or_copy(source: str, destination: str) -> str:
@@ -116,6 +133,31 @@ def write_executable(path: Path, source: str = "#!/bin/sh\nexit 0\n") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source, encoding="utf-8")
     path.chmod(0o755)
+
+
+def expected_fixture_file_mode(root: Path, path: Path) -> int:
+    relative = path.relative_to(root)
+    executable_roots = (
+        Path("bin"),
+        Path("arm-gnu/bin"),
+        Path("arm-gnu/arm-none-eabi/bin"),
+        Path(f"lib/rustlib/{host_triple()}/bin"),
+    )
+    if relative == Path("arm-gnu/libexec/gcc/arm-none-eabi/14.3.1/collect2"):
+        return 0o755
+    if any(relative.is_relative_to(executable_root) for executable_root in executable_roots):
+        return 0o755
+    return 0o644
+
+
+def canonicalize_fixture_sdk_modes(root: Path) -> None:
+    root.chmod(0o755)
+    for path in root.rglob("*"):
+        status = path.lstat()
+        if stat.S_ISDIR(status.st_mode):
+            path.chmod(0o755)
+        elif stat.S_ISREG(status.st_mode):
+            path.chmod(expected_fixture_file_mode(root, path))
 
 
 def create_installed_sdk(root: Path) -> None:
@@ -168,6 +210,7 @@ def create_installed_sdk(root: Path) -> None:
         ),
         encoding="utf-8",
     )
+    canonicalize_fixture_sdk_modes(root)
 
 
 def run_installer(root: Path, *, path: str) -> subprocess.CompletedProcess[str]:
@@ -190,6 +233,17 @@ def load_installer_module():
     spec = importlib.util.spec_from_loader(name, loader)
     if spec is None:
         raise AssertionError("unable to create installer module spec")
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def load_builder_module():
+    name = f"_task16_build_eos_sdk_{id(object())}"
+    loader = importlib.machinery.SourceFileLoader(name, str(BUILD_TOOL))
+    spec = importlib.util.spec_from_loader(name, loader)
+    if spec is None:
+        raise AssertionError("unable to create builder module spec")
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     return module
@@ -298,6 +352,10 @@ def create_fake_source(root: Path) -> None:
                 for library in ("core", "alloc", "std", "panic_unwind", "proc_macro", "test"):
                     (libdir / f"lib{{library}}-0123456789abcdef.rlib").write_bytes(b"archive")
                 (libdir / "libstd-0123456789abcdef.so").write_bytes(b"shared")
+                if os.environ.get("EOS_TEST_X_HOSTILE_MODES") == "1":
+                    stage.chmod(0o777)
+                    for path in stage.rglob("*"):
+                        path.chmod(0o777)
                 if os.environ.get("EOS_TEST_X_STAGE2_RUST_SRC_LINK") == "1":
                     rust_src = stage / "lib" / "rustlib" / "src"
                     rust_src.mkdir(parents=True, exist_ok=True)
@@ -530,6 +588,7 @@ def run_builder(
     fake_bin: Path,
     log: Path,
     extra_environment: dict[str, str] | None = None,
+    process_umask: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["PATH"] = f"{fake_bin}{os.pathsep}{os.defpath}"
@@ -556,6 +615,7 @@ def run_builder(
         stderr=subprocess.PIPE,
         timeout=240,
         check=False,
+        preexec_fn=(lambda: os.umask(process_umask)) if process_umask is not None else None,
     )
 
 
@@ -617,6 +677,7 @@ class SdkSourceContractTests(unittest.TestCase):
             EXPECTED_TARGET_LIBRARIES,
         )
         self.assertEqual(tuple(layout["required"]["paths"]), EXPECTED_REQUIRED_PATHS)
+        self.assertEqual(layout["package_modes"], EXPECTED_PACKAGE_MODES)
 
         manifest = tomllib.loads(
             (REPO_ROOT / "tests" / "eos" / "apps" / "hello-std" / "Cargo.toml")
@@ -634,7 +695,7 @@ class SdkSourceContractTests(unittest.TestCase):
 
 class InstallerContractTests(unittest.TestCase):
     def test_installer_validates_then_links_the_named_rustup_toolchain(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             temporary = Path(directory)
             sdk = temporary / "sdk"
             create_installed_sdk(sdk)
@@ -672,7 +733,7 @@ Path(os.environ["RUSTUP_LOG"]).write_text(json.dumps(sys.argv[1:]), encoding="ut
             self.assertIn("eos-1.97.1", result.stdout)
 
     def test_installer_prints_explicit_commands_when_rustup_is_unavailable(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             temporary = Path(directory)
             sdk = temporary / "sdk"
             create_installed_sdk(sdk)
@@ -687,7 +748,7 @@ Path(os.environ["RUSTUP_LOG"]).write_text(json.dumps(sys.argv[1:]), encoding="ut
             self.assertIn(f"PATH='{sdk.resolve() / 'bin'}':$PATH", result.stdout)
 
     def test_installer_rejects_an_incomplete_target_sysroot_before_rustup(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             temporary = Path(directory)
             sdk = temporary / "sdk"
             create_installed_sdk(sdk)
@@ -700,8 +761,39 @@ Path(os.environ["RUSTUP_LOG"]).write_text(json.dumps(sys.argv[1:]), encoding="ut
             self.assertEqual(result.returncode, 2)
             self.assertIn("target library test", result.stderr)
 
+    def test_installer_rejects_noncanonical_package_modes_before_fake_rustup(self):
+        cases = (
+            ("root", Path("."), 0o777),
+            ("directory", Path("share/examples"), 0o700),
+            ("executable", Path("bin/rustc"), 0o644),
+            ("ordinary-file", Path("include/eos_rust_abi.h"), 0o755),
+            ("special-bit", Path("include/eos_rust_abi.h"), 0o4644),
+            ("group-writable", Path("include/eos_rust_abi.h"), 0o664),
+            ("other-writable", Path("include/eos_rust_abi.h"), 0o646),
+        )
+        for name, relative, mode in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory(dir="/tmp") as directory:
+                temporary = Path(directory)
+                sdk = temporary / "sdk"
+                create_installed_sdk(sdk)
+                (sdk / relative).chmod(mode)
+                fake_bin = temporary / "fake-bin"
+                rustup_log = temporary / "rustup-ran"
+                write_executable(
+                    fake_bin / "rustup",
+                    f"#!/bin/sh\nprintf ran > {rustup_log}\n",
+                )
+
+                result = run_installer(
+                    sdk, path=f"{fake_bin}{os.pathsep}{os.defpath}"
+                )
+
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("package mode", result.stderr)
+                self.assertFalse(rustup_log.exists())
+
     def test_installer_rejects_a_required_path_that_escapes_by_symlink(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             temporary = Path(directory)
             sdk = temporary / "sdk"
             create_installed_sdk(sdk)
@@ -728,7 +820,7 @@ Path(os.environ["RUSTUP_LOG"]).write_text(json.dumps(sys.argv[1:]), encoding="ut
             ),
         }
         for name, mutate in mutations.items():
-            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(name=name), tempfile.TemporaryDirectory(dir="/tmp") as directory:
                 temporary = Path(directory)
                 sdk = temporary / "sdk"
                 create_installed_sdk(sdk)
@@ -744,12 +836,46 @@ Path(os.environ["RUSTUP_LOG"]).write_text(json.dumps(sys.argv[1:]), encoding="ut
                 self.assertEqual(result.returncode, 2)
                 self.assertIn("exact Task 16 contract", result.stderr)
 
+    def test_installer_rejects_weakened_expanded_or_malformed_mode_policies(self):
+        mutations = {
+            "weakened": lambda text: text.replace(
+                'regular_file = "0644"', 'regular_file = "0664"'
+            ),
+            "expanded": lambda text: text.replace(
+                '    "bin",', '    "share",\n    "bin",'
+            ),
+            "malformed": lambda text: text.replace('root = "0755"', 'root = 755'),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory(dir="/tmp") as directory:
+                temporary = Path(directory)
+                sdk = temporary / "sdk"
+                create_installed_sdk(sdk)
+                layout = sdk / "manifests" / "sdk-layout.toml"
+                original = layout.read_text(encoding="utf-8")
+                changed = mutate(original)
+                self.assertNotEqual(changed, original)
+                layout.write_text(changed, encoding="utf-8")
+                rustup_log = temporary / "rustup-ran"
+                fake_bin = temporary / "fake-bin"
+                write_executable(
+                    fake_bin / "rustup",
+                    f"#!/bin/sh\nprintf ran > {rustup_log}\n",
+                )
+
+                result = run_installer(
+                    sdk, path=f"{fake_bin}{os.pathsep}{os.defpath}"
+                )
+
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn("exact Task 16 contract", result.stderr)
+                self.assertFalse(rustup_log.exists())
+
     def test_installer_recursively_rejects_unsafe_arm_and_eos_entries(self):
         cases = ("broken-arm-link", "escaping-eos-link", "arm-fifo", "extra-eos-header")
         for case in cases:
-            native_parent = "/tmp" if case == "arm-fifo" else None
             with self.subTest(case=case), tempfile.TemporaryDirectory(
-                dir=native_parent
+                dir="/tmp"
             ) as directory:
                 temporary = Path(directory)
                 sdk = temporary / "sdk"
@@ -791,7 +917,7 @@ Path(os.environ["RUSTUP_LOG"]).write_text(json.dumps(sys.argv[1:]), encoding="ut
             ),
         }
         for name, mutate in mutations.items():
-            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+            with self.subTest(name=name), tempfile.TemporaryDirectory(dir="/tmp") as directory:
                 temporary = Path(directory)
                 sdk = temporary / "sdk"
                 create_installed_sdk(sdk)
@@ -806,7 +932,7 @@ Path(os.environ["RUSTUP_LOG"]).write_text(json.dumps(sys.argv[1:]), encoding="ut
                 self.assertIn("release manifest", result.stderr)
 
     def test_installer_rejects_extra_board_bundle_entries(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             temporary = Path(directory)
             sdk = temporary / "sdk"
             create_installed_sdk(sdk)
@@ -820,7 +946,7 @@ Path(os.environ["RUSTUP_LOG"]).write_text(json.dumps(sys.argv[1:]), encoding="ut
             self.assertIn("exact board-test closure", result.stderr)
 
     def test_installer_rechecks_package_fingerprint_before_no_rustup_output(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             temporary = Path(directory)
             sdk = temporary / "sdk"
             create_installed_sdk(sdk)
@@ -842,8 +968,31 @@ Path(os.environ["RUSTUP_LOG"]).write_text(json.dumps(sys.argv[1:]), encoding="ut
                 installer.main([str(sdk)])
             external.assert_not_called()
 
+    def test_installer_rechecks_chmod_in_package_fingerprint_before_fake_rustup(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            temporary = Path(directory)
+            sdk = temporary / "sdk"
+            create_installed_sdk(sdk)
+            rustup = temporary / "rustup"
+            write_executable(rustup)
+            installer = load_installer_module()
+
+            def chmod_package(_name):
+                (sdk / "include" / "eos_rust_abi.h").chmod(0o600)
+                return str(rustup)
+
+            with (
+                mock.patch.object(installer.shutil, "which", side_effect=chmod_package),
+                mock.patch.object(installer.subprocess, "run") as external,
+                self.assertRaisesRegex(
+                    installer.InstallError, "changed after validation"
+                ),
+            ):
+                installer.main([str(sdk)])
+            external.assert_not_called()
+
     def test_installer_rechecks_root_identity_before_fake_rustup(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             temporary = Path(directory)
             sdk = temporary / "sdk"
             create_installed_sdk(sdk)
@@ -867,7 +1016,7 @@ Path(os.environ["RUSTUP_LOG"]).write_text(json.dumps(sys.argv[1:]), encoding="ut
             external.assert_not_called()
 
     def test_installer_rejects_root_replaced_during_initial_validation(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             temporary = Path(directory)
             sdk = temporary / "sdk"
             create_installed_sdk(sdk)
@@ -1105,6 +1254,95 @@ class BuilderContractTests(unittest.TestCase):
             self.output, path=str(self.temporary / "no-rustup")
         )
         self.assertEqual(install_check.returncode, 0, install_check.stderr)
+
+    def test_builder_canonicalizes_hostile_sources_stage2_outputs_and_umask(self):
+        for root in (self.source, self.arm_gnu, self.eos_sdk):
+            root.chmod(0o777)
+            for path in root.rglob("*"):
+                path.chmod(0o777)
+
+        result = run_builder(
+            self.source,
+            self.arm_gnu,
+            self.eos_sdk,
+            self.output,
+            self.fake_bin,
+            self.log,
+            {"EOS_TEST_X_HOSTILE_MODES": "1"},
+            process_umask=0,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(stat.S_IMODE(self.output.stat().st_mode), 0o755)
+        for path in self.output.rglob("*"):
+            status = path.lstat()
+            relative = path.relative_to(self.output).as_posix()
+            if stat.S_ISDIR(status.st_mode):
+                self.assertEqual(stat.S_IMODE(status.st_mode), 0o755, relative)
+            elif stat.S_ISREG(status.st_mode):
+                self.assertEqual(
+                    stat.S_IMODE(status.st_mode),
+                    expected_fixture_file_mode(self.output, path),
+                    relative,
+                )
+            else:
+                self.fail(f"unexpected staged entry type: {relative}")
+
+    def test_builder_staged_validation_rejects_noncanonical_package_modes(self):
+        result = run_builder(
+            self.source,
+            self.arm_gnu,
+            self.eos_sdk,
+            self.output,
+            self.fake_bin,
+            self.log,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        canonicalize_fixture_sdk_modes(self.output)
+        builder = load_builder_module()
+        cases = (
+            ("root", Path("."), 0o777),
+            ("directory", Path("share/examples"), 0o700),
+            ("executable", Path("bin/rustc"), 0o644),
+            ("ordinary-file", Path("include/eos_rust_abi.h"), 0o755),
+            ("special-bit", Path("include/eos_rust_abi.h"), 0o4644),
+            ("group-writable", Path("include/eos_rust_abi.h"), 0o664),
+            ("other-writable", Path("include/eos_rust_abi.h"), 0o646),
+        )
+        for name, relative, mode in cases:
+            with self.subTest(name=name):
+                path = self.output / relative
+                original_mode = stat.S_IMODE(path.stat().st_mode)
+                path.chmod(mode)
+                try:
+                    with self.assertRaisesRegex(builder.BuildError, "package mode"):
+                        builder.validate_staged_sdk(self.output)
+                finally:
+                    path.chmod(original_mode)
+
+    def test_builder_rejects_weakened_expanded_or_malformed_mode_policies(self):
+        builder = load_builder_module()
+        mutations = {
+            "weakened": lambda text: text.replace(
+                'regular_file = "0644"', 'regular_file = "0664"'
+            ),
+            "expanded": lambda text: text.replace(
+                '    "bin",', '    "share",\n    "bin",'
+            ),
+            "malformed": lambda text: text.replace('root = "0755"', 'root = 755'),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory(dir="/tmp") as directory:
+                stage = Path(directory) / "sdk"
+                create_installed_sdk(stage)
+                layout = stage / "manifests" / "sdk-layout.toml"
+                original = layout.read_text(encoding="utf-8")
+                changed = mutate(original)
+                self.assertNotEqual(changed, original)
+                layout.write_text(changed, encoding="utf-8")
+
+                with self.assertRaisesRegex(builder.BuildError, "package mode policy"):
+                    builder.validate_staged_sdk(stage)
 
     def test_builder_regenerates_board_policy_from_written_release_manifest(self):
         source_policy = self.source / "tests" / "eos" / "board" / "board-test-manifest.toml"

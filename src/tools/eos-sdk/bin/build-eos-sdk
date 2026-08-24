@@ -27,6 +27,22 @@ TOOLCHAIN = "eos-1.97.1"
 GCC_VERSION = "14.3.1"
 EOS_RELEASE_HEADING = "## Build 14.0.39"
 BACKTRACE_REVISION = "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd"
+PACKAGE_MODE_POLICY = {
+    "algorithm": "sha256-tree-mode-v1",
+    "root": "0755",
+    "directory": "0755",
+    "regular_file": "0644",
+    "executable_file": "0755",
+    "executable_subtrees": [
+        "bin",
+        "arm-gnu/bin",
+        "arm-gnu/arm-none-eabi/bin",
+        "lib/rustlib/<host-triple>/bin",
+    ],
+    "executable_files": [
+        "arm-gnu/libexec/gcc/arm-none-eabi/14.3.1/collect2",
+    ],
+}
 EXPECTED_LOCK = {
     ("rust", "version"): "1.97.1",
     ("rust", "upstream_commit"): "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
@@ -1037,7 +1053,62 @@ baseline = {toml_string(lock["eos_sdk"]["baseline"])}
     return release, release_bytes
 
 
-def validate_staged_sdk(stage: Path) -> None:
+def expected_sdk_file_mode(relative: Path, host: str) -> int:
+    executable_roots = (
+        Path("bin"),
+        Path("arm-gnu/bin"),
+        Path("arm-gnu/arm-none-eabi/bin"),
+        Path("lib") / "rustlib" / host / "bin",
+    )
+    if relative == Path("arm-gnu/libexec/gcc/arm-none-eabi/14.3.1/collect2"):
+        return 0o755
+    if any(relative.is_relative_to(root) for root in executable_roots):
+        return 0o755
+    return 0o644
+
+
+def canonicalize_sdk_modes(stage: Path, host: str) -> None:
+    try:
+        stage.chmod(0o755)
+        for path in stage.rglob("*"):
+            status = path.lstat()
+            if stat.S_ISDIR(status.st_mode):
+                path.chmod(0o755)
+            elif stat.S_ISREG(status.st_mode):
+                path.chmod(expected_sdk_file_mode(path.relative_to(stage), host))
+            elif not stat.S_ISLNK(status.st_mode):
+                raise BuildError(f"unsupported staged SDK filesystem entry: {path}")
+    except OSError as error:
+        raise BuildError(f"unable to canonicalize staged SDK package modes: {error}") from error
+
+
+def validate_sdk_modes(stage: Path, host: str) -> None:
+    try:
+        root_mode = stat.S_IMODE(stage.lstat().st_mode)
+        if root_mode != 0o755:
+            raise BuildError(
+                f"staged SDK package mode mismatch for root: expected 0755, found {root_mode:04o}"
+            )
+        for path in stage.rglob("*"):
+            status = path.lstat()
+            if stat.S_ISDIR(status.st_mode):
+                expected = 0o755
+            elif stat.S_ISREG(status.st_mode):
+                expected = expected_sdk_file_mode(path.relative_to(stage), host)
+            else:
+                continue
+            actual = stat.S_IMODE(status.st_mode)
+            if actual != expected:
+                relative = path.relative_to(stage).as_posix()
+                raise BuildError(
+                    "staged SDK package mode mismatch for "
+                    f"{relative}: expected {expected:04o}, found {actual:04o}"
+                )
+    except OSError as error:
+        raise BuildError(f"unable to validate staged SDK package modes: {error}") from error
+
+
+def validate_staged_sdk(stage: Path, host: str | None = None) -> None:
     try:
         layout = tomllib.loads(
             rooted_file(stage, "manifests/sdk-layout.toml", "SDK layout manifest").read_text(
@@ -1046,6 +1117,10 @@ def validate_staged_sdk(stage: Path) -> None:
         )
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
         raise BuildError(f"unable to validate staged SDK layout: {error}") from error
+    if layout.get("package_modes") != PACKAGE_MODE_POLICY:
+        raise BuildError("staged SDK package mode policy does not match the exact contract")
+    selected_host = host if host is not None else host_triple()
+    validate_sdk_modes(stage, selected_host)
     required = layout.get("required", {})
     for tool in required.get("host_tools", []):
         path = rooted_file(stage, f"bin/{tool}", f"host tool {tool}")
@@ -1166,9 +1241,8 @@ def build(arguments: argparse.Namespace) -> Path:
                 raise BuildError(
                     f"private Rust build directory escaped the source root: {rust_work}"
                 ) from error
-            rust_build = run_rust_build(
-                source, rust_work, stage, host_triple()
-            )
+            host = host_triple()
+            rust_build = run_rust_build(source, rust_work, stage, host)
             release, release_bytes = write_manifests(
                 stage, rust_build, lock, revisions, input_hashes
             )
@@ -1183,7 +1257,8 @@ def build(arguments: argparse.Namespace) -> Path:
             (stage / "share" / "board-test" / "board-test-manifest.toml").write_text(
                 rendered_policy, encoding="utf-8"
             )
-        validate_staged_sdk(stage)
+        canonicalize_sdk_modes(stage, host)
+        validate_staged_sdk(stage, host)
         final_input_hashes = {
             "arm_gnu_installed": tree_hash(arm),
             "eos_sdk": tree_hash(eos),
