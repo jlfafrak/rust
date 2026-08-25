@@ -614,3 +614,17 @@ fork pins, the same focused identity call passes against the final SDK and the c
 ARM GNU tools. Task 5 does not run the final Task 17 CI entrypoint; that fresh full regression is
 reserved for final integration Task 6. No CI behavior, target, ABI, linker, validator,
 authentication, unwind, random, or capability semantic changed.
+
+## Final integration Task 6 replacement — canonical release preflight
+
+The Task 5 package and its full-CI results remain historical evidence only: final review rejected
+that package's modes. The canonical replacement is `/tmp/eos-final-release-sdk-r2`, built from
+Rust fork `7f62307323c3d38c766e9040b7cb7cc74591713c`, with legacy tree identity
+`6599a2b56b3a842125f5a9a72f8b21c4a27a7a767f6a7465ae0355c67685bfba` and mode-aware identity
+`17798957eb020e568d6fea5bf85c91355602a43bfe277e26b934304eacb0f9ff`.
+
+The focused release-identity preflight passed against r2 and the canonical external ARM tools.
+The locked mode regressions passed 2/2, and the complete board policy suite passed 21/21. This
+replacement-build task intentionally did not run `tests/eos/run-ci.sh`, build static application
+artifacts, or make a physical-board claim. The controller must run the final integrated CI and
+independent branch/package review against exact pinned r2. No Task 17 workflow behavior changed.

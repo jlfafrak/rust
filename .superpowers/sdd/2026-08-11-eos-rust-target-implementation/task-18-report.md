@@ -397,3 +397,28 @@ manifests, and an argument-free invocation fails closed without claiming hardwar
 No trusted key, private key, board result, result bundle, credential, deployment action, or
 synthetic hardware outcome was added. Authentic organization-signed XC7Z030 and XC7Z045 results
 remain manual and incomplete, so the overall hardware release gate remains open.
+
+## Final integration Task 6 replacement — canonical generated identity
+
+The Task 5 generated identity section above is superseded for release pinning. The retained r1
+package is rejected evidence; canonical r2 has release-manifest SHA-256
+`f4d12b3d57b1e8c71446938e5b595700b73792b80ef10dbddb9fa938af4dacc4` and generated board-policy
+SHA-256 `1aa11ebf8b20538d256a6cc6e5d6ca5e2eaeb0c02bce6eb0c293fb1107f1e61c`. The generated policy
+matches Rust fork `7f62307323c3d38c766e9040b7cb7cc74591713c`, unchanged upstream Rust/libc/backtrace and
+ARM/EOS input identities, ABI 1.0, and the unchanged linker-script identity.
+
+The six canonical distribution identities are:
+
+```text
+cargo tar.gz    1952473253ff51e6a16279239c6f55813ebc8f37e34260c4cdc75bd11648a709
+cargo tar.xz    0162909029b0ad8cb029d45605760090e55c0b7ca0fb02666812c2f67df81fd0
+rust-std tar.gz edd9774fc2cf88af08253b7e07999f067585adcc696381d35861c1474371e313
+rust-std tar.xz 7b3a7a0a5a0d8086a14f754fbad07a6d1e32442e594b595bc70e06cfc28db90c
+rustc tar.gz    63b1e564cf5f66d79e09ca118f8c2e4c3d19b06fc4f95f92a409063bc5644527
+rustc tar.xz    06e5456e639058f43ac86f226b5ea516b48f2a074885ad13aa0a8b0078a20c5b
+```
+
+The stale source policy rejected r2's release digest before the pin; after the exact fixture and
+policy updates, real release/capability validation passed and all 21 synthetic cryptographic
+board-gate tests passed. The real hardware checker was not run, no key/result/bundle was added,
+and authentic signed XC7Z030/XC7Z045 evidence remains the manual hardware boundary.

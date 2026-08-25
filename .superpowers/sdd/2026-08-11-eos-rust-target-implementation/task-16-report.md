@@ -338,3 +338,32 @@ native ABI export surface passed. The packaged checker resolved only in-package 
 failed closed without hardware inputs; the installer validated the exact closure without rustup
 mutation. The conclusive inspection log is
 `/tmp/eos-final-task5-build.2W5yli6mfp/inspection-final.qj3ZTzu1PZ.log`.
+
+## Final integration Task 6 replacement — canonical package identity
+
+The Task 5 package above is retained immutable evidence but is rejected because its inherited
+permissions are noncanonical. The user-authorized replacement retry built from exact clean Rust
+fork `7f62307323c3d38c766e9040b7cb7cc74591713c` and backtrace
+`02ef1b533157e8ddbd0f9295c867e79b59e9bbbd`, exited `0`, and atomically published the canonical
+package at `/tmp/eos-final-release-sdk-r2`.
+
+Independent pre-pin inspection found the unchanged 141-file content closure and exactly 56
+directories including the root, with zero links or unsupported entries. All 56 directories are
+`0755`; the exact locked 35-file executable allowlist is `0755`; and the remaining 106 ordinary
+files are `0644`. The canonical identities are:
+
+```text
+SDK sha256-tree-v1       6599a2b56b3a842125f5a9a72f8b21c4a27a7a767f6a7465ae0355c67685bfba
+SDK sha256-tree-mode-v1  17798957eb020e568d6fea5bf85c91355602a43bfe277e26b934304eacb0f9ff
+release manifest SHA-256 f4d12b3d57b1e8c71446938e5b595700b73792b80ef10dbddb9fa938af4dacc4
+board policy SHA-256     1aa11ebf8b20538d256a6cc6e5d6ca5e2eaeb0c02bce6eb0c293fb1107f1e61c
+inventory-list SHA-256   a41c460a1f7158ee9e54ae0072cafc0e557d47fc69cc0a05d1ddc6f18f4b214e
+```
+
+The ARM10, EOS5, board23, example2, 40 static source-copy, sysroot, ELF ABI, and 120-export
+closures all passed. The fixed installer accepts r2 without rustup, rejects retained r1 before a
+fake rustup, and rejects a chmod-only private r2 mutation while legacy hashing remains unchanged
+and mode-aware hashing changes. The exact content/mode pins are committed in
+`e9ff5e0c11e8d4ea53840c49504fc7b07b5939c3` with subject
+`build: pin canonical EOS release SDK`. No builder, installer, target, ABI, linker, validator, or
+authentication behavior changed after the build.

@@ -202,3 +202,40 @@ XC7Z030/XC7Z045 evidence remains a separate hardware release boundary.
 This statement does not claim that the overall hardware release is complete. Independent final
 review and progress-ledger bookkeeping remain controller responsibilities after this report-only
 commit.
+
+## Canonical replacement build and pin addendum
+
+The pending replacement named above is now built and pinned. The retained
+`/tmp/eos-final-release-sdk` and all Task 5/first-attempt evidence remain immutable rejected or
+historical evidence; none of this report's earlier full-CI or smoke outcomes is relabeled as an
+r2 result.
+
+The first replacement attempt was suspended for the user-requested pause. Its 7,200-second
+subprocess timeout continued to count wall time and expired immediately after resume, so it exited
+`2` solely for that pause-induced timeout. The user then authorized exactly one retry. That retry
+exited `0` with invocation count one and published `/tmp/eos-final-release-sdk-r2`; no retry or
+relaunch followed it.
+
+Independent r2 inspection passed the complete 141-file/56-directory content closure and exact
+canonical mode closure: 56 directories at `0755`, 35 exact executable files at `0755`, and 106
+ordinary files at `0644`, with no links, unsupported entries, special bits, or group/other writes.
+Its identities are:
+
+```text
+SDK sha256-tree-v1             6599a2b56b3a842125f5a9a72f8b21c4a27a7a767f6a7465ae0355c67685bfba
+SDK sha256-tree-mode-v1        17798957eb020e568d6fea5bf85c91355602a43bfe277e26b934304eacb0f9ff
+release-manifest SHA-256       f4d12b3d57b1e8c71446938e5b595700b73792b80ef10dbddb9fa938af4dacc4
+generated board-policy SHA-256 1aa11ebf8b20538d256a6cc6e5d6ca5e2eaeb0c02bce6eb0c293fb1107f1e61c
+SDK inventory-list SHA-256     a41c460a1f7158ee9e54ae0072cafc0e557d47fc69cc0a05d1ddc6f18f4b214e
+```
+
+The focused stale-pin controls failed for the exact old SDK-tree and release-manifest identities.
+After the pin-only patch, real SDK/static identity and release/capability identity passed, the
+board tests passed 21/21, the mode/hash tests passed 2/2, and strict compilation passed for 24 EOS
+Python files. Pin commit `e9ff5e0c11e8d4ea53840c49504fc7b07b5939c3` has exact subject
+`build: pin canonical EOS release SDK` and changes only the three authorized pin/fixture files.
+
+The complete attempt, inspection, identity, mode, installer, mutation, RED/GREEN, and immutable
+evidence is recorded in `task-6-replacement-build-report.md`. This replacement-build task did not
+run final integrated CI, the real hardware checker, a Cargo smoke build, deployment, or physical
+hardware. Those controller review gates remain pending against exact canonical r2.
