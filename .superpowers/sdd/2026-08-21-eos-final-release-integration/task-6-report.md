@@ -239,3 +239,28 @@ The complete attempt, inspection, identity, mode, installer, mutation, RED/GREEN
 evidence is recorded in `task-6-replacement-build-report.md`. This replacement-build task did not
 run final integrated CI, the real hardware checker, a Cargo smoke build, deployment, or physical
 hardware. Those controller review gates remain pending against exact canonical r2.
+
+## Canonical r2 final verification
+
+The pending controller gates above are now complete against exact canonical r2. The integrated
+CI entrypoint ran once, exited `0` after 923.381 seconds, and ended with `EOS CI gates passed`.
+All 216 explicit tests passed, the target sysroot built, and 111 ARM layout facts matched. The
+retained log is `/tmp/eos-integrated-ci-r2.pBTV5r/integrated-ci.log`, SHA-256
+`09d4e6b3d89f477609e854c1b0b7fc383081af080f4bf23644ff18320289d324`.
+
+An isolated installer linked exact toolchain `eos-1.97.1` to r2. One ordinary Cargo build by
+the built-in target name succeeded without target JSON or `-Z build-std`; base validation,
+authentication packaging, exact 129-byte append proof, allow-trailer validation, and exact
+status-2 default rejection all passed. The retained base/authenticated ELF SHA-256 values are
+`a0f42f0039da6459002d745abe19faf4f40844c3f8badc21c05f99a397cd83fb` and
+`86edcf7380fc4c3616b341f135234c25328c515022218753830c2c016de3dbf4`.
+
+Strict parsing, modes, target-list, installer, release identity, 120-export ABI, package closure,
+and evidence checksum checks all passed. Rehashing after CI and smoke reproduced exact SDK
+content identity `6599a2b56b3a842125f5a9a72f8b21c4a27a7a767f6a7465ae0355c67685bfba`
+and mode identity `17798957eb020e568d6fea5bf85c91355602a43bfe277e26b934304eacb0f9ff`.
+Complete commands and evidence are in `task-6-r2-final-verification-report.md`.
+
+Independent whole-branch review remains the final repository bookkeeping gate. The real hardware
+checker was not invoked, and the overall hardware release remains incomplete pending authentic
+organization-signed XC7Z030 and XC7Z045 evidence.

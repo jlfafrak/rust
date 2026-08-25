@@ -367,3 +367,13 @@ and mode-aware hashing changes. The exact content/mode pins are committed in
 `e9ff5e0c11e8d4ea53840c49504fc7b07b5939c3` with subject
 `build: pin canonical EOS release SDK`. No builder, installer, target, ABI, linker, validator, or
 authentication behavior changed after the build.
+
+## Final integration Task 6 — canonical package post-verification
+
+The independently approved package above was the exact SDK consumed by the single final r2 CI
+run and isolated named-toolchain Cargo smoke. Both gates passed, and independent pre/post hashes
+proved that neither operation changed package bytes or modes. The final identities remain
+`6599a2b56b3a842125f5a9a72f8b21c4a27a7a767f6a7465ae0355c67685bfba` for
+`sha256-tree-v1` and `17798957eb020e568d6fea5bf85c91355602a43bfe277e26b934304eacb0f9ff`
+for `sha256-tree-mode-v1`. Complete final evidence is in
+`task-6-r2-final-verification-report.md`; no additional builder was invoked.

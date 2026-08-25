@@ -422,3 +422,15 @@ The stale source policy rejected r2's release digest before the pin; after the e
 policy updates, real release/capability validation passed and all 21 synthetic cryptographic
 board-gate tests passed. The real hardware checker was not run, no key/result/bundle was added,
 and authentic signed XC7Z030/XC7Z045 evidence remains the manual hardware boundary.
+
+## Final integration Task 6 — canonical policy regression and hardware boundary
+
+The final r2 integrated CI reran the board checker suite and passed 21/21. Release/capability
+identity, all six distribution hashes, the generated policy, packaged defaults, and fail-closed
+missing-input behavior remained pinned to canonical r2. The isolated Cargo smoke then proved
+base validation, the exact 129-byte authentication trailer, allow-trailer acceptance, and exact
+status-2 default rejection.
+
+Fresh read-only checks again found both XC7Z result JSONs, the organization public key,
+`release-results/`, and `release-bundle` absent. The real hardware checker was not invoked with
+fixtures, no result was created, and authentic signed XC7Z030/XC7Z045 evidence remains required.

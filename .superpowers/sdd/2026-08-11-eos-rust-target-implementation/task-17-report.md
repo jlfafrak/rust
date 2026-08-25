@@ -628,3 +628,16 @@ The locked mode regressions passed 2/2, and the complete board policy suite pass
 replacement-build task intentionally did not run `tests/eos/run-ci.sh`, build static application
 artifacts, or make a physical-board claim. The controller must run the final integrated CI and
 independent branch/package review against exact pinned r2. No Task 17 workflow behavior changed.
+
+## Final integration Task 6 — canonical r2 CI result
+
+The controller subsequently ran `tests/eos/run-ci.sh` exactly once against pinned canonical r2.
+It exited `0` after 923.381 seconds and ended with `EOS CI gates passed`. The expanded exact
+layers passed 21 board checks, one toolchain lock, 2 compiler tests, 2 library tests, 45 CTests,
+6 libc/provenance tests, 30 bootstrap/PAL/unwind tests, 85 SDK tests, the EOS sysroot build, 111
+ARM layout facts, and 24 static ELF/identity tests: 216 explicit tests with zero failures.
+
+The log at `/tmp/eos-integrated-ci-r2.pBTV5r/integrated-ci.log` has SHA-256
+`09d4e6b3d89f477609e854c1b0b7fc383081af080f4bf23644ff18320289d324`. The 71-file artifact
+root and canonical SDK both passed independent checksum inventories; SDK content and mode hashes
+remained exact. No Task 17 workflow behavior changed, and no hardware action was taken.
