@@ -42,10 +42,11 @@ TARGET_FLAGS = (
 AUTH_MARKER = b"martos_smp_elf_authentication_block_sha2_256_adbc_1394_e532_101\n"
 AUTH_TRAILER_LENGTH = len(AUTH_MARKER) + 64 + 1
 REVIEWED_SDK_TREE_SHA256 = (
-    "919c17065b7b33626ade510f63c4febb2fda56413c6215f9ebeca019e67f7ae7"
+    "6599a2b56b3a842125f5a9a72f8b21c4a27a7a767f6a7465ae0355c67685bfba"
 )
-# Populated only after the controller-owned replacement SDK build is reviewed.
-REVIEWED_SDK_TREE_MODE_SHA256: str | None = None
+REVIEWED_SDK_TREE_MODE_SHA256: str | None = (
+    "17798957eb020e568d6fea5bf85c91355602a43bfe277e26b934304eacb0f9ff"
+)
 REVIEWED_ARM_GNU_TREE_SHA256 = (
     "a407c7186f68473d2fb7a0bae59407261adef62f959fc181e5cd7eb7636a584d"
 )
@@ -59,7 +60,7 @@ REVIEWED_RELEASE = {
     "layout_version": 1,
 }
 REVIEWED_SOURCE_REVISIONS = {
-    "rust_fork": "61fcff440daed52c444398d00f6a680b215db5f7",
+    "rust_fork": "7f62307323c3d38c766e9040b7cb7cc74591713c",
     "rust_upstream": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
     "libc_upstream": "71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8",
     "backtrace": "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd",
