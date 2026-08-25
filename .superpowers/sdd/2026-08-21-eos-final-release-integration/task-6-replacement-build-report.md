@@ -16,7 +16,7 @@ There were two separately authorized attempt histories:
    `EOS ABI host build failed ... timed out after 7200 seconds`. This failure was caused solely by
    the pause consuming that timeout. It was not retried under the original authorization.
 2. After the user explicitly authorized one retry, the retry launched once at
-   `2026-08-25T20:03:11Z` and exited `0` at `2026-08-25T21:20:02Z`. Its durable evidence says
+   `2026-08-25T20:03:12Z` and exited `0` at `2026-08-25T21:20:02Z`. Its durable evidence says
    `retry_invocations_started=1`; no further launch occurred.
 
 ## Immutable retained evidence
