@@ -145,5 +145,7 @@ Read-only checks found `release-results/xc7z030.json`, `release-results/xc7z045.
 release roots. The real checker was not invoked with fixtures, and no signed result was
 fabricated.
 
-Repository implementation may be declared ready only after independent whole-branch review;
-hardware release remains pending signed XC7Z030/XC7Z045 evidence.
+Independent whole-branch review of `31afc958..f3a2db35` is APPROVED with no Critical, Important,
+or Minor findings.
+
+repository implementation ready; hardware release pending signed XC7Z030/XC7Z045 evidence
