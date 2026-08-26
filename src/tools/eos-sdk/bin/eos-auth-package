@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""Append and verify the MARTOS SHA-256 authentication trailer."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+from pathlib import Path
+import re
+import stat
+import struct
+import subprocess
+import sys
+import tempfile
+
+
+AUTH_MARKER = b"martos_smp_elf_authentication_block_sha2_256_adbc_1394_e532_101\n"
+ELF32_HEADER = struct.Struct("<16sHHIIIIIHHHHHH")
+ELF32_PROGRAM_HEADER = struct.Struct("<IIIIIIII")
+ELF32_SECTION_HEADER = struct.Struct("<IIIIIIIIII")
+SHT_NOBITS = 8
+
+
+class PackageError(Exception):
+    pass
+
+
+def sdk_root() -> Path:
+    configured = os.environ.get("EOS_RUST_SDK_ROOT")
+    candidate = Path(configured) if configured else Path(__file__).resolve().parent.parent
+    try:
+        root = candidate.resolve(strict=True)
+    except OSError as error:
+        raise PackageError(f"EOS Rust SDK root is unavailable: {candidate}: {error}") from error
+    if not root.is_dir():
+        raise PackageError(f"EOS Rust SDK root is not a directory: {root}")
+    return root
+
+
+def rooted_validator(root: Path) -> Path:
+    candidate = root / "bin" / "eos-elf-validate"
+    try:
+        validator = candidate.resolve(strict=True)
+        validator.relative_to(root)
+    except ValueError as error:
+        raise PackageError(
+            f"ELF validator resolves outside EOS_RUST_SDK_ROOT: {candidate}"
+        ) from error
+    except OSError as error:
+        raise PackageError(f"ELF validator is unavailable: {candidate}: {error}") from error
+    if not validator.is_file() or not os.access(validator, os.X_OK):
+        raise PackageError(f"ELF validator is not an executable file: {validator}")
+    return validator
+
+
+def bounded_table(offset: int, size: int, count: int, limit: int, name: str) -> int:
+    if count == 0:
+        return 0
+    if offset < ELF32_HEADER.size or size <= 0:
+        raise PackageError(f"invalid ELF {name} table location")
+    extent = offset + size * count
+    if extent < offset or extent > limit:
+        raise PackageError(f"base ELF is shorter than its {name} table extent")
+    return extent
+
+
+def last_elf_extent(data: bytes) -> int:
+    if data[:4] != b"\x7fELF":
+        raise PackageError("input does not begin with ELF magic")
+    if len(data) < ELF32_HEADER.size:
+        raise PackageError("input is shorter than an ELF32 header")
+    fields = ELF32_HEADER.unpack_from(data)
+    ident = fields[0]
+    if ident[4:7] != b"\x01\x01\x01":
+        raise PackageError("input is not a current little-endian ELF32 file")
+    if fields[1] != 3 or fields[2] != 40:
+        raise PackageError("input is not an ELF32 ARM ET_DYN application")
+    program_offset, section_offset = fields[5], fields[6]
+    header_size, program_size, program_count = fields[8], fields[9], fields[10]
+    section_size, section_count, section_names = fields[11], fields[12], fields[13]
+    if header_size != ELF32_HEADER.size:
+        raise PackageError("input has an unexpected ELF32 header size")
+    if program_count and program_size != ELF32_PROGRAM_HEADER.size:
+        raise PackageError("input has an unexpected ELF32 program-header size")
+    if section_count and section_size != ELF32_SECTION_HEADER.size:
+        raise PackageError("input has an unexpected ELF32 section-header size")
+    if section_count and section_names >= section_count:
+        raise PackageError("input has an invalid ELF section-name table index")
+    maximum = max(
+        ELF32_HEADER.size,
+        bounded_table(program_offset, program_size, program_count, len(data), "program-header"),
+        bounded_table(section_offset, section_size, section_count, len(data), "section-header"),
+    )
+    for index in range(program_count):
+        start = program_offset + index * program_size
+        program = ELF32_PROGRAM_HEADER.unpack_from(data, start)
+        extent = program[1] + program[4]
+        if extent < program[1] or extent > len(data):
+            raise PackageError("base ELF is shorter than a program segment extent")
+        maximum = max(maximum, extent)
+    for index in range(section_count):
+        start = section_offset + index * section_size
+        section = ELF32_SECTION_HEADER.unpack_from(data, start)
+        if section[1] == SHT_NOBITS:
+            continue
+        extent = section[4] + section[5]
+        if extent < section[4] or extent > len(data):
+            raise PackageError("base ELF is shorter than a section extent")
+        maximum = max(maximum, extent)
+    if len(data) < maximum:
+        raise PackageError("base ELF is shorter than its last ELF extent")
+    return maximum
+
+
+def run_validator(
+    validator: Path, sdk: Path, image: Path, *, allow_trailer: bool
+) -> None:
+    command = [str(validator)]
+    if allow_trailer:
+        command.append("--allow-auth-trailer")
+    command.append(str(image))
+    environment = {
+        "PATH": os.defpath,
+        "LC_ALL": "C",
+        "LANG": "C",
+        "EOS_RUST_SDK_ROOT": str(sdk),
+    }
+    try:
+        result = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+            check=False,
+            env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise PackageError(f"ELF validation failed: {error}") from error
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        raise PackageError(f"ELF validation failed: {detail or result.returncode}")
+
+
+def validate_owned_bytes(
+    validator: Path,
+    sdk: Path,
+    data: bytes,
+    *,
+    allow_trailer: bool,
+    description: str,
+) -> None:
+    try:
+        with tempfile.TemporaryDirectory(prefix="eos-auth-validate-") as directory:
+            snapshot = Path(directory) / "application.elf"
+            descriptor = os.open(
+                snapshot, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400
+            )
+            with os.fdopen(descriptor, "wb") as snapshot_file:
+                snapshot_file.write(data)
+                snapshot_file.flush()
+                os.fsync(snapshot_file.fileno())
+                os.fchmod(snapshot_file.fileno(), 0o400)
+            if snapshot.read_bytes() != data:
+                raise PackageError(f"owned {description} snapshot differs from its bytes")
+            run_validator(validator, sdk, snapshot, allow_trailer=allow_trailer)
+            if snapshot.read_bytes() != data:
+                raise PackageError(f"owned {description} snapshot changed during validation")
+    except OSError as error:
+        raise PackageError(f"unable to create an owned {description} snapshot: {error}") from error
+
+
+def authenticated_bytes(base: bytes) -> bytes:
+    digest = hashlib.sha256(base).hexdigest().encode("ascii")
+    packaged = base + AUTH_MARKER + digest + b"\n"
+    marker_index = packaged.rfind(AUTH_MARKER)
+    if marker_index != len(base):
+        raise PackageError("authentication marker placement verification failed")
+    stored = packaged[marker_index + len(AUTH_MARKER) : -1]
+    if re.fullmatch(rb"[0-9a-f]{64}", stored) is None:
+        raise PackageError("authentication digest format verification failed")
+    if stored != hashlib.sha256(packaged[:marker_index]).hexdigest().encode("ascii"):
+        raise PackageError("authentication digest verification failed")
+    return packaged
+
+
+def has_terminal_authentication_marker(data: bytes, elf_extent: int) -> bool:
+    return data.find(AUTH_MARKER, elf_extent) >= 0
+
+
+def resolved_output(path: Path) -> Path:
+    working_directory = Path.cwd().resolve(strict=True)
+    candidate = path if path.is_absolute() else working_directory / path
+    output = candidate.resolve(strict=False)
+    try:
+        output.relative_to(working_directory)
+    except ValueError as error:
+        raise PackageError(
+            f"output must remain beneath the resolved current working directory: {output}"
+        ) from error
+    if not output.parent.is_dir():
+        raise PackageError(f"output directory does not exist: {output.parent}")
+    return output
+
+
+def package(source_argument: Path, output_argument: Path) -> None:
+    try:
+        source = source_argument.resolve(strict=True)
+    except OSError as error:
+        raise PackageError(f"input ELF is unavailable: {source_argument}: {error}") from error
+    if not source.is_file():
+        raise PackageError(f"input ELF is not a regular file: {source}")
+    output = resolved_output(output_argument)
+    if source == output:
+        raise PackageError("input and output paths must be different")
+    try:
+        with source.open("rb") as source_file:
+            source_status = os.fstat(source_file.fileno())
+            if not stat.S_ISREG(source_status.st_mode):
+                raise PackageError(f"input ELF is not a regular file: {source}")
+            base = source_file.read()
+            source_mode = stat.S_IMODE(source_status.st_mode)
+    except OSError as error:
+        raise PackageError(f"unable to read input ELF: {error}") from error
+    if base[:4] != b"\x7fELF":
+        raise PackageError("input does not begin with ELF magic")
+    elf_extent = last_elf_extent(base)
+    if has_terminal_authentication_marker(base, elf_extent):
+        raise PackageError("input already contains an authentication trailer")
+
+    root = sdk_root()
+    validator = rooted_validator(root)
+    validate_owned_bytes(
+        validator, root, base, allow_trailer=False, description="base ELF"
+    )
+    packaged = authenticated_bytes(base)
+    validate_owned_bytes(
+        validator,
+        root,
+        packaged,
+        allow_trailer=True,
+        description="authenticated ELF",
+    )
+
+    temporary_name: str | None = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{output.name}.", suffix=".tmp", dir=output.parent
+        )
+        with os.fdopen(descriptor, "wb") as temporary:
+            temporary.write(packaged)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            os.fchmod(temporary.fileno(), source_mode)
+        temporary_path = Path(temporary_name)
+        if temporary_path.read_bytes() != packaged:
+            raise PackageError("written authentication package did not verify byte-for-byte")
+        os.replace(temporary_path, output)
+        temporary_name = None
+    except OSError as error:
+        raise PackageError(f"unable to write authentication package: {error}") from error
+    finally:
+        if temporary_name is not None:
+            try:
+                Path(temporary_name).unlink(missing_ok=True)
+            except OSError:
+                pass
+    if output.read_bytes() != packaged:
+        raise PackageError("final authentication package failed byte-for-byte verification")
+
+
+def main(arguments: list[str]) -> int:
+    if len(arguments) != 2 or any(argument.startswith("-") for argument in arguments):
+        raise PackageError("usage: eos-auth-package <base.elf> <authenticated.elf>")
+    package(Path(arguments[0]), Path(arguments[1]))
+    print(f"authenticated EOS ELF: {arguments[1]}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except PackageError as error:
+        print(f"eos-auth-package: {error}", file=sys.stderr)
+        raise SystemExit(2)

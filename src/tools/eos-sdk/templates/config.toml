@@ -1,0 +1,21 @@
+[build]
+build = "@HOST_TRIPLE@"
+host = ["@HOST_TRIPLE@"]
+target = ["armv7a-unknown-eos-eabi"]
+build-dir = "@BUILD_DIR@"
+extended = true
+tools = ["cargo"]
+docs = false
+build-stage = 2
+dist-stage = 2
+
+[rust]
+backtrace = true
+std-features = ["panic-unwind", "backtrace", "backtrace-trace-only"]
+
+[target.armv7a-unknown-eos-eabi]
+cc = "@ARM_GNU_ROOT@/bin/arm-none-eabi-gcc"
+ar = "@ARM_GNU_ROOT@/bin/arm-none-eabi-ar"
+ranlib = "@ARM_GNU_ROOT@/bin/arm-none-eabi-ranlib"
+linker = "eos-rust-link"
+crt-static = false

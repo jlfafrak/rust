@@ -1,0 +1,61 @@
+# SDD ledger — plan: docs/superpowers/plans/2026-08-11-eos-rust-target-implementation.md
+
+Preflight ruling: `test_libc_links.py`, `test_pal_cfg_scope.py`, and `test_ffi_unwind_policy.py` are static compliance lints, not behavioral TDD evidence. Separate compile, link, and runtime tests remain required. Approved by the user on 2026-08-11.
+
+Setup: isolated worktree `/mnt/c/Users/jfafrak/Documents/ChatGPT/eos-rust-target/.worktrees/eos-rust-1.97.1` on `codex/eos-rust-target`.
+Setup: Rust 1.97.1 import commit `ee3c9717`; merge commit `a8ac9c53`; pinned Rust commit `8bab26f4` is an ancestor; merged tree is `3a27e3db86f7b1edcab27a52f675e0b9c1e95e50`.
+
+Task 1: complete (commits a8ac9c5..94ba437, review clean)
+Task 2: fix round 1/5 (1 addressed, 0 open; commits ff77cf4..2d8fb99)
+Task 2: complete (commits 94ba437..2d8fb99, review clean)
+Task 3: fix round 1/5 (6 addressed, 1 new open; commits 5954f94..75f34fe)
+Task 3: fix round 2/5 (1 addressed, 0 open; commits 75f34fe..e2e6751)
+Task 3: complete (commits 2d8fb99..e2e6751, review clean)
+Task 4: fix round 1/5 (4 addressed, 3 open; commits 0c8d41c..d6de709)
+Task 4: fix round 2/5 (1 addressed, 2 open; commits d6de709..389bbd8)
+Task 4: fix round 3/5 (2 addressed, 0 open; commits 389bbd8..c02420a)
+Task 4: complete (commits e2e6751..c02420a, review clean)
+Task 5: fix round 1/5 (4 addressed, 0 open; commits 0a668e1..b92b0f4)
+Task 5: complete (commits c02420a..b92b0f4, review clean)
+Task 6: fix round 1/5 (7 addressed, 3 open; commits 5dab20f..77ef1cf)
+Task 6: fix round 2/5 (3 addressed, 0 open; commits 77ef1cf..2216909)
+Task 6: complete (commits b92b0f4..2216909, review clean)
+Task 7: fix round 1/5 (2 addressed, 0 open; commits c4ddbe8..714ad85)
+Task 7: complete (commits 2216909..714ad85, review clean)
+Task 8: fix round 1/5 (4 addressed, 0 open; commits 9e48c8f..7758a2e)
+Task 8: complete (commits 714ad85..7758a2e, review clean)
+Task 9: fix round 1/5 (5 addressed, 1 new open; commits ecda1aa..8a5d85b)
+Task 9: fix round 2/5 (1 addressed, 0 open; commits 8a5d85b..adb9d285)
+Task 9: complete (commits e18afb4..adb9d285, review clean)
+Task 10: minor (deferred): process tests do not mutate or release caller argv/env/cwd storage after spawn to prove deep-copy lifetime
+Task 10: fix round 1/5 (3 addressed, 0 open; commits 09ed298..b45ec8c)
+Task 10: complete (commits 212e5a5..b45ec8c, review clean)
+Task 11: plan correction (approved 2026-08-18): defer exact `./x check library/std --target armv7a-unknown-eos-eabi` gate to Task 12 because current failures are EOS PAL/generic-Unix call-site adaptations, not libc binding defects
+Task 11: fix round 1/5 (1 addressed, 1 new open; commits 426fb80..7f283b8)
+Task 11: fix round 2/5 (1 addressed, 0 open; commits 7f283b8..f5efc93)
+Task 11: complete (commits 1d856be..f5efc93, review clean; std gate deferred to Task 12)
+Task 12: ABI correction (approved 2026-08-18): change unreleased v1 `eos_rust_hash_seed` from `void` to `int32_t` so the exact Rust random policy can observe initialization failure
+Task 12: plan correction: the literal Rust 1.97.1 bootstrap `--no-run` option does not exist; use the documented equivalent `--run never`
+Task 12: dependency deferral: exact std build and `--run never` compile all target sources, then stop only at the missing `eos-rust-link`; final link gates remain owned by Task 15
+Task 12: scope pull-forward: the EOS process routing/backend needed for Task 12 std/`Command` checking was implemented here; remaining Task 13 validation and deliverables are untouched
+Task 12: fix round 1/5 (2 addressed, 1 new open; commits 2df329f..d6fbbbe)
+Task 12: fix round 2/5 (1 addressed, 0 open; commits d6fbbbe..abb2d6e)
+Task 12: complete (commits edec4e3..abb2d6e, review clean; linker gates deferred to Task 15)
+Task 13: complete (commits f74c366..0defc49, review clean; artifact cross-link deferred to Task 15)
+Task 14: fix round 1/5 (2 addressed, 2 open — unwind root omitted from C-unwind scan; comment text can impersonate native callback call; commits 498bc36..c12fc74)
+Task 14: fix round 2/5 (2 addressed, 0 open; commits c12fc74..7122fab)
+Task 14: complete (commits 47f0c30..7122fab, review clean; final linked EHABI gates continue in Task 15)
+Task 15: fix round 1/5 (4 addressed, 2 new open; commits 596c23b..2bee665)
+Task 15: fix round 2/5 (2 addressed, 0 open; commits 2bee665..329404f)
+Task 15: complete (commits 596c23b..329404f; nested backtrace commit 28ec93b..02ef1b5; review clean; hardware loader/authentication/unwind validation remains manual)
+Task 16: fix round 1/5 (6 addressed, 2 open — installer root identity was captured after semantic validation; the initial-validation root-replacement control remained open; commits fbd7cf8..a783c33)
+Task 16: evidence boundary (user constraint): the sole successful real SDK builder ran on clean recovery commit baeb1a5 and covers unchanged builder/package behavior; installer-only Fix Round 2 is covered by fresh 32/76/37/static tests and its focused root-replacement control, with no second real builder
+Task 16: fix round 2/5 (2 addressed, 0 open; commits a783c33..680eb7a)
+Task 16: complete (commits 166453d..680eb7a, review clean; nested backtrace remains 02ef1b5; hardware loader/authentication/unwind validation remains manual)
+Task 17: fix round 1/5 (2 addressed, 1 open — release preflight could select Python from an unverified SDK or CMake directory; commits 9446f77..42a5219)
+Task 17: fix round 2/5 (1 addressed, 0 open; commits 42a5219..65ec6ff)
+Task 17: complete (commits 951721d..65ec6ff, review clean; hardware execution remains Task 18)
+Task 18: fix round 1/5 (4 addressed, 1 open — case-variant spellings of one numeric load address counted as distinct; commits 334fe9b..2ffb852)
+Task 18: fix round 2/5 (1 addressed, 0 open; commits 2ffb852..ebaca4e)
+Task 18: repository implementation complete (commits a02c0c0..ebaca4e, review clean; no automatic board action or fabricated evidence)
+Task 18: manual release gate pending (authentic signed XC7Z030/XC7Z045 results and release bundle are absent; overall release is not complete)

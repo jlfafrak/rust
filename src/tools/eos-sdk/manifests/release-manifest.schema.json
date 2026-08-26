@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eos.invalid/schemas/eos-rust-release-manifest-v1.json",
+  "title": "EOS Rust Task 16 release-manifest.toml parsed data",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["release", "input_hashes", "source_revisions", "distribution_hashes"],
+  "properties": {
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "toolchain", "target", "layout_version"],
+      "properties": {
+        "version": {"const": "1.97.1"},
+        "toolchain": {"const": "eos-1.97.1"},
+        "target": {"const": "armv7a-unknown-eos-eabi"},
+        "layout_version": {"type": "integer", "const": 1}
+      }
+    },
+    "input_hashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "arm_gnu_installed", "eos_sdk"],
+      "properties": {
+        "algorithm": {"const": "sha256-tree-v1"},
+        "arm_gnu_installed": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "eos_sdk": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "source_revisions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rust_fork", "rust_upstream", "libc_upstream", "backtrace"],
+      "properties": {
+        "rust_fork": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "rust_upstream": {"const": "8bab26f4f68e0e26f0bb7960be334d5b520ea452"},
+        "libc_upstream": {"const": "71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8"},
+        "backtrace": {"const": "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd"}
+      }
+    },
+    "distribution_hashes": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._+\\-]*\\.tar\\.(?:xz|gz)$"
+      },
+      "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    }
+  }
+}

@@ -1,0 +1,481 @@
+#!/usr/bin/env python3
+"""Policy-enforcing linker driver for armv7a-unknown-eos-eabi."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+
+PINNED_GCC_VERSION = "14.3.1"
+TARGET_FLAGS = (
+    "-march=armv7-a",
+    "-mtune=cortex-a9",
+    "-mfpu=neon-vfpv3",
+    "-mfloat-abi=softfp",
+)
+FIXED_LINK_FLAGS = (
+    *TARGET_FLAGS,
+    "-fPIC",
+    "-pie",
+    "-nostdlib",
+    "-Wl,--gc-sections",
+    "-Wl,-z,notext",
+    "-Wl,-z,defs",
+    "-Wl,--dynamic-linker=/usr/lib/ld.so.1",
+)
+SHARED_SYSROOT_FLAGS = (*TARGET_FLAGS, "-fPIC", "-nostdlib")
+COMPILER_ENVIRONMENT = {
+    "PATH": os.defpath,
+    "LC_ALL": "C",
+    "LANG": "C",
+}
+
+
+class LinkPolicyError(Exception):
+    pass
+
+
+def sdk_root() -> Path:
+    configured = os.environ.get("EOS_RUST_SDK_ROOT")
+    candidate = Path(configured) if configured else Path(__file__).resolve().parent.parent
+    try:
+        root = candidate.resolve(strict=True)
+    except OSError as error:
+        raise LinkPolicyError(f"EOS Rust SDK root is unavailable: {candidate}: {error}") from error
+    if not root.is_dir():
+        raise LinkPolicyError(f"EOS Rust SDK root is not a directory: {root}")
+    return root
+
+
+def rooted_path(root: Path, relative: str, description: str, *, directory: bool = False) -> Path:
+    candidate = root / relative
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root)
+    except ValueError as error:
+        raise LinkPolicyError(
+            f"{description} resolves outside EOS_RUST_SDK_ROOT: {candidate}"
+        ) from error
+    except OSError as error:
+        raise LinkPolicyError(f"missing {description}: {candidate}: {error}") from error
+    expected = resolved.is_dir() if directory else resolved.is_file()
+    if not expected:
+        kind = "directory" if directory else "file"
+        raise LinkPolicyError(f"{description} is not a {kind}: {resolved}")
+    return resolved
+
+
+def output_from(arguments: list[str]) -> Path:
+    outputs: list[str] = []
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "-o":
+            if index + 1 == len(arguments):
+                raise LinkPolicyError("-o requires an output path")
+            outputs.append(arguments[index + 1])
+            index += 2
+            continue
+        if argument.startswith("-o") and len(argument) > 2:
+            outputs.append(argument[2:])
+        index += 1
+    if len(outputs) != 1:
+        raise LinkPolicyError("link invocation must contain exactly one -o output")
+    working_directory = Path.cwd().resolve(strict=True)
+    output = Path(outputs[0])
+    if not output.is_absolute():
+        output = working_directory / output
+    resolved = output.resolve(strict=False)
+    try:
+        resolved.relative_to(working_directory)
+    except ValueError as error:
+        raise LinkPolicyError(
+            f"output must remain beneath the resolved current working directory: {resolved}"
+        ) from error
+    return resolved
+
+
+def reject_argument(
+    argument: str, next_argument: str | None, *, allow_rustc_shared: bool = False
+) -> None:
+    if argument.startswith("@"):
+        raise LinkPolicyError("refusing an opaque linker response file")
+    if re.fullmatch(r"crt[^/]*\.o", Path(argument).name):
+        raise LinkPolicyError("refusing a GCC crt object")
+    if "mfloat-abi=hard" in argument:
+        raise LinkPolicyError("refusing the hard-float ABI")
+
+    exact_rejections = {
+        "-static",
+        "--static",
+        "-static-pie",
+        "--shared",
+        "-no-pie",
+        "-fno-pie",
+        "-fno-PIE",
+        "-fno-pic",
+        "-fno-PIC",
+        "-r",
+        "--relocatable",
+        "-T",
+        "--script",
+        "--dynamic-linker",
+        "-Xlinker",
+        "-B",
+        "-specs",
+        "--specs",
+        "--sysroot",
+        "-wrapper",
+        "--output",
+        "-fplugin",
+    }
+    if argument == "-shared" and not allow_rustc_shared:
+        raise LinkPolicyError(f"refusing policy-weakening linker argument: {argument}")
+    if argument in exact_rejections:
+        raise LinkPolicyError(f"refusing policy-weakening linker argument: {argument}")
+    forbidden_prefixes = (
+        "-T",
+        "--script=",
+        "--dynamic-linker=",
+        "-fuse-ld=",
+        "-B",
+        "-specs=",
+        "--specs=",
+        "--sysroot=",
+        "-wrapper=",
+        "--output=",
+        "-fplugin=",
+        "-fplugin-arg-",
+    )
+    if argument.startswith(forbidden_prefixes):
+        raise LinkPolicyError(f"refusing policy-weakening linker argument: {argument}")
+
+    pinned_options = {
+        "-march=": TARGET_FLAGS[0],
+        "-mtune=": TARGET_FLAGS[1],
+        "-mfpu=": TARGET_FLAGS[2],
+        "-mfloat-abi=": TARGET_FLAGS[3],
+    }
+    for prefix, required in pinned_options.items():
+        if argument.startswith(prefix) and argument != required:
+            raise LinkPolicyError(f"refusing target flag other than {required}: {argument}")
+
+    if argument.startswith("-Wl,"):
+        linker_arguments = argument[4:].split(",")
+        forbidden_linker_exact = {
+            "-T",
+            "--script",
+            "--dynamic-linker",
+            "-dynamic-linker",
+            "--no-dynamic-linker",
+            "-r",
+            "--relocatable",
+            "-static",
+            "--static",
+            "-shared",
+            "-no-pie",
+            "--no-pie",
+            "-nopie",
+            "-plugin",
+            "--plugin",
+            "-plugin-opt",
+            "--plugin-opt",
+            "-I",
+            "-c",
+            "--mri-script",
+            "-dT",
+            "--default-script",
+            "-i",
+        }
+        for position, linker_argument in enumerate(linker_arguments):
+            if linker_argument.startswith("@"):
+                raise LinkPolicyError(
+                    f"refusing opaque linker response argument: {argument}"
+                )
+            if (
+                linker_argument == "-o"
+                or linker_argument.startswith("-o")
+                or linker_argument == "--output"
+                or linker_argument.startswith("--output=")
+            ):
+                raise LinkPolicyError(
+                    f"refusing forwarded output override: {argument}"
+                )
+            if linker_argument in forbidden_linker_exact:
+                raise LinkPolicyError(
+                    f"refusing policy-weakening linker argument: {argument}"
+                )
+            if linker_argument.startswith(
+                (
+                    "-T",
+                    "--script=",
+                    "--dynamic-linker=",
+                    "-dynamic-linker=",
+                    "-I",
+                    "-c",
+                    "--mri-script=",
+                    "-dT",
+                    "--default-script=",
+                    "-plugin=",
+                    "--plugin=",
+                    "-plugin-opt=",
+                    "--plugin-opt=",
+                    "--sysroot=",
+                )
+            ):
+                raise LinkPolicyError(
+                    f"refusing policy-weakening linker argument: {argument}"
+                )
+            if linker_argument in {"-z", "z"}:
+                value = (
+                    linker_arguments[position + 1]
+                    if position + 1 < len(linker_arguments)
+                    else ""
+                )
+                if value in {"text", "textoff"}:
+                    raise LinkPolicyError(
+                        f"refusing policy-weakening linker argument: {argument}"
+                    )
+            if linker_argument in {"-z=text", "z=text", "-ztext"}:
+                raise LinkPolicyError(
+                    f"refusing policy-weakening linker argument: {argument}"
+                )
+
+
+def validate_rustc_arguments(
+    arguments: list[str], *, allow_rustc_shared: bool = False
+) -> None:
+    output_from(arguments)
+    has_link_input = False
+    for index, argument in enumerate(arguments):
+        following = arguments[index + 1] if index + 1 < len(arguments) else None
+        reject_argument(argument, following, allow_rustc_shared=allow_rustc_shared)
+        if not argument.startswith("-") and Path(argument).suffix in {
+            ".o",
+            ".a",
+            ".rlib",
+        }:
+            has_link_input = True
+    if not has_link_input:
+        raise LinkPolicyError("link invocation has no object or archive input")
+
+
+def cwd_file(argument: str, description: str) -> Path:
+    working_directory = Path.cwd().resolve(strict=True)
+    candidate = Path(argument)
+    if not candidate.is_absolute():
+        candidate = working_directory / candidate
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(working_directory)
+    except ValueError as error:
+        raise LinkPolicyError(
+            f"{description} must remain beneath the resolved current working directory: "
+            f"{candidate}"
+        ) from error
+    except OSError as error:
+        raise LinkPolicyError(f"{description} is unavailable: {candidate}: {error}") from error
+    if not resolved.is_file():
+        raise LinkPolicyError(f"{description} is not a file: {resolved}")
+    return resolved
+
+
+def validate_rustc_shared_sysroot(arguments: list[str], output: Path) -> None:
+    def reject(detail: str) -> None:
+        raise LinkPolicyError(f"refusing shared sysroot invocation: {detail}")
+
+    if arguments.count("-shared") != 1:
+        reject("exactly one -shared flag is required")
+    if re.fullmatch(r"libstd-[0-9a-f]{16}\.so", output.name) is None:
+        reject("output must use rustc's libstd-<16 lowercase hex>.so convention")
+
+    soname_options = [
+        argument
+        for argument in arguments
+        if argument.startswith("-Wl,")
+        and any("soname" in part for part in argument[4:].split(","))
+    ]
+    if soname_options != [f"-Wl,-soname={output.name}"]:
+        reject("soname must exactly match the hashed libstd output filename")
+
+    version_script_options = [
+        argument
+        for argument in arguments
+        if argument.startswith("-Wl,")
+        and any("version-script" in part for part in argument[4:].split(","))
+    ]
+    if len(version_script_options) != 1 or not version_script_options[0].startswith(
+        "-Wl,--version-script="
+    ):
+        reject("exactly one rustc version script is required")
+    version_script = version_script_options[0].removeprefix("-Wl,--version-script=")
+    try:
+        cwd_file(version_script, "shared sysroot version script")
+    except LinkPolicyError as error:
+        raise LinkPolicyError(f"refusing shared sysroot invocation: {error}") from error
+
+    required = {
+        "-Wl,--no-undefined-version",
+        "-Wl,-Bstatic",
+        "-Wl,-Bdynamic",
+        "-lgcc",
+        "-nodefaultlibs",
+    }
+    missing = sorted(required - set(arguments))
+    if missing:
+        reject(f"missing rustc shared-library flag(s): {', '.join(missing)}")
+    input_names = {Path(argument).name for argument in arguments if not argument.startswith("-")}
+    if not {"symbols.o", "rmeta.o"}.issubset(input_names):
+        reject("rustc symbols.o and rmeta.o inputs are required")
+    if not any(name.endswith(".rlib") for name in input_names):
+        reject("at least one Rust rlib input is required")
+
+    forbidden = {
+        "-pie",
+        "-static",
+        "-static-pie",
+        "-mfloat-abi=hard",
+    }
+    if forbidden.intersection(arguments):
+        reject("application/static/hard-float flags cannot be mixed with shared sysroot mode")
+    linker_parts = [
+        part
+        for argument in arguments
+        if argument.startswith("-Wl,")
+        for part in argument[4:].split(",")
+    ]
+    if {"-pie", "--pie", "pie", "-static", "--static", "static"}.intersection(
+        linker_parts
+    ):
+        reject("application/static linker flags cannot be mixed with shared sysroot mode")
+    if any(
+        argument.startswith(
+            (
+                "-T",
+                "--script",
+                "--dynamic-linker",
+                "-Wl,-T",
+                "-Wl,--script",
+                "-Wl,--dynamic-linker",
+            )
+        )
+        for argument in arguments
+    ):
+        reject("application linker script/interpreter flags are forbidden")
+    if any(
+        argument == "-lmartos_app"
+        or argument.startswith("-lmartos_c")
+        or argument.endswith("libeos_rust_abi.a")
+        for argument in arguments
+    ):
+        reject("application runtime libraries are forbidden")
+
+
+def run_checked(command: list[str], description: str) -> str:
+    try:
+        result = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=15,
+            check=False,
+            env=COMPILER_ENVIRONMENT,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise LinkPolicyError(f"unable to query {description}: {error}") from error
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"exit status {result.returncode}"
+        raise LinkPolicyError(f"unable to query {description}: {detail}")
+    return result.stdout.strip()
+
+
+def main(arguments: list[str]) -> int:
+    root = sdk_root()
+    output = output_from(arguments)
+    shared_sysroot = "-shared" in arguments
+    if shared_sysroot:
+        validate_rustc_shared_sysroot(arguments, output)
+    validate_rustc_arguments(arguments, allow_rustc_shared=shared_sysroot)
+    compiler = rooted_path(
+        root, "arm-gnu/bin/arm-none-eabi-gcc", "pinned ARM GNU compiler"
+    )
+    if not os.access(compiler, os.X_OK):
+        raise LinkPolicyError(f"pinned ARM GNU compiler is not executable: {compiler}")
+    version = run_checked([str(compiler), "-dumpfullversion"], "ARM GNU version")
+    if version != PINNED_GCC_VERSION:
+        raise LinkPolicyError(
+            f"ARM GNU 14.3.Rel1 requires GCC {PINNED_GCC_VERSION}, found {version!r}"
+        )
+
+    multilib_query = [str(compiler), *TARGET_FLAGS, "-print-libgcc-file-name"]
+    libgcc_output = run_checked(multilib_query, "ARM GNU softfp multilib libgcc")
+    if not libgcc_output or "\n" in libgcc_output:
+        raise LinkPolicyError("ARM GNU returned an invalid libgcc path")
+    libgcc_candidate = Path(libgcc_output)
+    if not libgcc_candidate.is_absolute():
+        raise LinkPolicyError("ARM GNU did not return an absolute libgcc path")
+    try:
+        libgcc = libgcc_candidate.resolve(strict=True)
+        libgcc.relative_to(root)
+    except ValueError as error:
+        raise LinkPolicyError(
+            f"libgcc resolves outside EOS_RUST_SDK_ROOT: {libgcc_candidate}"
+        ) from error
+    except OSError as error:
+        raise LinkPolicyError(
+            f"selected libgcc is unavailable: {libgcc_candidate}: {error}"
+        ) from error
+    if not libgcc.is_file() or libgcc.name != "libgcc.a":
+        raise LinkPolicyError(f"selected ARM GNU support library is not libgcc.a: {libgcc}")
+
+    if shared_sysroot:
+        command = [*SHARED_SYSROOT_FLAGS, *arguments, str(libgcc)]
+        os.execve(compiler, [str(compiler), *command], COMPILER_ENVIRONMENT)
+        raise AssertionError("os.execve returned")
+
+    linker_script = rooted_path(
+        root, "linker/app_linker_script.ld", "EOS application linker script"
+    )
+    abi = rooted_path(root, "lib/libeos_rust_abi.a", "EOS Rust ABI library")
+    rooted_path(root, "eos/martos/lib", "MARTOS library directory", directory=True)
+    martos_libraries = {
+        name: rooted_path(root, f"eos/martos/lib/{name}", f"MARTOS library {name}")
+        for name in (
+            "libmartos_app.so",
+            "libmartos_app.so.1.0",
+            "libmartos_c++.a",
+            "libmartos_c++abi.a",
+            "libmartos_c.a",
+        )
+    }
+
+    command = [
+        *FIXED_LINK_FLAGS,
+        f"-Wl,-T,{linker_script}",
+        *arguments,
+        str(abi),
+        "-Wl,-Bdynamic",
+        str(martos_libraries["libmartos_app.so"]),
+        str(martos_libraries["libmartos_c++.a"]),
+        "-Wl,-u,__cxa_begin_cleanup",
+        "-Wl,-u,__cxa_call_unexpected",
+        str(martos_libraries["libmartos_c++abi.a"]),
+        str(martos_libraries["libmartos_c.a"]),
+        str(libgcc),
+    ]
+    os.execve(compiler, [str(compiler), *command], COMPILER_ENVIRONMENT)
+    raise AssertionError("os.execve returned")
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except LinkPolicyError as error:
+        print(f"eos-rust-link: {error}", file=sys.stderr)
+        raise SystemExit(2)

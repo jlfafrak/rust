@@ -1,0 +1,491 @@
+#!/usr/bin/env python3
+"""Fail-closed static validation for EOS ARM application ELF files."""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import os
+from pathlib import Path
+import re
+import struct
+import subprocess
+import sys
+import tempfile
+
+
+AUTH_MARKER = b"martos_smp_elf_authentication_block_sha2_256_adbc_1394_e532_101\n"
+AUTH_DIGEST_LENGTH = 64
+AUTH_TRAILER_LENGTH = len(AUTH_MARKER) + AUTH_DIGEST_LENGTH + 1
+ELF32_HEADER = struct.Struct("<16sHHIIIIIHHHHHH")
+ELF32_PROGRAM_HEADER = struct.Struct("<IIIIIIII")
+ELF32_SECTION_HEADER = struct.Struct("<IIIIIIIIII")
+SHT_NOBITS = 8
+ALLOWED_RELOCATIONS = {"R_ARM_RELATIVE", "R_ARM_ABS32", "R_ARM_JUMP_SLOT"}
+MAX_TOOL_OUTPUT = 32 * 1024 * 1024
+TOOL_ENVIRONMENT = {
+    "PATH": os.defpath,
+    "LC_ALL": "C",
+    "LANG": "C",
+}
+
+
+class ValidationError(Exception):
+    pass
+
+
+def sdk_root() -> Path:
+    configured = os.environ.get("EOS_RUST_SDK_ROOT")
+    candidate = Path(configured) if configured else Path(__file__).resolve().parent.parent
+    try:
+        root = candidate.resolve(strict=True)
+    except OSError as error:
+        raise ValidationError(f"EOS Rust SDK root is unavailable: {candidate}: {error}") from error
+    if not root.is_dir():
+        raise ValidationError(f"EOS Rust SDK root is not a directory: {root}")
+    return root
+
+
+def rooted_file(root: Path, relative: str, description: str) -> Path:
+    candidate = root / relative
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root)
+    except ValueError as error:
+        raise ValidationError(
+            f"{description} resolves outside EOS_RUST_SDK_ROOT: {candidate}"
+        ) from error
+    except OSError as error:
+        raise ValidationError(f"missing {description}: {candidate}: {error}") from error
+    if not resolved.is_file():
+        raise ValidationError(f"{description} is not a file: {resolved}")
+    return resolved
+
+
+def authentication_marker_offsets(data: bytes, minimum: int) -> list[int]:
+    offsets: list[int] = []
+    offset = data.find(AUTH_MARKER, minimum)
+    while offset >= 0:
+        offsets.append(offset)
+        offset = data.find(AUTH_MARKER, offset + 1)
+    return offsets
+
+
+def split_authentication_trailer(
+    data: bytes, allow_trailer: bool, elf_extent: int
+) -> bytes:
+    terminal_markers = authentication_marker_offsets(data, elf_extent)
+    if not terminal_markers:
+        return data
+    marker_index = len(data) - AUTH_TRAILER_LENGTH
+    if terminal_markers != [marker_index]:
+        raise ValidationError(
+            "authentication trailer has an invalid length or terminator"
+        )
+    if not allow_trailer:
+        raise ValidationError("authentication trailer is not allowed for a base ELF")
+    trailer = data[marker_index + len(AUTH_MARKER) :]
+    if len(trailer) != AUTH_DIGEST_LENGTH + 1 or trailer[-1:] != b"\n":
+        raise ValidationError("authentication trailer has an invalid length or terminator")
+    digest = trailer[:-1]
+    if re.fullmatch(rb"[0-9a-f]{64}", digest) is None:
+        raise ValidationError("authentication trailer digest must be 64 lowercase hex characters")
+    base = data[:marker_index]
+    actual = hashlib.sha256(base).hexdigest().encode("ascii")
+    if not hmac.compare_digest(digest, actual):
+        raise ValidationError("authentication trailer digest does not match the base ELF")
+    return base
+
+
+def checked_table_extent(offset: int, entry_size: int, count: int, limit: int, name: str) -> int:
+    if count == 0:
+        return 0
+    if offset < ELF32_HEADER.size or entry_size <= 0:
+        raise ValidationError(f"invalid ELF {name} table location")
+    extent = offset + entry_size * count
+    if extent < offset or extent > limit:
+        raise ValidationError(f"base ELF is shorter than its {name} table extent")
+    return extent
+
+
+def validate_internal_elf(data: bytes) -> int:
+    if data[:4] != b"\x7fELF":
+        raise ValidationError("input does not begin with ELF magic")
+    if len(data) < ELF32_HEADER.size:
+        raise ValidationError("input is shorter than an ELF32 header")
+    fields = ELF32_HEADER.unpack_from(data)
+    (
+        ident,
+        elf_type,
+        machine,
+        version,
+        _entry,
+        program_offset,
+        section_offset,
+        flags,
+        header_size,
+        program_entry_size,
+        program_count,
+        section_entry_size,
+        section_count,
+        section_names,
+    ) = fields
+    if ident[4] != 1:
+        raise ValidationError("internal ELF class is not ELF32")
+    if ident[5] != 1:
+        raise ValidationError("internal ELF encoding is not little endian")
+    if ident[6] != 1 or version != 1:
+        raise ValidationError("internal ELF version is not current")
+    if elf_type != 3:
+        raise ValidationError("internal ELF type is not ET_DYN")
+    if machine != 40:
+        raise ValidationError("internal ELF machine is not ARM")
+    if header_size != ELF32_HEADER.size:
+        raise ValidationError("unexpected ELF32 header size")
+    if flags & 0xFF000000 != 0x05000000:
+        raise ValidationError("internal ELF flags are not EABI5")
+    if not (flags & 0x200) or flags & 0x400:
+        raise ValidationError("internal ELF flags do not select the soft-float ABI")
+    if program_count and program_entry_size != ELF32_PROGRAM_HEADER.size:
+        raise ValidationError("unexpected ELF32 program-header size")
+    if section_count and section_entry_size != ELF32_SECTION_HEADER.size:
+        raise ValidationError("unexpected ELF32 section-header size")
+    if section_count and section_names >= section_count:
+        raise ValidationError("ELF section-name table index is out of range")
+
+    maximum = ELF32_HEADER.size
+    maximum = max(
+        maximum,
+        checked_table_extent(
+            program_offset, program_entry_size, program_count, len(data), "program-header"
+        ),
+        checked_table_extent(
+            section_offset, section_entry_size, section_count, len(data), "section-header"
+        ),
+    )
+    for index in range(program_count):
+        start = program_offset + index * program_entry_size
+        program = ELF32_PROGRAM_HEADER.unpack_from(data, start)
+        file_offset, file_size = program[1], program[4]
+        extent = file_offset + file_size
+        if extent < file_offset or extent > len(data):
+            raise ValidationError("base ELF is shorter than a program segment extent")
+        maximum = max(maximum, extent)
+    for index in range(section_count):
+        start = section_offset + index * section_entry_size
+        section = ELF32_SECTION_HEADER.unpack_from(data, start)
+        section_type, file_offset, size = section[1], section[4], section[5]
+        if section_type == SHT_NOBITS:
+            continue
+        extent = file_offset + size
+        if extent < file_offset or extent > len(data):
+            raise ValidationError("base ELF is shorter than a section extent")
+        maximum = max(maximum, extent)
+    if len(data) < maximum:
+        raise ValidationError("base ELF is shorter than its last ELF extent")
+    return maximum
+
+
+def run_tool(tool: Path, option: str, image: Path) -> str:
+    try:
+        result = subprocess.run(
+            [str(tool), option, str(image)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+            env=TOOL_ENVIRONMENT,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValidationError(f"{tool.name} {option} failed: {error}") from error
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace").strip()
+        raise ValidationError(
+            f"{tool.name.removeprefix('arm-none-eabi-')} {option} failed: "
+            f"{detail or f'exit status {result.returncode}'}"
+        )
+    if len(result.stdout) > MAX_TOOL_OUTPUT:
+        raise ValidationError(f"{tool.name} {option} output exceeds the safety limit")
+    try:
+        return result.stdout.decode("utf-8", "strict")
+    except UnicodeDecodeError as error:
+        raise ValidationError(f"{tool.name} {option} produced non-UTF-8 output") from error
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise ValidationError(message)
+
+
+def validate_header(output: str) -> int:
+    require(
+        re.search(r"^\s*Class:\s+ELF32\s*$", output, re.MULTILINE) is not None,
+        "ELF class is not ELF32",
+    )
+    require(
+        re.search(r"^\s*Data:.*little endian\s*$", output, re.MULTILINE)
+        is not None,
+        "ELF data is not little endian",
+    )
+    require(
+        re.search(r"^\s*Type:\s+DYN\s+", output, re.MULTILINE) is not None,
+        "ELF type is not ET_DYN",
+    )
+    require(
+        re.search(r"^\s*Machine:\s+ARM\s*$", output, re.MULTILINE) is not None,
+        "ELF machine is not ARM machine",
+    )
+    flags = re.search(r"^\s*Flags:\s+(.+)$", output, re.MULTILINE)
+    require(flags is not None and "Version5 EABI" in flags.group(1), "ELF flags are not EABI5")
+    require(
+        flags is not None
+        and "soft-float ABI" in flags.group(1)
+        and "hard-float ABI" not in flags.group(1),
+        "ELF flags do not select the soft-float ABI",
+    )
+    entry = re.search(r"^\s*Entry point address:\s+(0x[0-9a-fA-F]+)\s*$", output, re.MULTILINE)
+    require(entry is not None, "ELF entry address is missing or malformed")
+    return int(entry.group(1), 16)
+
+
+def validate_program_headers(output: str) -> None:
+    require(
+        "[Requesting program interpreter: /usr/lib/ld.so.1]" in output,
+        "program interpreter is not /usr/lib/ld.so.1",
+    )
+    load_flags: list[str] = []
+    for line in output.splitlines():
+        if re.match(r"^\s*LOAD\s", line):
+            fields = line.split()
+            if len(fields) >= 8:
+                load_flags.append("".join(fields[6:-1]))
+    require("RE" in load_flags, "ELF has no RX PT_LOAD segment")
+    require("RW" in load_flags, "ELF has no RW PT_LOAD segment")
+    require(
+        re.search(r"^\s*DYNAMIC\s", output, re.MULTILINE) is not None,
+        "ELF has no PT_DYNAMIC segment",
+    )
+    require(
+        re.search(r"^\s*ARM_EXIDX\s", output, re.MULTILINE) is not None,
+        "ELF has no PT_ARM_EXIDX segment",
+    )
+    require(re.search(r"^\s*TLS\s", output, re.MULTILINE) is None, "ELF contains forbidden PT_TLS")
+
+
+def parse_sections(output: str) -> dict[str, tuple[int, str]]:
+    sections: dict[str, tuple[int, str]] = {}
+    pattern = re.compile(
+        r"^\s*\[\s*\d+\]\s+(\S+)\s+\S+\s+[0-9a-fA-F]+\s+"
+        r"[0-9a-fA-F]+\s+([0-9a-fA-F]+)\s+[0-9a-fA-F]+\s+(\S*)"
+    )
+    for line in output.splitlines():
+        match = pattern.match(line)
+        if match:
+            sections[match.group(1)] = (int(match.group(2), 16), match.group(3))
+    return sections
+
+
+def validate_sections(output: str) -> None:
+    sections = parse_sections(output)
+    exidx = sections.get(".ARM.exidx")
+    require(exidx is not None and exidx[0] > 0, "ELF has no nonempty .ARM.exidx section")
+    require(exidx is not None and "A" in exidx[1], "ELF has no allocated .ARM.exidx section")
+    extab = sections.get(".ARM.extab")
+    if extab is not None and extab[0] > 0:
+        require("A" in extab[1], "ELF has an emitted but unallocated .ARM.extab section")
+    for name in (".tdata", ".tbss"):
+        section = sections.get(name)
+        require(
+            section is None or section[0] == 0,
+            f"ELF contains nonempty native TLS section {name}",
+        )
+
+
+def validate_relocations(output: str) -> None:
+    relocations = set(re.findall(r"\bR_ARM_[A-Z0-9_]+\b", output))
+    unexpected = sorted(relocations - ALLOWED_RELOCATIONS)
+    require(not unexpected, f"unsupported dynamic relocation(s): {', '.join(unexpected)}")
+
+
+def validate_dynamic(output: str) -> None:
+    require("TEXTREL" not in output, "ELF dynamic table contains forbidden TEXTREL")
+    needed = re.findall(r"\(NEEDED\).*\[([^]]+)\]", output)
+    require(
+        needed == ["libmartos_app.so.1.0"],
+        "ELF shared-library dependencies are not exactly libmartos_app.so.1.0",
+    )
+    require(
+        re.search(r"\(FLAGS_1\).*\bPIE\b", output) is not None,
+        "ELF dynamic table has no PIE flag",
+    )
+
+
+def validate_attributes(output: str) -> None:
+    required = {
+        "ARMv7": r"^\s*Tag_CPU_arch:\s+v7\s*$",
+        "Application profile": r"^\s*Tag_CPU_arch_profile:\s+Application\s*$",
+        "A32": r"^\s*Tag_ARM_ISA_use:\s+Yes\s*$",
+        "Thumb-2": r"^\s*Tag_THUMB_ISA_use:\s+Thumb-2\s*$",
+        "VFPv3": r"^\s*Tag_FP_arch:\s+VFPv3\s*$",
+        "NEONv1": r"^\s*Tag_Advanced_SIMD_arch:\s+NEONv1\s*$",
+    }
+    for description, pattern in required.items():
+        require(
+            re.search(pattern, output, re.MULTILINE) is not None,
+            f"ELF ARM attributes do not require {description}",
+        )
+
+
+def symbol_rows(output: str):
+    table: str | None = None
+    row = re.compile(
+        r"^\s*\d+:\s+([0-9a-fA-F]+)\s+\d+\s+(\S+)\s+(\S+)\s+"
+        r"(\S+)\s+(\S+)(?:\s+(.*))?$"
+    )
+    for line in output.splitlines():
+        heading = re.match(r"^Symbol table '([^']+)'", line)
+        if heading:
+            table = heading.group(1)
+            continue
+        match = row.match(line)
+        if match and table is not None:
+            name = (match.group(6) or "").split()[0] if match.group(6) else ""
+            yield (
+                table,
+                int(match.group(1), 16),
+                match.group(2),
+                match.group(3),
+                match.group(4),
+                match.group(5),
+                name,
+            )
+
+
+def load_allowlist(path: Path) -> set[str]:
+    symbols: set[str] = set()
+    symbol_pattern = re.compile(r"[A-Za-z_.$][A-Za-z0-9_.$@]*")
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as error:
+        raise ValidationError(f"unable to read dynamic-symbol allowlist: {error}") from error
+    for line_number, raw in enumerate(lines, 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if symbol_pattern.fullmatch(line) is None:
+            raise ValidationError(f"malformed allowlist entry at line {line_number}: {line!r}")
+        symbols.add(line)
+    return symbols
+
+
+def validate_symbols(output: str, nm_output: str, entry: int, allowed: set[str]) -> None:
+    rows = list(symbol_rows(output))
+    main_rows = [
+        row
+        for row in rows
+        if row[6] == "main"
+        and row[2] == "FUNC"
+        and row[3] == "GLOBAL"
+        and row[4] == "DEFAULT"
+        and row[5] != "UND"
+        and row[1] == entry
+    ]
+    require(bool(main_rows), "ELF entry address does not resolve to a defined global main")
+    undefined = {
+        row[6]
+        for row in rows
+        if row[0] == ".dynsym" and row[5] == "UND" and row[3] in {"GLOBAL", "WEAK"} and row[6]
+    }
+    unexpected = sorted(undefined - allowed)
+    require(
+        not unexpected,
+        f"undefined dynamic symbol(s) are not allowlisted: {', '.join(unexpected)}",
+    )
+
+    nm_main = []
+    for line in nm_output.splitlines():
+        match = re.fullmatch(r"\s*([0-9a-fA-F]+)\s+([A-Za-z])\s+main\s*", line)
+        if match and match.group(2).isupper():
+            nm_main.append(int(match.group(1), 16))
+    require(entry in nm_main, "nm main symbol does not resolve to the ELF entry address")
+
+
+def validate(image: Path, allow_trailer: bool) -> None:
+    try:
+        resolved_image = image.resolve(strict=True)
+    except OSError as error:
+        raise ValidationError(f"input ELF is unavailable: {image}: {error}") from error
+    if not resolved_image.is_file():
+        raise ValidationError(f"input ELF is not a regular file: {resolved_image}")
+    try:
+        data = resolved_image.read_bytes()
+    except OSError as error:
+        raise ValidationError(f"unable to read input ELF: {error}") from error
+    if data[:4] != b"\x7fELF":
+        raise ValidationError("input does not begin with ELF magic")
+    full_extent = validate_internal_elf(data)
+    base = split_authentication_trailer(data, allow_trailer, full_extent)
+    validate_internal_elf(base)
+
+    root = sdk_root()
+    readelf = rooted_file(root, "arm-gnu/bin/arm-none-eabi-readelf", "ARM GNU readelf")
+    nm = rooted_file(root, "arm-gnu/bin/arm-none-eabi-nm", "ARM GNU nm")
+    allowlist_path = rooted_file(
+        root, "manifests/allowed-dynamic-symbols.txt", "dynamic-symbol allowlist"
+    )
+    if not os.access(readelf, os.X_OK) or not os.access(nm, os.X_OK):
+        raise ValidationError("ARM GNU ELF inspection tools are not executable")
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="eos-elf-validate-") as directory:
+            snapshot = Path(directory) / "application.elf"
+            descriptor = os.open(
+                snapshot, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400
+            )
+            with os.fdopen(descriptor, "wb") as snapshot_file:
+                snapshot_file.write(base)
+                snapshot_file.flush()
+                os.fsync(snapshot_file.fileno())
+                os.fchmod(snapshot_file.fileno(), 0o400)
+            if snapshot.read_bytes() != base:
+                raise ValidationError("owned ELF snapshot differs from the input bytes")
+            outputs = {
+                option: run_tool(readelf, option, snapshot)
+                for option in ("-hW", "-lW", "-SW", "-rW", "-dW", "-AW", "-Ws")
+            }
+            nm_output = run_tool(nm, "-n", snapshot)
+            if snapshot.read_bytes() != base:
+                raise ValidationError("owned ELF snapshot changed during inspection")
+    except OSError as error:
+        raise ValidationError(f"unable to create an owned ELF snapshot: {error}") from error
+    entry = validate_header(outputs["-hW"])
+    validate_program_headers(outputs["-lW"])
+    validate_sections(outputs["-SW"])
+    validate_relocations(outputs["-rW"])
+    validate_dynamic(outputs["-dW"])
+    validate_attributes(outputs["-AW"])
+    validate_symbols(outputs["-Ws"], nm_output, entry, load_allowlist(allowlist_path))
+
+
+def main(arguments: list[str]) -> int:
+    allow_trailer = False
+    if arguments[:1] == ["--allow-auth-trailer"]:
+        allow_trailer = True
+        arguments = arguments[1:]
+    if len(arguments) != 1 or arguments[0].startswith("-"):
+        raise ValidationError(
+            "usage: eos-elf-validate [--allow-auth-trailer] <application.elf>"
+        )
+    image = Path(arguments[0])
+    validate(image, allow_trailer)
+    print(f"validated EOS ELF: {image}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except ValidationError as error:
+        print(f"eos-elf-validate: {error}", file=sys.stderr)
+        raise SystemExit(2)
