@@ -59,6 +59,17 @@ TARGET_FLAGS = (
     "-mfpu=neon-vfpv3",
     "-mfloat-abi=softfp",
 )
+MARTOS_PIC_DATA_FLAGS = (
+    "-mno-pic-data-is-text-relative",
+    "-mno-single-pic-base",
+)
+EHABI_RUNTIME_MEMBERS = (
+    "unwind-arm.o",
+    "libunwind.o",
+    "pr-support.o",
+    "unwind-c.o",
+)
+R9_STATIC_BASE_ACCESS = re.compile(r"\[\s*r9\s*(?:,|\])", re.IGNORECASE)
 EOS_RUNTIME_LIBRARIES = (
     "martos/lib/libmartos_app.so",
     "martos/lib/libmartos_app.so.1.0",
@@ -368,7 +379,7 @@ def validate_inputs(arm: Path, eos: Path) -> dict[str, Path]:
     validate_tree_links(eos, "EOS SDK")
     arm_files = {
         name: rooted_file(arm, f"bin/arm-none-eabi-{name}", f"ARM GNU {name}")
-        for name in ("gcc", "ar", "ranlib", "readelf", "nm")
+        for name in ("gcc", "ar", "ranlib", "readelf", "nm", "objdump")
     }
     for relative in (
         "martos/inc/martos_smp.h",
@@ -407,6 +418,43 @@ def copy_file_beneath(source_root: Path, relative: Path, destination_root: Path)
     shutil.copy2(source, destination, follow_symlinks=True)
 
 
+def verify_ehabi_runtime(arm: Path, libgcc: Path) -> None:
+    ar = rooted_file(arm, "bin/arm-none-eabi-ar", "ARM GNU archiver")
+    objdump = rooted_file(arm, "bin/arm-none-eabi-objdump", "ARM GNU objdump")
+    members = run_checked(
+        [str(ar), "t", str(libgcc)],
+        "ARM GNU EHABI archive member query",
+        environment=build_environment(),
+        capture=True,
+    ).splitlines()
+    missing = [member for member in EHABI_RUNTIME_MEMBERS if member not in members]
+    if missing:
+        raise BuildError(
+            "ARM GNU libgcc is missing required EHABI runtime member(s): "
+            + ", ".join(missing)
+        )
+    disassembly = run_checked(
+        [str(objdump), "-dr", str(libgcc)],
+        "ARM GNU EHABI runtime disassembly",
+        environment=build_environment(),
+        capture=True,
+    )
+    for member in EHABI_RUNTIME_MEMBERS:
+        match = re.search(
+            rf"(?ms)^{re.escape(member)}:\s.*?(?=^\S+\.o:\s|\Z)",
+            disassembly,
+        )
+        if match is None:
+            raise BuildError(
+                f"ARM GNU EHABI disassembly does not contain required member: {member}"
+            )
+        if R9_STATIC_BASE_ACCESS.search(match.group(0)) is not None:
+            raise BuildError(
+                f"ARM GNU EHABI runtime {member} uses an r9 PIC base; "
+                "rebuild libgcc without -msingle-pic-base -mpic-register=r9"
+            )
+
+
 def stage_arm_toolchain(arm: Path, stage: Path) -> None:
     destination = stage / "arm-gnu"
     gcc_relative = Path("bin/arm-none-eabi-gcc")
@@ -441,6 +489,7 @@ def stage_arm_toolchain(arm: Path, stage: Path) -> None:
         raise BuildError(f"ARM GNU libgcc is unavailable: {libgcc}: {error}") from error
     if libgcc.name != "libgcc.a":
         raise BuildError(f"ARM GNU selected an unexpected support library: {libgcc}")
+    verify_ehabi_runtime(arm, libgcc)
     required.append(libgcc_relative)
     for relative in required:
         copy_file_beneath(arm, relative, destination)
@@ -568,7 +617,11 @@ def verify_pic(build: Path) -> None:
         flags = flags_file.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
         raise BuildError(f"unable to verify MARTOS PIC compiler flags: {error}") from error
-    missing = [flag for flag in (*TARGET_FLAGS, "-fPIC") if flag not in flags.split()]
+    missing = [
+        flag
+        for flag in (*TARGET_FLAGS, *MARTOS_PIC_DATA_FLAGS, "-fPIC")
+        if flag not in flags.split()
+    ]
     if missing:
         raise BuildError(f"MARTOS ABI build is missing required compiler flags: {', '.join(missing)}")
 
@@ -607,7 +660,7 @@ def build_native_abi(
     compiler = rooted_file(arm, "bin/arm-none-eabi-gcc", "ARM GNU compiler")
     ar = rooted_file(arm, "bin/arm-none-eabi-ar", "ARM GNU ar")
     ranlib = rooted_file(arm, "bin/arm-none-eabi-ranlib", "ARM GNU ranlib")
-    cflags = " ".join(TARGET_FLAGS)
+    cflags = " ".join((*TARGET_FLAGS, *MARTOS_PIC_DATA_FLAGS))
     run_checked(
         [
             str(cmake), "-S", str(abi_source), "-B", str(martos_build),

@@ -461,8 +461,37 @@ def create_fake_arm_gnu(root: Path, version: str = "14.3.1") -> None:
             f"print('00000000 T {symbol}')" for symbol in expected
         ) + "\n",
     )
-    for name in ("arm-none-eabi-ar", "arm-none-eabi-ranlib", "arm-none-eabi-readelf"):
+    write_executable(
+        root / "bin" / "arm-none-eabi-ar",
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "if sys.argv[1:2] == ['t']:\n"
+        "    print('unwind-arm.o\\nlibunwind.o\\npr-support.o\\nunwind-c.o')\n",
+    )
+    for name in ("arm-none-eabi-ranlib", "arm-none-eabi-readelf"):
         write_executable(root / "bin" / name)
+    (root / "ehabi-objdump.txt").write_text(
+        """unwind-arm.o:     file format elf32-littlearm
+00000000 <safe_unwind_arm>:
+   0: e1a00000    nop
+libunwind.o:     file format elf32-littlearm
+00000000 <safe_libunwind>:
+   0: e1a00000    nop
+pr-support.o:     file format elf32-littlearm
+00000000 <safe_pr_support>:
+   0: e1a00000    nop
+unwind-c.o:     file format elf32-littlearm
+00000000 <safe_unwind_c>:
+   0: e1a00000    nop
+""",
+        encoding="utf-8",
+    )
+    write_executable(
+        root / "bin" / "arm-none-eabi-objdump",
+        "#!/usr/bin/env python3\n"
+        "from pathlib import Path\n"
+        "print((Path(__file__).resolve().parents[1] / 'ehabi-objdump.txt').read_text(encoding='utf-8'), end='')\n",
+    )
     for relative in (
         "arm-none-eabi/bin/as",
         "arm-none-eabi/bin/ld",
@@ -514,11 +543,22 @@ def create_fake_build_commands(root: Path) -> None:
                 build = Path(arguments[arguments.index("--build") + 1])
                 if build.name == "eos-abi-martos":
                     (build / "CMakeFiles" / "eos_rust_abi.dir").mkdir(parents=True, exist_ok=True)
+                    c_flags = (build / "cmake-c-flags.txt").read_text(encoding="utf-8")
                     (build / "CMakeFiles" / "eos_rust_abi.dir" / "flags.make").write_text(
-                        "C_FLAGS = -march=armv7-a -mtune=cortex-a9 -mfpu=neon-vfpv3 -mfloat-abi=softfp -fPIC\\n",
+                        f"C_FLAGS = {c_flags} -fPIC\\n",
                         encoding="utf-8",
                     )
                     (build / "libeos_rust_abi.a").write_bytes(b"abi")
+            elif "-B" in arguments:
+                build = Path(arguments[arguments.index("-B") + 1])
+                if build.name == "eos-abi-martos":
+                    c_flags = next(
+                        argument.removeprefix("-DCMAKE_C_FLAGS=")
+                        for argument in arguments
+                        if argument.startswith("-DCMAKE_C_FLAGS=")
+                    )
+                    build.mkdir(parents=True, exist_ok=True)
+                    (build / "cmake-c-flags.txt").write_text(c_flags, encoding="utf-8")
             """
         ),
     )
@@ -1166,7 +1206,12 @@ class BuilderContractTests(unittest.TestCase):
         spec = importlib.util.spec_from_loader(loader.name, loader)
         self.assertIsNotNone(spec)
         checker = importlib.util.module_from_spec(spec)
-        loader.exec_module(checker)
+        original_dont_write_bytecode = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            loader.exec_module(checker)
+        finally:
+            sys.dont_write_bytecode = original_dont_write_bytecode
         self.assertEqual(
             checker.CHECKED_IN_POLICY,
             checker.PolicyPaths(
@@ -1222,6 +1267,11 @@ class BuilderContractTests(unittest.TestCase):
             f"-DCMAKE_C_COMPILER={self.arm_gnu.resolve() / 'bin' / 'arm-none-eabi-gcc'}",
             martos_configure,
         )
+        self.assertIn(
+            "-DCMAKE_C_FLAGS=-march=armv7-a -mtune=cortex-a9 -mfpu=neon-vfpv3 "
+            "-mfloat-abi=softfp -mno-pic-data-is-text-relative -mno-single-pic-base",
+            martos_configure,
+        )
         x_commands = [command for command in commands if command[0] == "x"]
         x_layouts = [command for command in commands if command[0] == "x-layout"]
         self.assertEqual([command[1] for command in x_commands], ["build", "dist", "dist"])
@@ -1254,6 +1304,31 @@ class BuilderContractTests(unittest.TestCase):
             self.output, path=str(self.temporary / "no-rustup")
         )
         self.assertEqual(install_check.returncode, 0, install_check.stderr)
+
+    def test_builder_rejects_an_ehabi_runtime_with_r9_static_base_access(self):
+        (self.arm_gnu / "ehabi-objdump.txt").write_text(
+            """unwind-arm.o:     file format elf32-littlearm
+   10: e7993003    ldr r3, [r9, r3]
+libunwind.o:     file format elf32-littlearm
+   0: e1a00000    nop
+pr-support.o:     file format elf32-littlearm
+   0: e1a00000    nop
+unwind-c.o:     file format elf32-littlearm
+   0: e1a00000    nop
+""",
+            encoding="utf-8",
+        )
+        result = run_builder(
+            self.source,
+            self.arm_gnu,
+            self.eos_sdk,
+            self.output,
+            self.fake_bin,
+            self.log,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("r9 PIC base", result.stderr)
+        self.assertFalse(self.output.exists())
 
     def test_builder_canonicalizes_hostile_sources_stage2_outputs_and_umask(self):
         for root in (self.source, self.arm_gnu, self.eos_sdk):

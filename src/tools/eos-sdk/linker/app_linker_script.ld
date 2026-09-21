@@ -2,12 +2,12 @@
 ENTRY(main)
 
 /*
- * This loader has no cross-image EHABI lookup hook, so libgcc must use the
- * retained application-local __exidx_start/__exidx_end table.  MARTOS uses
- * libc++abi rather than GNU libsupc++, so its absent optional type-match hook
- * keeps the weak-symbol zero value without becoming a dynamic relocation.
+ * MARTOS applications own their retained EHABI index.  The SDK ABI archive
+ * supplies a strong __gnu_Unwind_Find_exidx hook for that table; do not
+ * provide a zero-valued linker-script symbol because MARTOS relocates it as
+ * an image-base pointer.  MARTOS uses libc++abi rather than GNU libsupc++, so
+ * its absent optional type-match hook keeps the weak-symbol zero value.
  */
-PROVIDE(__gnu_Unwind_Find_exidx = 0);
 PROVIDE(__cxa_type_match = 0);
 
 PHDRS
@@ -82,12 +82,13 @@ SECTIONS
   .dynstr : { *(.dynstr) } :text
   .hash : { *(.hash) } :text
   .gnu.hash : { *(.gnu.hash) } :text
+  /* PC-relative ARM PIC resolves this table through the code allocation. */
+  .got : { *(.got) *(.got.*) *(.got.plt) } :text
   .rel.dyn : { *(.rel.dyn) *(.rel.dyn.*) } :text
   .rel.plt : { *(.rel.plt) *(.rel.plt.*) } :text
 
-  . = ALIGN(CONSTANT(MAXPAGESIZE));
-
-  .got : { *(.got) *(.got.*) *(.got.plt) } :data
+  /* MARTOS separately allocates PT_LOAD images on 1 MiB MMU boundaries. */
+  . = ALIGN(0x100000);
   .data :
   {
     __data_start = .;

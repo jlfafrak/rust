@@ -39,6 +39,7 @@ endif()
 
 add_library(eos_rust_abi STATIC
     src/eos_abi.c
+    src/eos_unwind.c
 )
 add_library(EOS::RustABI ALIAS eos_rust_abi)
 

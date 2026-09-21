@@ -459,6 +459,7 @@ def main(arguments: list[str]) -> int:
         *FIXED_LINK_FLAGS,
         f"-Wl,-T,{linker_script}",
         *arguments,
+        "-Wl,-u,__gnu_Unwind_Find_exidx",
         str(abi),
         "-Wl,-Bdynamic",
         str(martos_libraries["libmartos_app.so"]),

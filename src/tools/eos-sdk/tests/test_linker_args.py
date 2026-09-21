@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -157,8 +158,9 @@ raise SystemExit(int(Path({str(self.status_control)!r}).read_text(encoding="utf-
         self.assertLess(argv.index("rust-main.o"), argv.index(abi))
         self.assertLess(argv.index("libstd.rlib"), argv.index(abi))
         self.assertEqual(
-            argv[argv.index(abi) :],
+            argv[argv.index("-Wl,-u,__gnu_Unwind_Find_exidx") :],
             [
+                "-Wl,-u,__gnu_Unwind_Find_exidx",
                 abi,
                 "-Wl,-Bdynamic",
                 str(martos / "libmartos_app.so"),
@@ -173,7 +175,7 @@ raise SystemExit(int(Path({str(self.status_control)!r}).read_text(encoding="utf-
         self.assertFalse(any(argument.startswith("-lmartos") for argument in argv))
         self.assertFalse(any(Path(arg).name.startswith("crt") for arg in argv))
 
-    def test_forces_only_ehabi_symbols_that_the_pinned_martos_cxxabi_defines(self):
+    def test_forces_sdk_exidx_hook_and_only_pinned_martos_cxxabi_symbols(self):
         result = self.invoke(
             "-o", str(self.work / "application.elf"), "rust-main.o"
         )
@@ -187,7 +189,8 @@ raise SystemExit(int(Path({str(self.status_control)!r}).read_text(encoding="utf-
             ["-Wl,-u,__cxa_begin_cleanup", "-Wl,-u,__cxa_call_unexpected"],
         )
         self.assertNotIn("-Wl,-u,__cxa_type_match", argv)
-        self.assertNotIn("-Wl,-u,__gnu_Unwind_Find_exidx", argv)
+        hook = argv.index("-Wl,-u,__gnu_Unwind_Find_exidx")
+        self.assertLess(hook, argv.index(str(self.root / "lib" / "libeos_rust_abi.a")))
 
     def test_preserves_exact_rustc_std_shared_shape_without_application_policy(self):
         rustc_arguments = self.rustc_std_shared_args()
@@ -510,7 +513,7 @@ class LinkerScriptBehaviorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return obj
 
-    def link(self, obj: Path):
+    def link(self, *objects: Path):
         output = self.work / "application.elf"
         return subprocess.run(
             [
@@ -519,7 +522,7 @@ class LinkerScriptBehaviorTests(unittest.TestCase):
                 "-pie",
                 "-Wl,--gc-sections",
                 f"-Wl,-T,{SDK_SOURCE_ROOT / 'linker' / 'app_linker_script.ld'}",
-                str(obj),
+                *(str(obj) for obj in objects),
                 "-o",
                 str(output),
             ],
@@ -587,6 +590,68 @@ retained_bss:
         }
         self.assertEqual(symbol_values["_end"], symbol_values["__bss_end__"])
 
+    def test_got_is_executable_and_writable_segment_uses_martos_section_alignment(self):
+        obj = self.compile_assembly(
+            "got_layout",
+            """.syntax unified
+.arm
+.section .text.main,"ax",%progbits
+.global main
+.type main,%function
+main:
+  ldr r0, writable_address
+  ldr r0, [r0]
+  bx lr
+  .align 2
+writable_address:
+  .word writable_data
+.size main, .-main
+.section .got,"aw",%progbits
+.word writable_data
+.section .data,"aw",%progbits
+.global writable_data
+writable_data:
+.word 0
+""",
+        )
+        result, output = self.link(obj)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        programs = subprocess.run(
+            [str(self.readelf), "-lW", str(output)],
+            text=True,
+            stdout=subprocess.PIPE,
+            check=True,
+        ).stdout
+        headers, _, mappings = programs.partition("Section to Segment mapping:")
+        segment_lines = [
+            line
+            for line in headers.splitlines()
+            if re.match(r"\s*(PHDR|INTERP|LOAD|DYNAMIC|ARM_EXIDX)\s", line)
+        ]
+
+        def segment_for(section: str) -> str:
+            match = re.search(rf"^\s*(\d+)\s+.*{re.escape(section)}(?:\s|$)", mappings, re.M)
+            self.assertIsNotNone(match, f"{section} was not mapped to a program segment")
+            return segment_lines[int(match.group(1))]
+
+        self.assertRegex(segment_for(".got"), r"\sR E\s")
+        self.assertRegex(segment_for(".data"), r"\sRW\s")
+
+        load_segments = []
+        for line in programs.splitlines():
+            fields = line.split()
+            if fields and fields[0] == "LOAD":
+                load_segments.append((int(fields[2], 16), int(fields[5], 16)))
+        self.assertEqual(len(load_segments), 2)
+        text_vaddr, text_memsz = load_segments[0]
+        data_vaddr, _ = load_segments[1]
+        section_size = 1024 * 1024
+        self.assertEqual(data_vaddr % section_size, 0)
+        self.assertEqual(
+            data_vaddr,
+            (text_vaddr + text_memsz + section_size - 1) & ~(section_size - 1),
+        )
+
     def test_nonempty_native_tls_is_rejected_by_linker_assertion(self):
         obj = self.compile_assembly(
             "tls",
@@ -612,7 +677,7 @@ tls_value:
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("native TLS is unsupported", result.stderr)
 
-    def test_absent_optional_ehabi_hooks_resolve_locally_without_dynamic_relocations(self):
+    def test_application_exidx_hook_is_a_nonzero_local_function_without_dynamic_relocation(self):
         obj = self.compile_c(
             "weak_hooks",
             """extern void __gnu_Unwind_Find_exidx(void) __attribute__((weak));
@@ -622,7 +687,19 @@ int main(void) {
 }
 """,
         )
-        result, output = self.link(obj)
+        hook = self.compile_c(
+            "exidx_hook",
+            """extern unsigned int __exidx_start[];
+extern unsigned int __exidx_end[];
+unsigned int __gnu_Unwind_Find_exidx(unsigned int pc, int *count) {
+    (void)pc;
+    if (count != 0)
+        *count = (int)((__exidx_end - __exidx_start) / 2U);
+    return (unsigned int)__exidx_start;
+}
+""",
+        )
+        result, output = self.link(obj, hook)
         self.assertEqual(result.returncode, 0, result.stderr)
         relocations = subprocess.run(
             [str(self.readelf), "-rW", str(output)],
@@ -639,6 +716,16 @@ int main(void) {
         self.assertNotIn("R_ARM_GLOB_DAT", relocations)
         self.assertNotIn("__gnu_Unwind_Find_exidx", symbols)
         self.assertNotIn("__cxa_type_match", symbols)
+        definition = subprocess.run(
+            [str(self.readelf), "-Ws", str(output)],
+            text=True,
+            stdout=subprocess.PIPE,
+            check=True,
+        ).stdout
+        self.assertRegex(
+            definition,
+            r"(?m)^\s*\d+:\s+(?!00000000\s)\S+\s+\d+\s+FUNC\s+GLOBAL\s+\S+\s+\d+\s+__gnu_Unwind_Find_exidx$",
+        )
 
 
 if __name__ == "__main__":
