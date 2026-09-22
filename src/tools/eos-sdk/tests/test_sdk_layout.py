@@ -201,7 +201,7 @@ def create_installed_sdk(root: Path) -> None:
             rust_fork = "{"c" * 40}"
             rust_upstream = "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
             libc_upstream = "71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8"
-            backtrace = "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd"
+            backtrace = "db5f5c3ef93ffa775d2a92709b9871ac8de36f98"
 
             [distribution_hashes]
             "rustc-cargo-1.97.1-{host_triple()}.tar.xz" = "{"d" * 64}"
@@ -599,7 +599,7 @@ def create_fake_build_commands(root: Path) -> None:
             if command == ["ls-tree", "HEAD", "library/backtrace"]:
                 revision = os.environ.get(
                     "EOS_TEST_GITLINK_REV",
-                    "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd",
+                    "db5f5c3ef93ffa775d2a92709b9871ac8de36f98",
                 )
                 print(f"160000 commit {revision}\tlibrary/backtrace")
                 raise SystemExit(0)
@@ -607,7 +607,7 @@ def create_fake_build_commands(root: Path) -> None:
                 revision = (
                     os.environ.get(
                         "EOS_TEST_BACKTRACE_REV",
-                        "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd",
+                        "db5f5c3ef93ffa775d2a92709b9871ac8de36f98",
                     )
                     if is_backtrace
                     else "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -660,6 +660,16 @@ def run_builder(
 
 
 class SdkSourceContractTests(unittest.TestCase):
+    def test_backtrace_submodule_pins_the_published_eos_fork(self):
+        modules = (REPO_ROOT / ".gitmodules").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "[submodule \"library/backtrace\"]\n"
+            "\tpath = library/backtrace\n"
+            "\turl = https://github.com/jlfafrak/backtrace-rs.git\n",
+            modules,
+        )
+
     def test_bootstrap_template_builds_only_the_eos_target_with_unwinding(self):
         template = (SDK_SOURCE_ROOT / "templates" / "config.toml").read_text(
             encoding="utf-8"
@@ -1232,7 +1242,7 @@ class BuilderContractTests(unittest.TestCase):
         self.assertEqual(release["source_revisions"]["rust_fork"], "a" * 40)
         self.assertEqual(
             release["source_revisions"]["backtrace"],
-            "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd",
+            "db5f5c3ef93ffa775d2a92709b9871ac8de36f98",
         )
         self.assertRegex(release["input_hashes"]["arm_gnu_installed"], r"^[0-9a-f]{64}$")
         self.assertRegex(release["input_hashes"]["eos_sdk"], r"^[0-9a-f]{64}$")

@@ -35,7 +35,7 @@
         "rust_fork": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "rust_upstream": {"const": "8bab26f4f68e0e26f0bb7960be334d5b520ea452"},
         "libc_upstream": {"const": "71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8"},
-        "backtrace": {"const": "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd"}
+        "backtrace": {"const": "db5f5c3ef93ffa775d2a92709b9871ac8de36f98"}
       }
     },
     "distribution_hashes": {

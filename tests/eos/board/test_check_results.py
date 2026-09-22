@@ -170,7 +170,7 @@ class BoardResultGateTests(unittest.TestCase):
                 rust_fork = "7f62307323c3d38c766e9040b7cb7cc74591713c"
                 rust_upstream = "8bab26f4f68e0e26f0bb7960be334d5b520ea452"
                 libc_upstream = "71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8"
-                backtrace = "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd"
+                backtrace = "db5f5c3ef93ffa775d2a92709b9871ac8de36f98"
 
                 [distribution_hashes]
                 "cargo-1.97.1-dev-x86_64-unknown-linux-gnu.tar.gz" = "1952473253ff51e6a16279239c6f55813ebc8f37e34260c4cdc75bd11648a709"
@@ -221,7 +221,7 @@ class BoardResultGateTests(unittest.TestCase):
                 "rust_fork": "7f62307323c3d38c766e9040b7cb7cc74591713c",
                 "rust_upstream": "8bab26f4f68e0e26f0bb7960be334d5b520ea452",
                 "libc_upstream": "71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8",
-                "backtrace": "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd",
+                "backtrace": "db5f5c3ef93ffa775d2a92709b9871ac8de36f98",
                 "arm_gnu_release": "14.3.Rel1",
                 "arm_gnu_sha256_tree_v1": "a407c7186f68473d2fb7a0bae59407261adef62f959fc181e5cd7eb7636a584d",
                 "eos_sdk_baseline": "MARTOS-SMP-14.0.39",

@@ -26,7 +26,7 @@ TARGET = "armv7a-unknown-eos-eabi"
 TOOLCHAIN = "eos-1.97.1"
 GCC_VERSION = "14.3.1"
 EOS_RELEASE_HEADING = "## Build 14.0.39"
-BACKTRACE_REVISION = "02ef1b533157e8ddbd0f9295c867e79b59e9bbbd"
+BACKTRACE_REVISION = "db5f5c3ef93ffa775d2a92709b9871ac8de36f98"
 PACKAGE_MODE_POLICY = {
     "algorithm": "sha256-tree-mode-v1",
     "root": "0755",
