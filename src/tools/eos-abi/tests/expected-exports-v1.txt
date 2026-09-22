@@ -1,3 +1,5 @@
+# Retained ARM EHABI image-local unwind-index hook required by eos-rust-link.
+__gnu_Unwind_Find_exidx
 eos_rust_abi_require
 eos_rust_abi_version
 eos_rust_accept
