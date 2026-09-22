@@ -249,19 +249,50 @@ def validate_header(output: str) -> int:
     return int(entry.group(1), 16)
 
 
+def parse_program_headers(output: str) -> tuple[list[tuple[str, str]], str]:
+    headers, separator, mapping = output.partition("Section to Segment mapping:")
+    require(separator, "ELF has no section-to-segment mapping")
+    segments: list[tuple[str, str]] = []
+    for line in headers.splitlines():
+        fields = line.split()
+        if (
+            len(fields) < 2
+            or re.fullmatch(r"[A-Z_]+", fields[0]) is None
+            or re.fullmatch(r"0x[0-9a-fA-F]+", fields[1]) is None
+        ):
+            continue
+        flags = "".join(fields[6:-1]) if fields[0] == "LOAD" and len(fields) >= 8 else ""
+        segments.append((fields[0], flags))
+    return segments, mapping
+
+
+def mapped_segment_indices(mapping: str, section: str) -> list[int]:
+    indices: list[int] = []
+    for line in mapping.splitlines():
+        match = re.match(r"^\s*(\d+)\s+(.+)$", line)
+        if match is not None and section in match.group(2).split():
+            indices.append(int(match.group(1), 10))
+    return indices
+
+
 def validate_program_headers(output: str) -> None:
     require(
         "[Requesting program interpreter: /usr/lib/ld.so.1]" in output,
         "program interpreter is not /usr/lib/ld.so.1",
     )
-    load_flags: list[str] = []
-    for line in output.splitlines():
-        if re.match(r"^\s*LOAD\s", line):
-            fields = line.split()
-            if len(fields) >= 8:
-                load_flags.append("".join(fields[6:-1]))
+    segments, mapping = parse_program_headers(output)
+    load_segments = [segment for segment in segments if segment[0] == "LOAD"]
+    load_flags = [flags for _, flags in load_segments]
     require("RE" in load_flags, "ELF has no RX PT_LOAD segment")
     require("RW" in load_flags, "ELF has no RW PT_LOAD segment")
+    require(len(load_segments) == 2, "ELF must have exactly two PT_LOAD segments")
+    got_segments = mapped_segment_indices(mapping, ".got")
+    require(len(got_segments) == 1, "ELF .got is not mapped exactly once")
+    got_index = got_segments[0]
+    require(
+        got_index < len(segments) and segments[got_index] == ("LOAD", "RE"),
+        "ELF .got is not mapped by the RX PT_LOAD segment",
+    )
     require(
         re.search(r"^\s*DYNAMIC\s", output, re.MULTILINE) is not None,
         "ELF has no PT_DYNAMIC segment",

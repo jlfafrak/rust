@@ -151,6 +151,24 @@ sys.stdout.write(outputs[key])
                 outputs[key] = outputs[key].replace(old, new)
                 self.assert_rejected(outputs, expected)
 
+    def test_rejects_got_mapped_by_the_private_writable_load_image(self):
+        """MARTOS moves the writable PT_LOAD image away from executable code."""
+        outputs = copy.deepcopy(self.outputs)
+        outputs["-lW"] = outputs["-lW"].replace(
+            "   02     .text .ARM.exidx .got\n   03     .data .dynamic",
+            "   02     .text .ARM.exidx\n   03     .data .got .dynamic",
+        )
+        self.assert_rejected(outputs, ".got is not mapped by the RX PT_LOAD")
+
+    def test_rejects_more_than_two_load_images(self):
+        outputs = copy.deepcopy(self.outputs)
+        outputs["-lW"] = outputs["-lW"].replace(
+            "  DYNAMIC        0x001040",
+            "  LOAD           0x002000 0x00002000 0x00002000 0x00100 0x00100 RW  0x1000\n"
+            "  DYNAMIC        0x001040",
+        )
+        self.assert_rejected(outputs, "exactly two PT_LOAD")
+
     def test_rejects_arm_attribute_mutations(self):
         cases = {
             "architecture": ("Tag_CPU_arch: v7", "Tag_CPU_arch: v6", "ARMv7"),
@@ -175,9 +193,9 @@ sys.stdout.write(outputs[key])
         cases = {
             "missing exidx": (".ARM.exidx", ".not_exidx", ".ARM.exidx"),
             "unallocated exidx": ("00  AL  1", "00   L  1", "allocated .ARM.exidx"),
-            "unallocated extab": ("  [ 3] .dynamic", "  [ 3] .ARM.extab        PROGBITS        00001018 000118 000004 00      0   0  4\n  [ 4] .dynamic", "allocated .ARM.extab"),
-            "tdata": ("  [ 3] .dynamic", "  [ 3] .tdata            PROGBITS        00002000 000200 000004 00 WAT  0   0  4\n  [ 4] .dynamic", "native TLS section .tdata"),
-            "tbss": ("  [ 3] .dynamic", "  [ 3] .tbss             NOBITS          00002000 000200 000004 00 WAT  0   0  4\n  [ 4] .dynamic", "native TLS section .tbss"),
+            "unallocated extab": ("  [ 4] .dynamic", "  [ 4] .ARM.extab        PROGBITS        00001018 000118 000004 00      0   0  4\n  [ 5] .dynamic", "allocated .ARM.extab"),
+            "tdata": ("  [ 4] .dynamic", "  [ 4] .tdata            PROGBITS        00002000 000200 000004 00 WAT  0   0  4\n  [ 5] .dynamic", "native TLS section .tdata"),
+            "tbss": ("  [ 4] .dynamic", "  [ 4] .tbss             NOBITS          00002000 000200 000004 00 WAT  0   0  4\n  [ 5] .dynamic", "native TLS section .tbss"),
         }
         for label, (old, new, expected) in cases.items():
             with self.subTest(label=label):

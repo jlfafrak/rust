@@ -74,13 +74,22 @@ def valid_tool_outputs() -> dict[str, str]:
   LOAD           0x000000 0x00000000 0x00000000 0x00100 0x00100 R E 0x1000
   LOAD           0x001000 0x00001000 0x00001000 0x00100 0x00200 RW  0x1000
   DYNAMIC        0x001040 0x00001040 0x00001040 0x00080 0x00080 RW  0x4
+
+ Section to Segment mapping:
+  Segment Sections...
+   00     .ARM.exidx
+   01     .interp
+   02     .text .ARM.exidx .got
+   03     .data .dynamic
+   04     .dynamic
 """,
         "-SW": """Section Headers:
   [Nr] Name              Type            Addr     Off    Size   ES Flg Lk Inf Al
   [ 0]                   NULL            00000000 000000 000000 00      0   0  0
   [ 1] .text             PROGBITS        00001000 000100 000010 00  AX  0   0  4
   [ 2] .ARM.exidx        ARM_EXIDX       00001010 000110 000008 00  AL  1   0  4
-  [ 3] .dynamic          DYNAMIC         00002000 000200 000080 08  WA  0   0  4
+  [ 3] .got              PROGBITS        00001018 000118 000008 04  WA  0   0  4
+  [ 4] .dynamic          DYNAMIC         00002000 000200 000080 08  WA  0   0  4
 """,
         "-rW": """Relocation section '.rel.dyn' at offset 0x200 contains 2 entries:
  Offset     Info    Type                Sym. Value  Symbol's Name
